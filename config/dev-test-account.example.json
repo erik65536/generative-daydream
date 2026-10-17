@@ -1,0 +1,5 @@
+{
+  "_comment": "Local-only test account used for automated playtesting on http://localhost. Not a real credential.",
+  "username": "playtester",
+  "password": "daydream-dev-1"
+}

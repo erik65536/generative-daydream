@@ -1,0 +1,49 @@
+{
+  "_comment": "Copy to config/genai.json. Each purpose names a provider. 'procedural' needs no model and is always available as a fallback.",
+  "providers": {
+    "local-llm": {
+      "type": "openai-chat",
+      "baseUrl": "http://127.0.0.1:8080/v1",
+      "model": "qwen3-14b",
+      "structured": "json_schema",
+      "concurrency": 1,
+      "timeoutMs": 300000,
+      "extraBody": { "chat_template_kwargs": { "enable_thinking": false } }
+    },
+    "local-vlm": {
+      "type": "openai-chat",
+      "baseUrl": "http://127.0.0.1:8081/v1",
+      "model": "qwen2.5-vl-7b",
+      "structured": "json_schema",
+      "vision": true,
+      "concurrency": 1
+    },
+    "comfy": {
+      "type": "comfyui",
+      "baseUrl": "http://127.0.0.1:8188",
+      "workflow": "config/comfyui/sdxl_txt2img.json",
+      "checkpoint": "sd_xl_base_1.0.safetensors",
+      "steps": 28,
+      "cfg": 6.5,
+      "concurrency": 1
+    },
+    "openai": { "type": "openai-responses", "apiKey": "env:OPENAI_API_KEY", "model": "gpt-5-mini" },
+    "openai-images": { "type": "openai-image", "apiKey": "env:OPENAI_API_KEY", "model": "gpt-image-1" },
+    "anthropic": { "type": "anthropic", "apiKey": "env:ANTHROPIC_API_KEY", "model": "claude-opus-5-5" },
+    "gemini": { "type": "google", "apiKey": "env:GEMINI_API_KEY", "model": "gemini-2.5-flash" },
+    "gemini-images": { "type": "google-image", "apiKey": "env:GEMINI_API_KEY", "model": "gemini-2.5-flash-image" }
+  },
+  "purposes": {
+    "world.design": { "provider": "local-llm", "temperature": 0.9, "maxTokens": 6000, "retries": 2 },
+    "world.content": { "provider": "local-llm", "temperature": 0.85, "maxTokens": 6000, "retries": 2 },
+    "npc.decision": { "provider": "local-llm", "temperature": 0.7, "maxTokens": 900, "retries": 1 },
+    "npc.dialogue": { "provider": "local-llm", "temperature": 0.8, "maxTokens": 400 },
+    "narration": { "provider": "local-llm", "temperature": 0.8, "maxTokens": 400 },
+    "image.texture": { "provider": "comfy", "width": 1024, "height": 1024, "maxAttempts": 3, "negativePrompt": "text, watermark, signature, frame, border, perspective, horizon, people" },
+    "image.sprite": { "provider": "comfy", "width": 832, "height": 1216, "maxAttempts": 3, "negativePrompt": "text, watermark, multiple characters, cropped, cut off, busy background, scenery, frame" },
+    "image.icon": { "provider": "comfy", "width": 1024, "height": 1024, "maxAttempts": 2, "negativePrompt": "text, watermark, multiple objects, hands, busy background" },
+    "image.check": { "provider": "local-vlm", "minScore": 6, "maxTokens": 400 }
+  },
+  "combineNpcDecisionAndDialogue": true,
+  "worldGenParallelism": 1
+}

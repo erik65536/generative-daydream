@@ -1,0 +1,33 @@
+{
+  "name": "generative-daydream",
+  "private": true,
+  "version": "0.1.0",
+  "description": "A GenAI-driven 2D isometric RPG engine",
+  "type": "module",
+  "workspaces": [
+    "packages/shared",
+    "packages/server",
+    "packages/client"
+  ],
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "dev:server": "npm run dev -w @gd/server",
+    "dev:client": "npm run dev -w @gd/client",
+    "build": "npm run build -w @gd/client",
+    "start": "npm run start -w @gd/server",
+    "typecheck": "tsc -p packages/shared && tsc -p packages/server && tsc -p packages/client",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/ws": "^8.18.2",
+    "@vitejs/plugin-react": "^6.1.2",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
+}
