@@ -1,26 +1,26 @@
 import { useEffect, useRef, useState } from 'react';
-import { GROUND, OBJ, MAX_AP, getSkill, SKILLS, xpForLevel, type CharacterState, type EntityView } from '@gd/shared';
+import { GROUND, OBJ, rx, skillAp, skillRank, xpForLevel, type EntityView } from '@gd/shared';
 import { client, tryClient, useGame } from '../net/game';
+import { statusName, weaponVisual } from '../rules';
 import { Bar, Portrait, SkillIcon, SkillTooltip, tip } from './common';
 import { Icon } from './svgicons';
 
-const weaponOf = (ch: CharacterState) => {
-  const id = ch.equipment.mainhand?.baseId;
-  return id === 'w_bow' ? 'bow' : id === 'w_staff' ? 'staff' : id === 'w_wand' ? 'wand' : id === 'w_dagger' ? 'dagger' : id === 'w_heavy' ? 'axe' : 'sword';
-};
-
 export function PartyFrames() {
-  const { player, combat, selected, terms, version } = useGame((s) => ({ player: s.player, combat: s.combat, selected: s.selectedCharId, terms: s.world?.terminology, version: s.version }));
+  const { player, combat, selected, world, version } = useGame((s) => ({ player: s.player, combat: s.combat, selected: s.selectedCharId, world: s.world, version: s.version }));
   const c = client();
-  if (!player || !terms) return null;
+  if (!player || !world) return null;
   void version;
+  const r = world.ruleset;
+  const ix = rx(r);
+  const terms = r.terminology;
   return (
     <div className="party">
       {player.party.map((ch) => {
         const stats = c.charStats(ch);
         const ent = c.state.entities.get(ch.id);
         const active = combat?.activeId === ch.id;
-        const points = ch.unspentAttributes + ch.unspentSkillPoints;
+        const xpLo = xpForLevel(r, ch.level), xpHi = xpForLevel(r, ch.level + 1);
+        const maxed = ch.level >= r.progression.maxLevel;
         return (
           <div
             key={ch.id}
@@ -32,36 +32,39 @@ export function PartyFrames() {
             {...tip(
               <div>
                 <div className="tname gold">{ch.name}</div>
-                <div className="tsub">{terms.level} {ch.level} {c.state.world?.origins.find((o) => o.id === ch.originId)?.name}{ch.npcId ? ' · companion' : ''}</div>
-                <div className="tline">{terms.health} {Math.round(ch.hp)}/{stats.maxHp}</div>
-                <div className="tline">{terms.physArmor} {Math.round(ch.physArmor)}/{stats.maxPhys} · {terms.magArmor} {Math.round(ch.magArmor)}/{stats.maxMag}</div>
-                <div className="tline">{terms.stamina} {Math.round(ch.stamina)}/{stats.maxStamina}{c.state.world?.systems.dualEnergy ? ` · ${terms.focus} ${Math.round(ch.focus)}/${stats.maxFocus}` : ''}</div>
-                <div className="tsub">{terms.xp} {ch.xp}/{xpForLevel(ch.level + 1)}</div>
+                <div className="tsub">{terms.level} {ch.level} {ix.kin.get(ch.kinId)?.name} {ix.cls.get(ch.classId)?.name}{ch.npcId ? ' · companion' : ''}</div>
+                <div className="tline">{r.health.name} {Math.round(ch.hp)}/{stats.maxHp}{ch.barrier > 0 ? ` (+${Math.round(ch.barrier)})` : ''}</div>
+                {r.pools.map((pl) => (
+                  <div className="tline" key={pl.id}>{pl.name} {Math.round(ch.pools[pl.id] ?? 0)}/{stats.pools[pl.id]?.max ?? 0}</div>
+                ))}
+                <div className="tsub">{maxed ? `Maximum ${terms.level.toLowerCase()}` : `${terms.xp} ${ch.xp}/${xpHi}`}</div>
+                {ch.treePoints > 0 && <div className="tsub" style={{ color: 'var(--gold-2)' }}>{ch.treePoints} unspent point{ch.treePoints > 1 ? 's' : ''} (K)</div>}
               </div>,
             )}
           >
             <div className="portrait">
-              <Portrait size={52} sprite={c.assetUrl(ch.sprite)} colors={ch.colors} seed={ch.id} archetype={ch.archetype} weapon={weaponOf(ch)} />
+              <Portrait size={52} sprite={c.assetUrl(ch.sprite)} colors={ch.colors} seed={ch.id} archetype={ch.archetype} weapon={weaponVisual(ch)} />
             </div>
             <div className="grow" style={{ minWidth: 0 }}>
               <div className="name">
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ch.name}</span>
                 <span className="lvl">{ch.level}</span>
               </div>
-              {stats.maxPhys > 0 && <Bar thin value={ch.physArmor} max={stats.maxPhys} color="var(--phys)" />}
-              {stats.maxMag > 0 && <Bar thin value={ch.magArmor} max={stats.maxMag} color="var(--mag)" />}
-              <Bar value={ch.hp} max={stats.maxHp} color="linear-gradient(90deg,#8e1f18,#d8443a)" label={`${Math.round(ch.hp)} / ${stats.maxHp}`} />
-              <div className="row" style={{ gap: 3 }}>
-                <div className="grow"><Bar thin value={ch.stamina} max={stats.maxStamina} color="var(--stamina)" /></div>
-                {c.state.world?.systems.dualEnergy && <div className="grow"><Bar thin value={ch.focus} max={stats.maxFocus} color="var(--focus)" /></div>}
-              </div>
-              <Bar thin value={ch.xp - xpForLevel(ch.level)} max={xpForLevel(ch.level + 1) - xpForLevel(ch.level)} color="rgba(217,181,106,.7)" />
+              <Bar value={ch.hp} max={stats.maxHp} color={`linear-gradient(90deg, color-mix(in srgb, ${r.health.color} 55%, #000), ${r.health.color})`} label={`${Math.round(ch.hp)} / ${stats.maxHp}`} extra={ch.barrier} />
+              {r.pools.length > 0 && (
+                <div className="row" style={{ gap: 3 }}>
+                  {r.pools.map((pl) => (
+                    <div className="grow" key={pl.id}><Bar thin value={ch.pools[pl.id] ?? 0} max={stats.pools[pl.id]?.max ?? 0} color={pl.color} /></div>
+                  ))}
+                </div>
+              )}
+              <Bar thin value={maxed ? 1 : ch.xp - xpLo} max={maxed ? 1 : xpHi - xpLo} color="rgba(217,181,106,.7)" />
             </div>
-            {points > 0 && <div className="points">+{points}</div>}
+            {ch.treePoints > 0 && <div className="points">+{ch.treePoints}</div>}
             {ent?.statuses.length ? (
               <div style={{ position: 'absolute', bottom: -5, left: 60, display: 'flex', gap: 2 }}>
-                {ent.statuses.slice(0, 6).map((s) => (
-                  <span key={s.id} className="badge gray" style={{ padding: '0 4px', fontSize: 9 }}>{terms.statuses[s.id]} {s.turns}</span>
+                {ent.statuses.slice(0, 6).map((st) => (
+                  <span key={st.id} className="badge gray" style={{ padding: '0 4px', fontSize: 9, borderColor: ix.status.get(st.id)?.color }}>{statusName(st.id)} {st.turns}</span>
                 ))}
               </div>
             ) : null}
@@ -145,7 +148,7 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
   );
 }
 
-export function TopRight({ open }: { open: (p: 'inventory' | 'character' | 'skills' | 'quests' | 'map' | 'menu' | 'help' | 'craft') => void }) {
+export function TopRight({ open }: { open: (p: 'inventory' | 'character' | 'skills' | 'quests' | 'map' | 'menu' | 'help' | 'craft' | 'codex') => void }) {
   const { zone, world, clockAt, paused, player } = useGame((s) => ({ zone: s.zone, world: s.world, clockAt: s.clock?.minute, paused: s.clock?.paused, player: s.player }));
   const [, force] = useState(0);
   useEffect(() => {
@@ -156,7 +159,9 @@ export function TopRight({ open }: { open: (p: 'inventory' | 'character' | 'skil
   const day = Math.floor(m / 1440) + 1;
   const h = Math.floor((m % 1440) / 60), mm = Math.floor(m % 60);
   void clockAt;
-  const points = player?.party.reduce((s, c) => s + c.unspentAttributes + c.unspentSkillPoints, 0) ?? 0;
+  const points = player?.party.reduce((s, c) => s + c.treePoints, 0) ?? 0;
+  const r = world?.ruleset;
+  const crafting = !!r && (r.crafting.enabled || r.crafting.upgrades.enabled || r.crafting.enchanting.enabled);
   const btn = (p: Parameters<typeof open>[0], label: string, k: string, badge?: number) => (
     <button className="btn" onClick={() => open(p)} {...tip(<div><b>{label}</b> <span className="dim">({k})</span></div>)}>
       <Icon name={p} />
@@ -173,11 +178,12 @@ export function TopRight({ open }: { open: (p: 'inventory' | 'character' | 'skil
         {paused ? ' · paused' : ''}
       </div>
       <div className="menu-btns">
-        {btn('character', 'Character', 'C', points)}
+        {btn('character', 'Character', 'C')}
         {btn('inventory', 'Inventory', 'I')}
-        {btn('skills', 'Skills', 'K')}
-        {btn('quests', world?.terminology.quest ? `${world.terminology.quest} log` : 'Quests', 'J')}
-        {world?.systems.crafting && btn('craft', 'Crafting', 'B')}
+        {btn('skills', 'Talents', 'K', points)}
+        {btn('quests', r?.terminology.quest ? `${r.terminology.quest} log` : 'Quests', 'J')}
+        {crafting && btn('craft', 'Crafting', 'B')}
+        {btn('codex', 'Codex', 'X')}
         {btn('map', 'Map', 'M')}
         {btn('menu', 'Menu', 'Esc')}
       </div>
@@ -187,9 +193,8 @@ export function TopRight({ open }: { open: (p: 'inventory' | 'character' | 'skil
 
 export function startSkill(charId: string, skillId: string) {
   const c = client();
-  const s = getSkill(skillId);
+  const s = rx(c.r).skill.get(skillId);
   if (!s) return;
-  if (s.passive) return;
   if (s.targeting === 'self') {
     c.send({ t: 'use_skill', charId, skillId });
     c.update({ targeting: null });
@@ -201,24 +206,28 @@ export function startSkill(charId: string, skillId: string) {
 }
 
 export function ActionBar() {
-  const { player, combat, selected, targeting, terms, version } = useGame((s) => ({ player: s.player, combat: s.combat, selected: s.selectedCharId, targeting: s.targeting, terms: s.world?.terminology, version: s.version }));
+  const { player, combat, selected, targeting, world, version } = useGame((s) => ({ player: s.player, combat: s.combat, selected: s.selectedCharId, targeting: s.targeting, world: s.world, version: s.version }));
   const c = client();
   void version;
-  if (!player || !terms) return null;
+  if (!player || !world) return null;
+  const r = world.ruleset;
+  const ix = rx(r);
+  const terms = r.terminology;
   const ch = player.party.find((x) => x.id === selected) ?? player.party[0]!;
   const order = combat?.order.find((o) => o.id === ch.id);
   const myTurn = c.isMyTurn() && combat?.activeId === ch.id;
   const stats = c.charStats(ch);
   const ap = order?.ap ?? 0;
-  const hover = targeting?.skillId ? getSkill(targeting.skillId)?.ap ?? 0 : 0;
-  const naming = c.naming()!;
+  const tsk = targeting?.skillId ? ix.skill.get(targeting.skillId) : undefined;
+  const hover = tsk ? skillAp(tsk, stats) : 0;
   const slots = Array.from({ length: 10 }, (_, i) => ch.hotbar[i] ?? null);
+  const pips = Math.max(stats.apMax, ap);
   return (
     <div className="actionbar">
       {combat && order && (
         <div className="row" style={{ gap: 10 }}>
-          <div className="ap-row" {...tip(<div>{terms.actionPoints}: {ap} / {MAX_AP}. Moving costs 1 per {stats.tilesPerAp.toFixed(1)} tiles.</div>)}>
-            {Array.from({ length: MAX_AP }, (_, i) => (
+          <div className="ap-row" {...tip(<div><b>{terms.actionPoints}</b>: {ap} / {stats.apMax}<div className="tsub">+{stats.apPerTurn} each turn. Moving costs 1 per {stats.move.toFixed(1)} tiles.</div></div>)}>
+            {Array.from({ length: pips }, (_, i) => (
               <div key={i} className={`pip ${i < ap ? (myTurn && i >= ap - hover ? 'spend' : 'on') : ''}`} />
             ))}
           </div>
@@ -228,29 +237,31 @@ export function ActionBar() {
               <button className="btn sm ghost" onClick={() => c.send({ t: 'flee' })} {...tip('Leave combat if no enemy is near.')}>Flee</button>
             </>
           ) : (
-            <div className="badge gray" style={{ padding: '6px 12px' }}>{combat.order.find((o) => o.id === combat.activeId)?.name}'s turn…</div>
+            <div className="badge gray" style={{ padding: '6px 12px' }}>{combat.order.find((o) => o.id === combat.activeId)?.name}’s turn…</div>
           )}
         </div>
       )}
       <div className="slots">
         {slots.map((id, i) => {
-          if (!id) return <div key={i} className="slot na"><span className="key">{(i + 1) % 10}</span></div>;
-          const s = getSkill(id);
+          const s = id ? ix.skill.get(id) : undefined;
+          if (!id || !s) return <div key={i} className="slot na"><span className="key">{(i + 1) % 10}</span></div>;
           const cd = ch.cooldowns[id] ?? 0;
-          const cost = s?.cost ?? 0;
-          const poolKey = s && (s.school === 'elemental' || s.school === 'occult' || s.school === 'restoration') && c.state.world?.systems.dualEnergy ? 'focus' : 'stamina';
-          const lacking = cost > (poolKey === 'focus' ? ch.focus : ch.stamina) || (combat && order && (s?.ap ?? 0) > ap);
+          const cost = s.cost;
+          const sap = skillAp(s, stats);
+          const pool = cost ? ix.pool.get(cost.poolId) : undefined;
+          const lacking = (cost && cost.amount > (ch.pools[cost.poolId] ?? 0)) || (combat && order && sap > ap);
           return (
             <div
               key={i}
               className={`slot ${targeting?.skillId === id && targeting.charId === ch.id ? 'on' : ''} ${cd > 0 ? 'cd' : ''} ${lacking ? 'na' : ''}`}
               onClick={() => startSkill(ch.id, id)}
-              {...tip(<SkillTooltip id={id} ctx={naming} terms={terms} cooldown={cd} />)}
+              {...tip(<SkillTooltip id={id} r={r} stats={stats} cooldown={cd} rank={skillRank(r, ch, id)} />)}
             >
               <span className="key">{(i + 1) % 10}</span>
               <SkillIcon id={id} />
               {cd > 0 && <span className="cdn">{cd}</span>}
-              {combat && s && <span className="ap">{s.ap}</span>}
+              {combat && <span className="ap">{sap}</span>}
+              {cost && pool && <span className="cost" style={{ background: pool.color }} />}
             </div>
           );
         })}
@@ -266,12 +277,13 @@ export function TurnBar() {
   return (
     <div className="turnbar">
       <span className="round">Round {combat.round}</span>
-      {combat.order.map((o) => {
+      {combat.order.filter((o) => !(entities.get(o.id) as EntityView | undefined)?.dead).map((o) => {
         const e = entities.get(o.id) as EntityView | undefined;
-        const dead = !e || e.dead || e.hp <= 0;
+        // Downed allies stay in the order (they can be revived); unseen combatants get a placeholder.
+        const downed = !!e && e.hp <= 0;
         return (
-          <div key={o.id} className={`tp ${o.team} ${o.id === combat.activeId ? 'active' : ''} ${dead ? 'dead' : ''}`} {...tip(<div><b>{o.name}</b>{e ? <div className="tsub">{e.hp}/{e.maxHp} · {o.controllerUserId === userId ? 'you' : o.team === 'players' ? 'ally' : 'enemy'}</div> : null}</div>)}>
-            {e && <Portrait size={42} sprite={c.assetUrl(e.sprite)} colors={e.colors} shape={e.shape} archetype={e.archetype} weapon={e.weapon} seed={e.id} kind={e.kind} />}
+          <div key={o.id} className={`tp ${o.team} ${o.id === combat.activeId ? 'active' : ''} ${downed ? 'dead' : ''}`} {...tip(<div><b>{o.name}</b>{e ? <div className="tsub">{e.hp}/{e.maxHp} · {o.controllerUserId === userId ? 'you' : o.team === 'players' ? 'ally' : 'enemy'}</div> : <div className="tsub">out of sight</div>}</div>)}>
+            {e ? <Portrait size={42} sprite={c.assetUrl(e.sprite)} colors={e.colors} shape={e.shape} archetype={e.archetype} weapon={e.weapon} seed={e.id} kind={e.kind} /> : <span className="tp-unseen">{o.name.slice(0, 1)}</span>}
           </div>
         );
       })}
@@ -319,4 +331,3 @@ export function Narration() {
   );
 }
 
-export { SKILLS };

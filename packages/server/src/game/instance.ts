@@ -1,19 +1,20 @@
 /** One running save-state of a world: authoritative simulation for every connected player. */
 import {
-  BitSet, GAME_MINUTES_PER_DAY, ITEM_BASE, MAX_PARTY_SIZE, ORIGINS, RECIPES, REAL_MS_PER_GAME_MINUTE, Rng, SKILLS, STATUS_INFO, TRAP_INFO,
-  findPath, getSkill, hashFloat, itemName, itemPrice, killXp, sampleMotion, skillName, tilesInRadius, uid, ARCHETYPES, ORIGIN, ATTRIBUTES,
-  type ClientMessage, type DialogState, type EntityView, type FeatureDef, type FeatureState, type FxEvent, type InstanceState, type ItemInstance,
-  type JournalEntry, type LootPile, type Memory, type NpcRuntime, type PlayerState, type PlayerView, type QuestDef, type ServerMessage, type Surface,
-  type TradeState, type Vec2, type WorldDefinition, type ZoneRuntime, type CharacterState, type AttributeId, type EquipSlot, type MonsterArchetype,
+  BitSet, DIFFICULTIES, GAME_MINUTES_PER_DAY, MAX_PARTY_SIZE, REAL_MS_PER_GAME_MINUTE, RESPAWN_GAME_MINUTES, ROLE_VISUAL, RULESET_VERSION, Rng,
+  bagUpgradeCost, canAllocate, characterStats, curve, enchantCost, findPath, upgradeCost, hashFloat, itemPrice, knownSkills, refMit, rx, sampleMotion, skillRange, smoothPath, standPoint, tilesInRadius, uid,
+  type CharacterSpec, type ClientMessage, type DialogState, type DifficultyId, type EntityView, type FeatureDef, type FeatureState, type FxEvent, type InstanceState, type ItemInstance,
+  type JournalEntry, type LootPile, type Memory, type NpcRuntime, type PlayerState, type PlayerView, type QuestDef, type Ruleset, type ServerMessage, type Surface,
+  type TradeState, type MonsterRuntime, type SpawnDef, type Vec2, type WorldDefinition, type ZoneRuntime, type CharacterState, type MonsterArchetype, type SlotKind,
 } from '@gd/shared';
 import { Actor, CharActor, MonsterActor, NpcActor, WALK_SPEED } from './actors';
+import { fitPack } from '../rules/encounters';
 import { WorldCtx, type ZoneMap } from './worldctx';
 import { Combat, type CombatHost } from './combat';
-import { addStatus, checkItemUse, checkSkill, createSurface, dealDamage, executeSkill, healActor, isHostileTo, relation, trapPower, useConsumable, applySurface } from './effects';
+import { addStatus, checkItemUse, checkSkill, executeSkill, isHostileTo, springTrap, useConsumable, applySurface } from './effects';
 import { QuestEngine, objectivesOf, currentObjectiveIndex } from './quests';
 import { DialogueEngine } from './dialogue';
-import { addToInventory, makeItem, merchantStock, mergeStacks, removeFromInventory, rollLoot, rollRandomItem } from './loot';
-import { clampPools, createCharacter, grantXp, restoreFully, statsOf, autoSpend, defaultHotbar, type CharacterSpec } from './characters';
+import { addToInventory, affixValue, fitsInInventory, inventoryCapacity, makeItem, makeUnique, merchantStock, mergeStacks, removeFromInventory, rollLoot, rollRandomItem } from './loot';
+import { allocateNode, clampPools, createCharacter, defaultHotbar, grantXp, levelUpTo, regenerate, restoreFully } from './characters';
 
 export interface Conn {
   userId: string;
@@ -34,6 +35,7 @@ interface LiveZone {
 interface PendingInteraction {
   targetId: string;
   charId: string;
+  inspect?: boolean;
 }
 
 const TICK_MS = 100;
@@ -43,6 +45,7 @@ const JOIN_RADIUS = 13;
 export class GameInstance implements CombatHost {
   readonly ctx: WorldCtx;
   readonly world: WorldDefinition;
+  readonly r: Ruleset;
   readonly rng: Rng;
   readonly quests: QuestEngine;
   readonly dialogue: DialogueEngine;
@@ -65,7 +68,9 @@ export class GameInstance implements CombatHost {
 
   constructor(public state: InstanceState, world: WorldDefinition) {
     this.world = world;
+    this.r = world.ruleset;
     this.ctx = new WorldCtx(world);
+    state.difficulty ??= world.input.difficulty ?? 'normal';
     this.rng = new Rng(`${state.id}:${Date.now()}`);
     this.mergeDynamicItems();
     this.quests = new QuestEngine({
@@ -157,12 +162,12 @@ export class GameInstance implements CombatHost {
     const party: CharacterState[] = [];
     const inventory: ItemInstance[] = [];
     for (const spec of specs.slice(0, maxChars)) {
-      const { ch, inventory: inv } = createCharacter(w, spec, prng);
+      const { ch, inventory: inv } = createCharacter(this.r, w, spec, prng);
       party.push(ch);
-      addToInventory(inventory, inv);
+      addToInventory(this.r, inventory, inv);
     }
-    if (!party.length) party.push(createCharacter(w, { name, originId: 'o_warrior' }, prng).ch);
-    for (const ch of party) restoreFully(ch, w, party.length <= 1);
+    if (!party.length) party.push(createCharacter(this.r, w, { name, classId: this.r.classes[0]!.id, kinId: this.r.kins[0]!.id, presentation: 'androgynous', pronouns: 'they/them' }, prng).ch);
+    for (const ch of party) restoreFully(this.r, ch, party.length <= 1);
     const start = this.ctx.zones.get(w.startZoneId)!;
     const p: PlayerState = {
       userId,
@@ -170,7 +175,7 @@ export class GameInstance implements CombatHost {
       party,
       leaderId: party[0]!.id,
       gold: 60,
-      inventory: mergeStacks(inventory),
+      inventory: mergeStacks(this.r, inventory),
       zoneId: start.id,
       x: start.entry.x,
       y: start.entry.y,
@@ -182,6 +187,7 @@ export class GameInstance implements CombatHost {
       conversations: {},
       conversationSummaries: {},
       lastTownZoneId: start.id,
+      inventoryUpgrades: 0,
       revealedTraps: [],
       revealedArcs: [],
       stats: { kills: 0, deaths: 0, questsCompleted: 0, goldEarned: 0, trapsDisarmed: 0, itemsCrafted: 0 },
@@ -243,8 +249,8 @@ export class GameInstance implements CombatHost {
 
   private clientWorld() {
     const w = this.world;
-    const { zones, npcs, concept, arcs, quests, ending, generationLog, worldFacts, ...rest } = w;
-    void quests, ending, generationLog, worldFacts;
+    const { zones, npcs, concept, arcs, quests, ending, generationLog, worldFacts, rulesIntent, ...rest } = w;
+    void quests, ending, generationLog, worldFacts, rulesIntent;
     const { secret, ...publicConcept } = concept;
     void secret;
     return {
@@ -282,8 +288,8 @@ export class GameInstance implements CombatHost {
 
   private initNpc(npcId: string): NpcRuntime {
     const def = this.ctx.npcs.get(npcId)!;
-    const s = new NpcActor(def, { npcId, zoneId: def.zoneId, x: def.x, y: def.y, hp: 1, alive: true, hostileTo: [], disposition: {}, memories: [], stock: [], stockDay: -1, inventory: [], gold: 0 }, def.zoneId, this.world).stats();
-    const inventory = (def.inventory ?? []).map((u) => ({ id: uid('it'), baseId: this.world.uniqueItems[u]?.baseId ?? 'q_item', level: def.level, rarity: this.world.uniqueItems[u]?.rarity ?? 'rare', affixes: [], qty: 1, uniqueId: u, bound: true }) as ItemInstance);
+    const s = new NpcActor(def, { npcId, zoneId: def.zoneId, x: def.x, y: def.y, hp: 1, alive: true, hostileTo: [], disposition: {}, memories: [], stock: [], stockDay: -1, inventory: [], gold: 0 }, def.zoneId, this.r).stats();
+    const inventory = (def.inventory ?? []).map((u) => this.ctx.uniqueItems[u]).filter(Boolean).map((u) => makeUnique(this.r, u!, def.level));
     return { npcId, zoneId: def.zoneId, x: def.x, y: def.y, hp: s.maxHp, alive: true, hostileTo: [], disposition: {}, memories: [], stock: [], stockDay: -1, inventory, gold: def.role === 'merchant' ? 400 + def.level * 60 : 20 + def.level * 10 };
   }
 
@@ -305,30 +311,72 @@ export class GameInstance implements CombatHost {
     const rt = this.zoneRuntime(zoneId);
     z = { id: zoneId, map, rt, actors: new Map(), surfacesDirty: false, lootDirty: false, featuresDirty: new Set(), lastSurfaceDecay: Date.now() };
     this.zones.set(zoneId, z);
-    // Monsters (respawn the dead after their respawn day).
-    for (const s of map.def.spawns) {
-      const m = (rt.monsters[s.id] ??= { spawnId: s.id, hp: -1, dead: false, x: s.x, y: s.y });
-      if (m.dead && m.respawnDay !== undefined && m.respawnDay <= this.day()) {
-        m.dead = false;
-        m.hp = -1;
-        m.x = s.x;
-        m.y = s.y;
-        m.looted = false;
+    // Monsters. A slain pack comes back (for farming) once every member's respawn time has passed; bosses stay dead.
+    const due = (m: MonsterRuntime) => {
+      const at = m.respawnAt ?? (m.respawnDay !== undefined ? (m.respawnDay - 1) * GAME_MINUTES_PER_DAY : undefined);
+      return at !== undefined && at <= this.state.clock;
+    };
+    const groups = new Map<string, SpawnDef[]>();
+    for (const s of map.def.spawns) groups.set(s.groupId, [...(groups.get(s.groupId) ?? []), s]);
+    const extrasOf = (members: SpawnDef[]) => Object.values(rt.monsters).filter((m) => m.extraOf && members.some((s) => s.id === m.extraOf));
+    for (const members of groups.values()) {
+      const rts = members.map((s) => (rt.monsters[s.id] ??= { spawnId: s.id, hp: -1, dead: false, x: s.x, y: s.y }));
+      const extras = extrasOf(members);
+      const gone = (m: MonsterRuntime) => m.absent || (m.dead && due(m));
+      if (rts.some((m) => !m.absent) && rts.every(gone) && extras.every((m) => m.dead)) {
+        members.forEach((s, i) => Object.assign(rts[i]!, { dead: false, hp: -1, x: s.x, y: s.y, looted: false, respawnAt: undefined, respawnDay: undefined, diedAt: undefined, absent: undefined, scale: undefined, elite: undefined }));
+        for (const e of extras) delete rt.monsters[e.spawnId];
       }
-      if (m.dead) continue;
+      // Fit untouched packs to the party that will meet them (once per spawn).
+      if (rts.every((m) => m.scale === undefined)) {
+        if (rts.every((m) => !m.dead && m.hp === -1)) this.fitGroup(map, members, rts);
+        else for (const m of rts) m.scale = 1;
+      }
+    }
+    const spawnFor = (m: MonsterRuntime): SpawnDef | undefined => {
+      if (!m.extraOf) return map.def.spawns.find((s) => s.id === m.spawnId);
+      const base = map.def.spawns.find((s) => s.id === m.extraOf);
+      return base && { ...base, id: m.spawnId, x: m.x, y: m.y, bossId: undefined };
+    };
+    for (const m of Object.values(rt.monsters)) {
+      if (m.dead || m.absent) continue;
+      const s = spawnFor(m);
+      if (!s) continue;
       const fam = this.ctx.family(s.familyId) ?? this.world.families[0]!;
-      const actor = new MonsterActor(s, m, fam, s.bossId ? this.ctx.bosses.get(s.bossId) : undefined, zoneId);
+      const actor = new MonsterActor(s, m, fam, s.bossId ? this.ctx.bosses.get(s.bossId) : undefined, zoneId, this.r, () => this.state.difficulty);
       z.actors.set(actor.id, actor);
     }
     for (const rtn of Object.values(this.state.npcs)) {
       if (rtn.zoneId !== zoneId || !rtn.alive || rtn.partyOf || rtn.fled) continue;
       const def = this.ctx.npcs.get(rtn.npcId);
       if (!def) continue;
-      const a = new NpcActor(def, rtn, zoneId, this.world);
+      const a = new NpcActor(def, rtn, zoneId, this.r);
       z.actors.set(a.id, a);
     }
     this.applyGatherings(z);
     return z;
+  }
+
+  /** Fit a fresh pack to the largest party in this journey and roll the difficulty's encounter adjustments. */
+  private fitGroup(map: ZoneMap, members: SpawnDef[], rts: MonsterRuntime[]) {
+    const partySize = Math.max(1, ...Object.values(this.state.players).map((p) => p.party.length));
+    const fit = fitPack(this.r, members.map((s) => ({ id: s.id, role: s.archetype, boss: !!s.bossId, elite: s.elite })), { mode: this.world.input.combatMode, partySize, difficulty: this.state.difficulty, rand: () => this.rng.next() });
+    members.forEach((s, i) => {
+      const m = rts[i]!;
+      m.scale = fit.scale;
+      m.absent = fit.absent.includes(s.id) || undefined;
+      m.elite = fit.eliteId === s.id || undefined;
+    });
+    if (fit.extraOf) {
+      const base = members.find((s) => s.id === fit.extraOf)!;
+      const W = map.def.width;
+      const free = (x: number, y: number) => x >= 0 && y >= 0 && x < W && y < map.def.height && !map.solid[y * W + x] && !members.some((s) => s.x === x && s.y === y);
+      const spot = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]].map(([dx, dy]) => ({ x: base.x + dx!, y: base.y + dy! })).find((p) => free(p.x, p.y));
+      if (spot) {
+        const id = `${base.id}_x`;
+        this.zoneRuntime(map.def.id).monsters[id] = { spawnId: id, hp: -1, dead: false, x: spot.x, y: spot.y, extraOf: base.id, scale: fit.scale };
+      }
+    }
   }
 
   private maybeUnloadZone(zoneId: string) {
@@ -381,7 +429,7 @@ export class GameInstance implements CombatHost {
 
   isFree(zoneId: string, x: number, y: number, ignoreId?: string): boolean {
     if (!this.passable(zoneId, x, y)) return false;
-    for (const a of this.actorsInZone(zoneId)) if (a.id !== ignoreId && (a.alive() || (a instanceof CharActor && a.ch.downed)) && Math.round(a.x) === x && Math.round(a.y) === y) return false;
+    for (const a of this.actorsInZone(zoneId)) if (a.id !== ignoreId && (a.alive() || a.downed()) && Math.round(a.x) === x && Math.round(a.y) === y) return false;
     return true;
   }
 
@@ -423,7 +471,7 @@ export class GameInstance implements CombatHost {
     const base = this.nearestFree(p.zoneId, at ?? { x: Math.round(p.x), y: Math.round(p.y) });
     p.party.forEach((ch, i) => {
       const spot = i === 0 ? base : this.nearestFree(p.zoneId, { x: base.x + ((i % 2) ? 1 : -1), y: base.y + (i > 1 ? 1 : 0) });
-      const a = new CharActor(ch, p.userId, p.zoneId, spot.x, spot.y, this.world, () => this.loneWolf(p));
+      const a = new CharActor(ch, p.userId, p.zoneId, spot.x, spot.y, this.r, () => this.loneWolf(p), this.world);
       z.actors.set(a.id, a);
       a.dirty = true;
     });
@@ -518,7 +566,7 @@ export class GameInstance implements CombatHost {
         rt.x = spot.x;
         rt.y = spot.y;
         const def = this.ctx.npcs.get(id)!;
-        const a = (z.actors.get(id) as NpcActor) ?? new NpcActor(def, rt, z.id, this.world);
+        const a = (z.actors.get(id) as NpcActor) ?? new NpcActor(def, rt, z.id, this.r);
         a.x = spot.x;
         a.y = spot.y;
         a.homeX = spot.x;
@@ -600,7 +648,7 @@ export class GameInstance implements CombatHost {
       .map((id) => this.ctx.zones.get(id)!)
       .filter((z) => z && z.kind === 'town')
       .map((z) => ({ zoneId: z.id, name: z.name }));
-    return { ...p, questDefs, loneWolf: this.loneWolf(p), npcMarkers, dynamicItems, waypoints, isOwner: this.state.ownerId === p.userId };
+    return { ...p, questDefs, loneWolf: this.loneWolf(p), npcMarkers, dynamicItems, waypoints, isOwner: this.state.ownerId === p.userId, difficulty: this.state.difficulty };
   }
 
   sendPlayer(userId: string) {
@@ -749,20 +797,30 @@ export class GameInstance implements CombatHost {
     }
   }
 
+  /** Trap sense as a 0..1 skill level relative to the character's level. */
+  private senseLevel(a: CharActor): number {
+    const s = a.stats().trapSense / Math.max(1, refMit(this.r, a.level));
+    return s / (s + 0.5);
+  }
+
   private detectTraps(z: LiveZone, a: CharActor, p: PlayerState) {
-    const stats = a.stats();
-    const keen = p.party.some((c) => c.skills.includes('keen_eye'));
-    const radius = 2.5 + Math.max(0, stats.attributes.wits - 10) * 0.25 + (keen ? 3 : 0);
-    const chance = 0.45 + (stats.attributes.wits - 10) * 0.04 + (keen ? 0.35 : 0);
+    if (!this.r.systems.traps) return;
+    const sense = this.senseLevel(a);
+    const radius = 2.5 + sense * 6;
+    const chance = 0.4 + sense * 0.5;
     for (const f of z.map.def.features) {
       if (f.kind !== 'trap' || p.revealedTraps.includes(f.id)) continue;
       const fr = z.rt.features[f.id];
       if (fr?.disarmed || fr?.triggered) continue;
-      if (Math.hypot(f.x - a.x, f.y - a.y) > radius) continue;
-      if (hashFloat(f.id, a.id, Math.floor(radius)) < chance) {
+      const d = Math.hypot(f.x - a.x, f.y - a.y);
+      if (d > radius) continue;
+      // A fresh roll each time a character gets a tile closer, and the odds improve up close.
+      const band = Math.ceil(d);
+      const odds = Math.min(0.95, chance + (d <= 1.5 ? 0.25 : 0));
+      if (hashFloat(f.id, a.id, band) < odds) {
         p.revealedTraps.push(f.id);
         z.featuresDirty.add(f.id);
-        this.sendTo(p.userId, { t: 'toast', text: `${a.name} spots a ${this.world.trapNames[f.trapKind ?? 'spike'] ?? 'trap'}!`, kind: 'info' });
+        this.sendTo(p.userId, { t: 'toast', text: `${a.name} spots a ${this.trapName(f)}!`, kind: 'info' });
         this.sendTo(p.userId, { t: 'zone', ...this.zonePayload(p.userId) });
         this.markPlayer(p.userId);
       }
@@ -792,11 +850,15 @@ export class GameInstance implements CombatHost {
       const t = path[i]!;
       const trap = z.map.def.features.find((f) => f.kind === 'trap' && f.x === t.x && f.y === t.y && !z.rt.features[f.id]?.disarmed && !z.rt.features[f.id]?.triggered);
       if (trap) {
-        setTimeout(() => this.triggerTrap(z, trap, a), Combat.instant ? 0 : (i / WALK_SPEED) * 1000);
+        this.after(Combat.instant ? 0 : (i / WALK_SPEED) * 1000, () => this.triggerTrap(z, trap, a));
         return i;
       }
     }
     return -1;
+  }
+
+  private trapName(f: FeatureDef): string {
+    return rx(this.r).trap.get(f.trapKind ?? '')?.name ?? this.r.traps[0]?.name ?? 'trap';
   }
 
   private triggerTrap(z: LiveZone, trap: FeatureDef, victim: Actor) {
@@ -804,25 +866,15 @@ export class GameInstance implements CombatHost {
     if (fr.triggered || fr.disarmed) return;
     fr.triggered = true;
     z.featuresDirty.add(trap.id);
-    const kind = trap.trapKind ?? 'spike';
-    const info = TRAP_INFO[kind];
-    const power = trapPower(trap.trapLevel ?? 1) * info.mult;
+    const def = rx(this.r).trap.get(trap.trapKind ?? '') ?? this.r.traps[0];
     if (!victim.combatId) victim.motion = null;
     victim.x = trap.x;
     victim.y = trap.y;
     victim.dirty = true;
-    this.fx(z.id, [{ kind: 'trap', x: trap.x, y: trap.y, text: this.world.trapNames[kind] ?? info.defaultName, element: info.damage, radius: info.radius }]);
-    const targets = info.radius > 0 ? [...z.actors.values()].filter((a) => a.alive() && Math.hypot(a.x - trap.x, a.y - trap.y) <= info.radius + 0.01 && a.team() === 'players') : [victim];
-    for (const t of targets) {
-      dealDamage(this, null, t, Math.round(power * (0.85 + this.rng.next() * 0.3)), info.damage);
-      if (info.status && t.alive()) addStatus(this, t, info.status, 2, power);
-    }
-    if (info.surface) createSurface(this, z.id, trap, info.surface, info.radius || 1, 3, power);
-    if (kind === 'alarm') {
-      this.log(z.id, 'An alarm rings out!', '#ff8060');
-      const nearby = [...z.actors.values()].filter((a) => a instanceof MonsterActor && a.alive() && !a.combatId && Math.hypot(a.x - trap.x, a.y - trap.y) < 18);
-      if (nearby.length) this.startCombat(z, nearby[0]!, victim, false);
-    }
+    const radius = def?.radius ?? 0;
+    this.fx(z.id, [{ kind: 'trap', x: trap.x, y: trap.y, text: def?.name ?? 'Trap', element: def?.subtypeId ?? def?.typeId, radius }]);
+    const targets = radius > 0 ? [...z.actors.values()].filter((a) => a.alive() && Math.hypot(a.x - trap.x, a.y - trap.y) <= radius + 0.01 && a.team() === 'players') : [victim];
+    springTrap(this, z.id, def?.id ?? '', trap.trapLevel ?? 1, trap, targets);
   }
 
   private monsterIdle(z: LiveZone, a: MonsterActor, now: number) {
@@ -869,22 +921,23 @@ export class GameInstance implements CombatHost {
     }
   }
 
+  /** Out of combat, health and pools always refill (every fight starts fresh). */
   private regen(z: LiveZone) {
     for (const a of z.actors.values()) {
       if (a.combatId || !(a instanceof CharActor)) continue;
       if (a.ch.downed) continue;
-      const s = a.stats();
-      const before = [a.hp, a.physArmor, a.magArmor, a.stamina, a.focus];
-      a.hp = Math.min(s.maxHp, a.hp + Math.max(1, s.maxHp * 0.02));
-      a.physArmor = Math.min(s.maxPhys, a.physArmor + Math.max(1, s.maxPhys * 0.15));
-      a.magArmor = Math.min(s.maxMag, a.magArmor + Math.max(1, s.maxMag * 0.15));
-      a.stamina = Math.min(s.maxStamina, a.stamina + Math.max(1, s.maxStamina * 0.08));
-      a.focus = Math.min(s.maxFocus, a.focus + Math.max(1, s.maxFocus * 0.08));
-      // Real-time skill cooldowns tick down each second out of combat.
+      const p = this.state.players[a.userId];
+      let changed = regenerate(this.r, a.ch, !!p && this.loneWolf(p), 1);
       for (const k of Object.keys(a.cooldowns)) if (--a.cooldowns[k]! <= 0) delete a.cooldowns[k];
-      if (a.statuses.length) a.statuses = a.statuses.filter((st) => !STATUS_INFO[st.id].harmful || this.rng.chance(0.85)).map((st) => ({ ...st, turns: st.turns - (this.rng.chance(0.3) ? 1 : 0) })).filter((st) => st.turns > 0);
-      const after = [a.hp, a.physArmor, a.magArmor, a.stamina, a.focus];
-      if (after.some((v, i) => Math.round(v) !== Math.round(before[i]!))) {
+      if (a.statuses.length) {
+        a.statuses = a.statuses.map((st) => ({ ...st, turns: st.turns - (rx(this.r).status.get(st.id)?.harmful ? 1 : 0.34) })).filter((st) => st.turns > 0);
+        changed = true;
+      }
+      if (a.barrier > 0) {
+        a.barrier = 0;
+        changed = true;
+      }
+      if (changed) {
         a.dirty = true;
         this.markPlayer(a.userId);
       }
@@ -929,16 +982,19 @@ export class GameInstance implements CombatHost {
     const existing = existingId ? this.combats.get(existingId) : undefined;
     const combat = existing ?? new Combat(uid('cb'), z.id, this);
     const enemies = new Set<Actor>();
+    const seen = new Set<Actor>();
     const addEnemy = (e: Actor) => {
-      if (enemies.has(e) || !e.alive()) return;
-      enemies.add(e);
+      if (seen.has(e)) return;
+      seen.add(e);
+      if (e.alive()) enemies.add(e);
+      // The whole pack fights together, even if the one that was hit is already dead (one-shot).
       if (e instanceof MonsterActor) {
         for (const o of z.actors.values()) if (o instanceof MonsterActor && o.alive() && o.spawn.groupId === e.spawn.groupId) addEnemy(o);
       }
     };
     addEnemy(enemy);
-    // Nearby hostile monsters join too.
-    for (const e of [...enemies]) for (const o of z.actors.values()) if (o.alive() && (o instanceof MonsterActor) && !o.combatId && Math.hypot(o.x - e.x, o.y - e.y) < 5) addEnemy(o);
+    // Only stragglers standing right next to the pack join; other packs stay put.
+    for (const e of [...enemies]) for (const o of z.actors.values()) if (o.alive() && o instanceof MonsterActor && !o.combatId && !enemies.has(o) && Math.hypot(o.x - e.x, o.y - e.y) < 2.2) addEnemy(o);
     const players = new Set<Actor>();
     for (const o of z.actors.values()) {
       if (!(o instanceof CharActor) || !o.alive() || o.combatId) continue;
@@ -1004,27 +1060,30 @@ export class GameInstance implements CombatHost {
     this.combats.delete(c.id);
     const z = this.zones.get(c.zoneId);
     const users = this.playersInCombat(c);
-    for (const a of c.participants()) {
-      a.dirty = true;
-      if (a instanceof MonsterActor && a.alive()) a.restoreArmor();
-    }
+    for (const a of c.participants()) a.dirty = true;
     if (victory) {
       for (const a of c.participants()) {
         if (a instanceof CharActor) {
+          // Downed allies always get up after a won fight (the ruleset's revive mode governs reviving *during* combat).
           if (a.ch.downed) {
             a.ch.downed = false;
-            a.ch.hp = Math.max(1, Math.round(a.stats().maxHp * 0.2));
+            a.ch.hp = 1;
           }
-          a.statuses = a.statuses.filter((s) => !STATUS_INFO[s.id].harmful);
+          a.statuses = [];
           a.ch.cooldowns = {};
+          a.barrier = 0;
+          a.barrierTurns = 0;
         }
       }
       for (const u of users) this.sendTo(u, { t: 'toast', text: 'Victory!', kind: 'good' });
-      if (z) z.rt.surfaces = z.rt.surfaces.filter((s) => s.type === 'water' || s.type === 'ice'), (z.surfacesDirty = true);
+      if (z) {
+        z.rt.surfaces = z.rt.surfaces.filter((s) => !rx(this.r).surface.get(s.type)?.dot);
+        z.surfacesDirty = true;
+      }
     } else {
-      for (const u of users) this.defeat(u);
+      for (const u of users) this.defeat(u, c.zoneId);
       // Survivors heal up and return home.
-      for (const a of c.participants()) if (a instanceof MonsterActor && a.alive()) a.resetPools();
+      for (const a of c.participants()) if ((a instanceof MonsterActor || a instanceof NpcActor) && a.alive()) a.resetPools();
     }
     for (const u of users) {
       this.sendTo(u, { t: 'combat', combat: null });
@@ -1034,20 +1093,30 @@ export class GameInstance implements CombatHost {
     this.markDirty();
   }
 
-  private defeat(userId: string) {
+  /** Death mode `corpse_run`: wake in the last town; the bag stays on your remains (equipment and quest items come along). */
+  private defeat(userId: string, zoneId?: string) {
     const p = this.state.players[userId];
     if (!p) return;
     p.stats.deaths++;
-    const lost = Math.floor(p.gold * 0.1);
-    p.gold -= lost;
-    for (const ch of p.party) {
-      restoreFully(ch, this.world, this.loneWolf(p));
-      ch.hp = Math.round(ch.hp * 0.5);
+    const leader = this.leader(p);
+    const where = { zoneId: zoneId ?? p.zoneId, x: Math.round(leader?.x ?? p.x), y: Math.round(leader?.y ?? p.y) };
+    const dropped = p.inventory.filter((i) => !i.bound && rx(this.r).item.get(i.baseId)?.category !== 'quest' && rx(this.r).item.get(i.baseId)?.category !== 'key');
+    p.inventory = p.inventory.filter((i) => !dropped.includes(i));
+    const gold = this.r.death.keepGold ? 0 : p.gold;
+    if (!this.r.death.keepGold) p.gold = 0;
+    if (dropped.length || gold) {
+      const zr = this.zoneRuntime(where.zoneId);
+      zr.loot.push({ id: uid('lp'), x: where.x, y: where.y, items: dropped, gold, label: `${p.name}'s remains`, ownerUserId: userId, createdAt: Date.now(), corpse: true });
+      const lz = this.zones.get(where.zoneId);
+      if (lz) lz.lootDirty = true;
     }
-    this.journal(p, 'combat', `Defeated. You wake in ${this.ctx.zones.get(p.lastTownZoneId)?.name}${lost ? `, ${lost} ${this.world.terminology.gold} lighter` : ''}.`);
-    this.sendTo(userId, { t: 'narration', title: 'Defeat', text: `Darkness takes you... and then, slowly, light. You wake in ${this.ctx.zones.get(p.lastTownZoneId)?.name}, sore but alive.${lost ? ` Your purse feels ${lost} ${this.world.terminology.gold} lighter.` : ''}`, style: 'death' });
+    for (const ch of p.party) restoreFully(this.r, ch, this.loneWolf(p));
+    const town = this.ctx.zones.get(p.lastTownZoneId)?.name ?? 'town';
+    const place = this.ctx.zones.get(where.zoneId)?.name ?? 'the wilds';
+    this.journal(p, 'combat', `Defeated in ${place}. Woke in ${town}.${dropped.length ? ' Your pack lies where you fell.' : ''}`);
+    this.sendTo(userId, { t: 'narration', title: 'Defeat', text: `Darkness takes you... and then, slowly, light. You wake in ${town}, sore but alive.${dropped.length ? ` Your pack — ${dropped.length} item${dropped.length > 1 ? 's' : ''} — still lies where you fell in ${place}. Your gear is still on your back.` : ''}`, style: 'death' });
     const waypoint = this.ctx.zones.get(p.lastTownZoneId)?.features.find((f) => f.kind === 'waypoint');
-    setTimeout(() => this.transfer(p, p.lastTownZoneId, undefined, waypoint ? { x: waypoint.x, y: waypoint.y + 1 } : undefined), 50);
+    this.after(50, () => this.transfer(p, p.lastTownZoneId, undefined, waypoint ? { x: waypoint.x, y: waypoint.y + 1 } : undefined));
   }
 
   // =================================================================== damage hooks
@@ -1078,7 +1147,7 @@ export class GameInstance implements CombatHost {
     if (target instanceof MonsterActor) {
       target.rt.dead = true;
       target.rt.diedAt = Date.now();
-      target.rt.respawnDay = target.boss ? undefined : this.day() + 3;
+      target.rt.respawnAt = target.boss ? undefined : this.state.clock + RESPAWN_GAME_MINUTES;
       target.motion = null;
       target.dirty = true;
       this.fx(z.id, [{ kind: 'death', targetId: target.id, x: target.x, y: target.y }]);
@@ -1087,7 +1156,7 @@ export class GameInstance implements CombatHost {
       const participants = combat ? combat.participants() : source ? [source] : [];
       for (const a of participants) if (a instanceof CharActor) killers.add(a.userId);
       if (source instanceof CharActor) killers.add(source.userId);
-      const xp = killXp(target.level, (target.boss ? 5 : target.spawn.elite ? 2 : 1) * ARCHETYPES[target.archetype].xp);
+      const xp = Math.round(curve(this.r.progression.killXp, target.level) * (target.boss ? 5 : target.elite ? 2 : 1) * ROLE_VISUAL[target.archetype].xp);
       for (const u of killers) {
         const p = this.state.players[u];
         if (!p) continue;
@@ -1100,22 +1169,22 @@ export class GameInstance implements CombatHost {
         }
       }
       // Loot
-      const lootFind = Math.max(0, ...[...killers].flatMap((u) => this.state.players[u]?.party.map((c) => statsOf(c, this.world, false).lootFind + (c.skills.includes('treasure_hunter') ? 30 : 0)) ?? [0]));
-      const loot = rollLoot(this.world, this.rng, target.level, { lootFind, boss: !!target.boss, elite: target.spawn.elite });
+      const lootFind = Math.max(0, ...[...killers].flatMap((u) => this.state.players[u]?.party.map((c) => characterStats(this.r, c).lootFind) ?? [0]));
+      const loot = rollLoot(this.r, this.rng, target.level, { lootFind, boss: !!target.boss, elite: target.elite, mult: this.r.difficulty[this.state.difficulty]?.lootMult ?? 1 });
       for (const u of target.boss?.drops ?? []) {
-        const def = this.world.uniqueItems[u];
-        if (def) loot.items.push({ id: uid('it'), baseId: def.baseId, level: target.level, rarity: def.rarity, affixes: def.affixes ?? [], qty: 1, uniqueId: u, bound: !!def.questItem, element: def.element });
+        const def = this.ctx.uniqueItems[u];
+        if (def) loot.items.push(makeUnique(this.r, def, target.level));
       }
       if (loot.items.length || loot.gold) {
         z.rt.loot.push({ id: uid('lp'), x: Math.round(target.x), y: Math.round(target.y), items: loot.items, gold: loot.gold, label: target.name, createdAt: Date.now() });
         z.lootDirty = true;
       }
-      setTimeout(() => {
+      this.after(2500, () => {
         if (z.actors.get(target.id) === target && !target.alive()) {
           z.actors.delete(target.id);
           this.broadcastZone(z.id, { t: 'entities', upsert: [], remove: [target.id] });
         }
-      }, 2500);
+      });
       this.markDirty();
     } else if (target instanceof NpcActor) {
       const killer = source instanceof CharActor ? source.userId : undefined;
@@ -1151,12 +1220,12 @@ export class GameInstance implements CombatHost {
           this.npcGossip(target.def.id, `${p.name} killed ${target.def.name}.`, killer, 'world');
         }
       }
-      setTimeout(() => {
+      this.after(2500, () => {
         if (z.actors.get(target.id) === target) {
           z.actors.delete(target.id);
           this.broadcastZone(z.id, { t: 'entities', upsert: [], remove: [target.id] });
         }
-      }, 2500);
+      });
     } else if (target instanceof CharActor) {
       target.ch.downed = true;
       target.motion = null;
@@ -1167,11 +1236,11 @@ export class GameInstance implements CombatHost {
         // Downed outside combat (traps): everyone else carries them; if all are down it's a defeat.
         if (this.charActors(p).every((a) => !a.alive())) this.defeat(p.userId);
         else
-          setTimeout(() => {
+          this.after(3000, () => {
             target.ch.downed = false;
             target.ch.hp = 1;
             target.dirty = true;
-          }, 3000);
+          });
       }
       if (p && p.leaderId === target.id) {
         const next = this.charActors(p).find((a) => a.alive());
@@ -1190,15 +1259,15 @@ export class GameInstance implements CombatHost {
 
   private grantPartyXp(p: PlayerState, amount: number) {
     for (const ch of p.party) {
-      const gained = grantXp(ch, amount, this.world);
+      const gained = grantXp(this.r, ch, amount);
       if (gained > 0) {
         const a = this.zones.get(p.zoneId)?.actors.get(ch.id);
         if (a) {
           a.dirty = true;
-          this.fx(p.zoneId, [{ kind: 'levelup', targetId: ch.id, text: `${this.world.terminology.level} ${ch.level}` }]);
+          this.fx(p.zoneId, [{ kind: 'levelup', targetId: ch.id, text: `${this.r.terminology.level} ${ch.level}` }]);
         }
-        this.journal(p, 'system', `${ch.name} reached ${this.world.terminology.level.toLowerCase()} ${ch.level}.`);
-        this.sendTo(p.userId, { t: 'toast', text: `${ch.name} reached ${this.world.terminology.level} ${ch.level}!`, kind: 'good' });
+        this.journal(p, 'system', `${ch.name} reached ${this.r.terminology.level.toLowerCase()} ${ch.level}.`);
+        this.sendTo(p.userId, { t: 'toast', text: `${ch.name} reached ${this.r.terminology.level} ${ch.level}!`, kind: 'good' });
       }
     }
     this.markPlayer(p.userId);
@@ -1212,13 +1281,13 @@ export class GameInstance implements CombatHost {
     try {
       switch (msg.t) {
         case 'move': return this.cmdMove(p, msg.x, msg.y, msg.charId);
-        case 'interact': return this.cmdInteract(p, msg.targetId, msg.charId);
+        case 'interact': return this.cmdInteract(p, msg.targetId, msg.charId, msg.inspect);
         case 'talk': return void this.dialogue.say(userId, msg.text, { giveItemId: msg.giveItemId, giveGold: msg.giveGold, useSkillId: msg.useSkillId });
         case 'end_dialog': return this.endDialog(userId);
         case 'use_skill': return this.cmdSkill(p, msg.charId, msg.skillId, msg.targetId, msg.x, msg.y);
         case 'use_item': return this.cmdItem(p, msg.charId, msg.itemId, msg.targetId, msg.x, msg.y);
         case 'equip': return this.cmdEquip(p, msg.charId, msg.itemId);
-        case 'unequip': return this.cmdUnequip(p, msg.charId, msg.slot as EquipSlot);
+        case 'unequip': return this.cmdUnequip(p, msg.charId, msg.slot);
         case 'drop_item': return this.cmdDrop(p, msg.itemId, msg.qty);
         case 'end_turn': return this.cmdEndTurn(p);
         case 'flee': return this.cmdFlee(p);
@@ -1228,11 +1297,22 @@ export class GameInstance implements CombatHost {
         case 'craft': return this.cmdCraft(p, msg.recipeId);
         case 'take_loot': return this.cmdTakeLoot(p, msg.sourceId, msg.itemId, msg.all);
         case 'close_loot': this.lootOpen.delete(userId); return this.sendTo(userId, { t: 'loot', loot: null });
-        case 'allocate': return this.cmdAllocate(p, msg.charId, msg.attribute);
-        case 'learn_skill': return this.cmdLearn(p, msg.charId, msg.skillId);
+        case 'allocate': return this.cmdAllocate(p, msg.charId, msg.nodeId);
+        case 'upgrade_item': return this.cmdUpgrade(p, msg.itemId, msg.charId);
+        case 'enchant_item': return this.cmdEnchant(p, msg.itemId, msg.affixIndex, msg.charId);
+        case 'buy_inventory_upgrade': return this.cmdBuyBagSpace(p, msg.npcId);
+        case 'set_difficulty': {
+          if (this.state.ownerId !== userId || !DIFFICULTIES.includes(msg.difficulty)) return;
+          this.state.difficulty = msg.difficulty;
+          for (const z of this.zones.values()) for (const a of z.actors.values()) if (a instanceof MonsterActor) a.dirty = true;
+          this.sendTo(userId, { t: 'toast', text: `Difficulty: ${this.r.difficulty[msg.difficulty]?.name ?? msg.difficulty}`, kind: 'info' });
+          this.markDirty();
+          return this.markPlayer(userId);
+        }
         case 'set_hotbar': {
           const ch = p.party.find((c) => c.id === msg.charId);
-          if (ch) ch.hotbar = msg.hotbar.slice(0, 10).map((s) => (s && (s === 'attack' || ch.skills.includes(s)) ? s : null));
+          const known = ch ? knownSkills(this.r, ch) : [];
+          if (ch) ch.hotbar = msg.hotbar.slice(0, 10).map((s) => (s && known.includes(s) ? s : null));
           return this.markPlayer(userId);
         }
         case 'set_leader': {
@@ -1272,6 +1352,21 @@ export class GameInstance implements CombatHost {
 
   hardSave?: (p: PlayerState, name: string) => void;
 
+  /** CombatHost: run later on a real timer (game time = real time here). */
+  after(ms: number, fn: () => void) {
+    setTimeout(fn, ms);
+  }
+
+  /** AI-driven companions may drink healing potions from their party's bag. */
+  aiPotions(a: Actor): { item: ItemInstance; consume: () => void }[] {
+    if (!(a instanceof CharActor) || !a.ch.npcId) return [];
+    const p = this.state.players[a.userId];
+    if (!p) return [];
+    return p.inventory
+      .filter((i) => rx(this.r).item.get(i.baseId)?.use?.effects.some((e) => e.kind === 'heal'))
+      .map((item) => ({ item, consume: () => void removeFromInventory(p.inventory, item.id, 1) }));
+  }
+
   private charFor(p: PlayerState, charId?: string): CharActor | undefined {
     const all = this.charActors(p);
     return (charId ? all.find((a) => a.id === charId) : undefined) ?? this.leader(p);
@@ -1291,18 +1386,26 @@ export class GameInstance implements CombatHost {
       const c = this.combatOf(inCombat)!;
       const active = c.active;
       if (!(active instanceof CharActor) || active.userId !== p.userId || !c.isHumanControlled(active)) return this.sendError(p.userId, 'Not your turn.');
-      void c.move(active, { x: tx, y: ty }).then((err) => err && this.sendError(p.userId, err));
+      const res = c.move(active, { x: tx, y: ty });
+      if (res.error) this.sendError(p.userId, res.error);
       return;
     }
     this.pending.delete(p.userId);
     this.pendingSkill.delete(p.userId);
     const leader = this.charFor(p, charId);
     if (!leader || !leader.alive()) return;
-    this.walkParty(p, leader, { x: tx, y: ty }, 0);
+    // Outside combat the party walks to the exact point clicked, not just the tile centre.
+    this.walkParty(p, leader, { x: tx, y: ty }, 0, Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined);
+    this.closeDialogOnMove(p);
+  }
+
+  /** Walking away ends a conversation. */
+  private closeDialogOnMove(p: PlayerState) {
+    if (this.dialogue.session(p.userId)) this.endDialog(p.userId);
   }
 
   /** Path the leader to a target; followers trail behind. */
-  private walkParty(p: PlayerState, leader: CharActor, target: Vec2, stopWithin: number): boolean {
+  private walkParty(p: PlayerState, leader: CharActor, target: Vec2, stopWithin: number, point?: Vec2): boolean {
     const z = this.zones.get(p.zoneId)!;
     const W = z.map.def.width;
     const opts = {
@@ -1314,20 +1417,22 @@ export class GameInstance implements CombatHost {
       allowBlockedGoal: stopWithin > 0,
       maxNodes: 30000,
     };
-    const from = { x: Math.round(leader.x), y: Math.round(leader.y) };
-    const path = findPath(from, target, opts);
-    if (!path) return false;
+    // Straight lines may cross only tiles a tile path could use (and never a revealed trap).
+    const clear = (x: number, y: number) => opts.passable(x, y) && opts.extraCost(x, y) === 0;
+    const from = { x: leader.x, y: leader.y };
+    const tilePath = findPath(from, target, opts);
+    if (!tilePath) return false;
+    const end = point && stopWithin <= 0 && clear(target.x, target.y) ? standPoint(target.x, target.y, point, clear) : undefined;
+    const path = smoothPath(from, tilePath, clear, end);
     const now = Date.now();
     leader.motion = path.length ? { path, from, speed: WALK_SPEED, t0: now } : null;
-    leader.x = from.x;
-    leader.y = from.y;
     leader.dirty = true;
     if (!path.length) {
       this.arrived(leader);
       return true;
     }
-    const dest = path[path.length - 1]!;
-    const prev = path.length > 1 ? path[path.length - 2]! : from;
+    const dest = tilePath[tilePath.length - 1] ?? { x: Math.round(from.x), y: Math.round(from.y) };
+    const prev = tilePath.length > 1 ? tilePath[tilePath.length - 2]! : { x: Math.round(from.x), y: Math.round(from.y) };
     const dir = { x: Math.sign(prev.x - dest.x) || 0, y: Math.sign(prev.y - dest.y) || 0 };
     const followers = this.charActors(p).filter((a) => a !== leader && a.alive());
     followers.forEach((f, i) => {
@@ -1338,12 +1443,14 @@ export class GameInstance implements CombatHost {
       ][i % 3]!;
       let goal = { x: dest.x + off.x, y: dest.y + off.y };
       if (!this.passable(z.id, goal.x, goal.y)) goal = prev;
-      const ff = { x: Math.round(f.x), y: Math.round(f.y) };
+      const ff = { x: f.x, y: f.y };
       const fp = findPath(ff, goal, { ...opts, stopWithin: 0, allowBlockedGoal: false }) ?? findPath(ff, dest, { ...opts, stopWithin: 1.5, allowBlockedGoal: true });
       if (fp?.length) {
-        f.motion = { path: fp, from: ff, speed: WALK_SPEED * 1.05, t0: now + 120 * (i + 1) };
-        f.x = ff.x;
-        f.y = ff.y;
+        // A small per-follower offset inside the goal tile so the party doesn't line up on a grid.
+        const j = hashFloat(`${f.id}:${now}`);
+        const last = fp[fp.length - 1]!;
+        const spot = clear(last.x, last.y) ? standPoint(last.x, last.y, { x: last.x + (j - 0.5) * 0.6, y: last.y + (hashFloat(`${now}:${f.id}`) - 0.5) * 0.6 }, clear) : undefined;
+        f.motion = { path: smoothPath(ff, fp, clear, spot), from: ff, speed: WALK_SPEED * 1.05, t0: now + 120 * (i + 1) };
         f.dirty = true;
       }
     });
@@ -1360,12 +1467,12 @@ export class GameInstance implements CombatHost {
     if (pend && pend.charId === a.id && ps && ps.targetId === pend.targetId) {
       this.pending.delete(p.userId);
       this.pendingSkill.delete(p.userId);
-      this.cmdSkill(p, a.id, ps.skillId, ps.targetId);
+      this.cmdSkill(p, a.id, ps.skillId, ps.targetId, undefined, undefined, true);
       return;
     }
     if (pend && pend.charId === a.id) {
       this.pending.delete(p.userId);
-      this.performInteraction(p, a, pend.targetId);
+      this.performInteraction(p, a, pend.targetId, pend.inspect);
     }
   }
 
@@ -1381,7 +1488,7 @@ export class GameInstance implements CombatHost {
     return null;
   }
 
-  private cmdInteract(p: PlayerState, targetId: string, charId?: string) {
+  private cmdInteract(p: PlayerState, targetId: string, charId?: string, inspect?: boolean) {
     const leader = this.charFor(p, charId);
     if (!leader || !leader.alive()) return;
     if (leader.combatId) return this.sendError(p.userId, 'Not during combat.');
@@ -1389,8 +1496,8 @@ export class GameInstance implements CombatHost {
     if (!t) return;
     const d = Math.hypot(t.x - leader.x, t.y - leader.y);
     const reach = t.kind === 'loot' ? 1.1 : 1.6;
-    if (d <= reach + 0.01) return this.performInteraction(p, leader, targetId);
-    this.pending.set(p.userId, { targetId, charId: leader.id });
+    if (d <= reach + 0.01) return this.performInteraction(p, leader, targetId, inspect);
+    this.pending.set(p.userId, { targetId, charId: leader.id, inspect });
     const ok = this.walkParty(p, leader, t, t.kind === 'loot' ? 0.5 : 1.5);
     if (!ok) {
       this.pending.delete(p.userId);
@@ -1398,7 +1505,7 @@ export class GameInstance implements CombatHost {
     }
   }
 
-  private performInteraction(p: PlayerState, a: CharActor, targetId: string) {
+  private performInteraction(p: PlayerState, a: CharActor, targetId: string, inspect?: boolean) {
     const z = this.zones.get(p.zoneId);
     if (!z) return;
     const actor = z.actors.get(targetId);
@@ -1415,59 +1522,87 @@ export class GameInstance implements CombatHost {
     }
     if (actor instanceof MonsterActor && actor.alive()) {
       // Clicking an enemy attacks it.
-      return this.cmdSkill(p, a.id, 'attack', actor.id);
+      return this.cmdSkill(p, a.id, 'attack', actor.id, undefined, undefined, true);
     }
     const loot = z.rt.loot.find((l) => l.id === targetId);
-    if (loot) return this.openLoot(p, loot.id);
+    if (loot) return inspect ? this.openLoot(p, loot.id) : this.lootAll(p, loot.id);
     const f = z.map.features.get(targetId);
-    if (f) this.useFeature(p, a, z, f);
+    if (f) this.useFeature(p, a, z, f, inspect);
   }
 
-  private useFeature(p: PlayerState, a: CharActor, z: LiveZone, f: FeatureDef) {
+  /** One click takes everything from a pile or chest, plus any other piles lying close by. */
+  private lootAll(p: PlayerState, sourceId: string) {
+    const z = this.zones.get(p.zoneId);
+    if (!z) return;
+    const src = z.map.features.get(sourceId) ?? z.rt.loot.find((l) => l.id === sourceId);
+    if (!src) return;
+    const ids = [sourceId, ...z.rt.loot.filter((l) => l.id !== sourceId && Math.hypot(l.x - src.x, l.y - src.y) <= 2.5).map((l) => l.id)];
+    const got: string[] = [];
+    let gold = 0;
+    for (const id of ids) {
+      const r = this.cmdTakeLoot(p, id, undefined, true, true);
+      if (r) {
+        got.push(...r.names);
+        gold += r.gold;
+      }
+    }
+    if (this.lootOpen.get(p.userId) && ids.includes(this.lootOpen.get(p.userId)!)) {
+      this.lootOpen.delete(p.userId);
+      this.sendTo(p.userId, { t: 'loot', loot: null });
+    }
+    const parts = [...(gold ? [`${gold} ${this.r.terminology.currency}`] : []), ...got];
+    this.sendTo(p.userId, { t: 'toast', text: parts.length ? `Picked up ${parts.length > 4 ? `${parts.slice(0, 4).join(', ')} and ${parts.length - 4} more` : parts.join(', ')}` : 'Nothing left to take.', kind: parts.length ? 'loot' : 'info' });
+  }
+
+  /** Lockpicking as a 0..1 skill level relative to the character's level. */
+  private lockLevel(a: CharActor): number {
+    const s = a.stats().lockpick / Math.max(1, refMit(this.r, a.level));
+    return s / (s + 0.5);
+  }
+
+  private useFeature(p: PlayerState, a: CharActor, z: LiveZone, f: FeatureDef, inspect?: boolean) {
     const fr = (z.rt.features[f.id] ??= {});
-    const t = this.world.terminology;
     switch (f.kind) {
       case 'door':
       case 'exit':
         if (f.targetZoneId) this.transfer(p, f.targetZoneId, f.targetFeatureId);
         return;
       case 'chest': {
-        if (f.lockLevel && !fr.unlocked) {
+        if (f.lockLevel && !fr.unlocked && this.r.systems.locks) {
           const keyItem = f.keyUniqueId ? p.inventory.find((i) => i.uniqueId === f.keyUniqueId) : undefined;
-          const canPick = p.party.some((c) => c.skills.includes('pick_lock'));
-          const pick = p.inventory.find((i) => i.baseId === 'tool_lockpick');
+          const pick = p.inventory.find((i) => i.baseId === 'tool_unlock');
+          const skill = Math.max(...this.charActors(p).map((c) => this.lockLevel(c)));
           if (keyItem) fr.unlocked = true;
-          else if (canPick || pick) {
-            const wits = a.stats().attributes.wits;
-            const chance = 0.35 + (wits - 10) * 0.04 + (a.level - f.lockLevel) * 0.06 + (canPick ? 0.3 : 0) + (pick ? 0.15 : 0);
-            if (pick && !canPick) removeFromInventory(p.inventory, pick.id, 1);
+          else if (pick || skill > 0.15) {
+            const chance = 0.3 + skill * 0.6 + (a.level - f.lockLevel) * 0.05 + (pick ? 0.15 : 0);
+            if (pick) removeFromInventory(p.inventory, pick.id, 1);
             if (this.rng.chance(Math.max(0.1, Math.min(0.97, chance)))) {
               fr.unlocked = true;
               this.sendTo(p.userId, { t: 'toast', text: 'The lock clicks open.', kind: 'good' });
               this.grantPartyXp(p, 10 + f.lockLevel * 4);
             } else {
-              this.sendTo(p.userId, { t: 'toast', text: pick && !canPick ? 'The lockpick snaps.' : 'The lock resists. Try again.', kind: 'bad' });
+              this.sendTo(p.userId, { t: 'toast', text: pick ? `The ${rx(this.r).item.get('tool_unlock')?.name ?? 'pick'} snaps.` : 'The lock resists. Try again.', kind: 'bad' });
               this.markPlayer(p.userId);
               return;
             }
           } else {
-            this.sendTo(p.userId, { t: 'toast', text: `Locked. You need a key, a ${this.world.itemNames.tool_lockpick?.names[0] ?? 'lockpick'}, or the ${skillName(this.ctx.naming, 'pick_lock')} skill.`, kind: 'bad' });
+            this.sendTo(p.userId, { t: 'toast', text: `Locked. You need a key or a ${rx(this.r).item.get('tool_unlock')?.name ?? 'lockpick'}.`, kind: 'bad' });
             return;
           }
         }
         if (!fr.opened) {
           fr.opened = true;
-          const lootFind = Math.max(...p.party.map((c) => statsOf(c, this.world, false).lootFind + (c.skills.includes('treasure_hunter') ? 30 : 0)));
-          const roll = rollLoot(this.world, new Rng(`${this.state.id}:${f.id}`), f.lootTier ?? 1, { chest: true, lootFind });
+          const lootFind = Math.max(...p.party.map((c) => characterStats(this.r, c).lootFind));
+          const roll = rollLoot(this.r, new Rng(`${this.state.id}:${f.id}`), f.lootTier ?? 1, { chest: true, lootFind, mult: this.r.difficulty[this.state.difficulty]?.lootMult ?? 1 });
           fr.loot = roll.items;
           fr.lootGold = roll.gold;
           for (const u of f.items ?? []) {
-            const def = this.world.uniqueItems[u];
-            if (def) fr.loot.unshift({ id: uid('it'), baseId: def.baseId, level: f.lootTier ?? 1, rarity: def.rarity, affixes: def.affixes ?? [], qty: 1, uniqueId: u, bound: !!def.questItem, element: def.element });
+            const def = this.ctx.uniqueItems[u];
+            if (def) fr.loot.unshift(makeUnique(this.r, def, f.lootTier ?? 1));
           }
           z.featuresDirty.add(f.id);
         }
-        return this.openLoot(p, f.id);
+        return inspect ? this.openLoot(p, f.id) : this.lootAll(p, f.id);
       }
       case 'trap':
         return this.tryDisarm(p, a, z, f, false);
@@ -1475,19 +1610,14 @@ export class GameInstance implements CombatHost {
         this.quests.onInteract(p, f.id);
         if (fr.usedDay === this.day()) return this.sendTo(p.userId, { t: 'toast', text: `${f.name ?? 'The shrine'} is quiet. Return tomorrow.`, kind: 'info' });
         fr.usedDay = this.day();
+        const buff = this.r.statuses.find((x) => !x.harmful && x.modifiers?.length);
         for (const c of this.charActors(p)) {
-          if (f.shrineEffect === 'empower') addStatus(this, c, 'empowered', 3, 0);
-          else {
-            const s = c.stats();
-            if (c.ch.downed) c.ch.downed = false;
-            c.hp = s.maxHp;
-            c.stamina = s.maxStamina;
-            c.focus = s.maxFocus;
-          }
+          if (f.shrineEffect === 'empower' && buff) addStatus(this, c, buff.id, 6, c.stats().dpa);
+          else restoreFully(this.r, c.ch, this.loneWolf(p));
           c.dirty = true;
         }
         this.fx(z.id, [{ kind: 'skill', x: f.x, y: f.y, tx: f.x, ty: f.y, fx: 'heal', radius: 2 }]);
-        this.sendTo(p.userId, { t: 'toast', text: `${f.name ?? 'Shrine'}: ${f.shrineEffect === 'empower' ? `you feel ${t.statuses.empowered.toLowerCase()}` : 'your party is restored'}.`, kind: 'good' });
+        this.sendTo(p.userId, { t: 'toast', text: `${f.name ?? 'Shrine'}: ${f.shrineEffect === 'empower' && buff ? `you are ${buff.name.toLowerCase()}` : `your ${this.r.terminology.party.toLowerCase()} is restored`}.`, kind: 'good' });
         this.markPlayer(p.userId);
         return;
       }
@@ -1534,22 +1664,23 @@ export class GameInstance implements CombatHost {
   }
 
   private tryDisarm(p: PlayerState, a: CharActor, z: LiveZone, f: FeatureDef, viaSkill: boolean) {
+    void viaSkill;
     const fr = (z.rt.features[f.id] ??= {});
     if (fr.disarmed || fr.triggered) return;
-    const hasSkill = p.party.some((c) => c.skills.includes('disarm_trap')) || viaSkill;
-    const kit = p.inventory.find((i) => i.baseId === 'tool_trapkit');
-    if (!hasSkill && !kit) return this.sendTo(p.userId, { t: 'toast', text: `You need a ${this.world.itemNames.tool_trapkit?.names[0] ?? 'trap kit'} or the ${skillName(this.ctx.naming, 'disarm_trap')} skill.`, kind: 'bad' });
-    const wits = a.stats().attributes.wits;
-    const chance = 0.4 + (wits - 10) * 0.03 + (a.level - (f.trapLevel ?? 1)) * 0.05 + (hasSkill ? 0.3 : 0) + (kit ? 0.2 : 0);
-    if (kit && !hasSkill) removeFromInventory(p.inventory, kit.id, 1);
+    const kit = p.inventory.find((i) => i.baseId === 'tool_disarm');
+    const sense = Math.max(...this.charActors(p).map((c) => this.senseLevel(c)));
+    if (!kit && sense < 0.15) return this.sendTo(p.userId, { t: 'toast', text: `You need a ${rx(this.r).item.get('tool_disarm')?.name ?? 'trap kit'} (or a keener eye) to disarm that.`, kind: 'bad' });
+    const chance = 0.35 + sense * 0.55 + (a.level - (f.trapLevel ?? 1)) * 0.05 + (kit ? 0.2 : 0);
+    if (kit) removeFromInventory(p.inventory, kit.id, 1);
     if (this.rng.chance(Math.max(0.15, Math.min(0.97, chance)))) {
       fr.disarmed = true;
       z.featuresDirty.add(f.id);
       p.stats.trapsDisarmed++;
       this.grantPartyXp(p, 12 + (f.trapLevel ?? 1) * 5);
       this.quests.onDisarm(p);
-      this.sendTo(p.userId, { t: 'toast', text: `Disarmed the ${this.world.trapNames[f.trapKind ?? 'spike']}.`, kind: 'good' });
-      if (this.world.systems.crafting && this.rng.chance(0.5)) addToInventory(p.inventory, [makeItem(this.world, this.rng, 'm_ore', f.trapLevel ?? 1, 'common', 1)]);
+      this.sendTo(p.userId, { t: 'toast', text: `Disarmed the ${this.trapName(f)}.`, kind: 'good' });
+      const mat = this.r.items.find((i) => i.category === 'material' && (i.tier ?? 1) === 1);
+      if (mat && this.rng.chance(0.5)) addToInventory(this.r, p.inventory, [makeItem(this.r, this.rng, mat.id, f.trapLevel ?? 1, this.r.rarities[0]!.id, 1)]);
     } else {
       this.sendTo(p.userId, { t: 'toast', text: 'You slip — the trap springs!', kind: 'bad' });
       this.triggerTrap(z, f, a);
@@ -1557,11 +1688,11 @@ export class GameInstance implements CombatHost {
     this.markPlayer(p.userId);
   }
 
-  private cmdSkill(p: PlayerState, charId: string, skillId: string, targetId?: string, x?: number, y?: number) {
+  private cmdSkill(p: PlayerState, charId: string, skillId: string, targetId?: string, x?: number, y?: number, afterApproach = false) {
     const a = this.charFor(p, charId);
     const z = this.zones.get(p.zoneId);
     if (!a || !z) return;
-    const skill = getSkill(skillId);
+    const skill = rx(this.r).skill.get(skillId);
     if (!skill || !a.skillIds().includes(skillId)) return this.sendError(p.userId, 'Unknown skill.');
     const target = targetId ? z.actors.get(targetId) : undefined;
     const point = x !== undefined && y !== undefined ? { x: Math.round(x), y: Math.round(y) } : undefined;
@@ -1569,32 +1700,27 @@ export class GameInstance implements CombatHost {
     if (combat) {
       const active = combat.active;
       if (!(active instanceof CharActor) || active.userId !== p.userId || !combat.isHumanControlled(active)) return this.sendError(p.userId, 'Not your turn.');
-      const err = combat.useSkill(active, skillId, target, point);
+      let err = combat.useSkill(active, skillId, target, point);
+      // Out of range on an enemy: walk into range first if there is enough left to act (attack-move).
+      if (err && target && skill.targeting === 'enemy' && isHostileTo(active, target) && (err === 'Out of range.' || err === 'No line of sight.')) err = combat.approachAndUse(active, skillId, target);
       if (err) this.sendError(p.userId, err);
       this.markPlayer(p.userId);
       return;
-    }
-    // Utility skills on features.
-    if (skill.utility === 'disarm_trap' || skill.utility === 'pick_lock') {
-      const f = targetId ? z.map.features.get(targetId) : point ? z.map.def.features.find((ff) => ff.x === point.x && ff.y === point.y) : undefined;
-      if (!f) return this.sendError(p.userId, 'Choose a trap or lock.');
-      if (Math.hypot(f.x - a.x, f.y - a.y) > 1.7) {
-        this.pending.set(p.userId, { targetId: f.id, charId: a.id });
-        this.walkParty(p, a, f, 1.5);
-        return;
-      }
-      if (f.kind === 'trap') return this.tryDisarm(p, a, z, f, true);
-      return this.useFeature(p, a, z, f);
     }
     const use = { user: a, skill, target, point };
     const err = checkSkill(this, use, { inCombat: false });
     if (err) {
       // Out of range on an enemy: walk closer first (attack-move).
-      if (target && isHostileTo(a, target) && (err === 'Out of range.' || err === 'No line of sight.')) {
+      // Only one approach per command: if we already walked and still can't reach, report instead of looping.
+      if (!afterApproach && target && isHostileTo(a, target) && (err === 'Out of range.' || err === 'No line of sight.')) {
         this.pending.set(p.userId, { targetId: target.id, charId: a.id });
-        const range = skill.range === 'weapon' ? a.stats().weaponRange : skill.range;
-        this.walkParty(p, a, { x: Math.round(target.x), y: Math.round(target.y) }, Math.max(1.4, range - 0.5));
         this.pendingSkill.set(p.userId, { skillId, targetId: target.id });
+        const range = skillRange(skill, a.stats());
+        if (!this.walkParty(p, a, { x: Math.round(target.x), y: Math.round(target.y) }, Math.max(1.2, range - 0.6))) {
+          this.pending.delete(p.userId);
+          this.pendingSkill.delete(p.userId);
+          this.sendError(p.userId, "You can't reach that.");
+        }
         return;
       }
       return this.sendError(p.userId, err);
@@ -1616,30 +1742,23 @@ export class GameInstance implements CombatHost {
     if (!a || !z) return;
     const item = p.inventory.find((i) => i.id === itemId);
     if (!item) return;
-    const base = ITEM_BASE[item.baseId];
+    const base = rx(this.r).item.get(item.baseId);
     if (!base) return;
-    if (base.slot) return this.cmdEquip(p, a.id, itemId);
-    if (base.consumable?.kind === 'skillbook') {
-      if (!item.skillId) return;
-      if (a.ch.skills.includes(item.skillId)) return this.sendError(p.userId, 'Already known.');
-      a.ch.skills.push(item.skillId);
-      if (a.ch.hotbar.length < 10) a.ch.hotbar.push(item.skillId);
-      removeFromInventory(p.inventory, item.id, 1);
-      this.sendTo(p.userId, { t: 'toast', text: `${a.name} learned ${skillName(this.ctx.naming, item.skillId)}.`, kind: 'good' });
-      return this.markPlayer(p.userId);
-    }
-    if (base.consumable?.kind === 'recall') {
+    if (base.category === 'equipment') return this.cmdEquip(p, a.id, itemId);
+    const tool = base.use?.tool;
+    if (tool === 'recall') {
       if (a.combatId) return this.sendError(p.userId, 'Not during combat.');
       removeFromInventory(p.inventory, item.id, 1);
       const wp = this.ctx.zones.get(p.lastTownZoneId)?.features.find((f) => f.kind === 'waypoint');
       this.transfer(p, p.lastTownZoneId, undefined, wp ? { x: wp.x, y: wp.y + 1 } : undefined);
       return;
     }
-    if (base.consumable?.kind === 'disarm' || base.consumable?.kind === 'unlock') {
+    if (tool === 'disarm' || tool === 'unlock') {
       const f = targetId ? z.map.features.get(targetId) : undefined;
       if (f) return this.cmdInteract(p, f.id, a.id);
-      return this.sendError(p.userId, base.consumable.kind === 'disarm' ? 'Click a detected trap to disarm it.' : 'Click a locked chest to pick it.');
+      return this.sendError(p.userId, tool === 'disarm' ? 'Click a spotted trap to disarm it.' : 'Click a locked chest to open it.');
     }
+    if (!base.use) return this.sendError(p.userId, 'That cannot be used.');
     const target = targetId ? z.actors.get(targetId) : undefined;
     const point = x !== undefined && y !== undefined ? { x, y } : undefined;
     const consume = () => removeFromInventory(p.inventory, item.id, 1);
@@ -1658,6 +1777,10 @@ export class GameInstance implements CombatHost {
     this.markPlayer(p.userId);
   }
 
+  private slotKindOf(slotId: string): SlotKind | undefined {
+    return rx(this.r).slot.get(slotId)?.kind;
+  }
+
   private cmdEquip(p: PlayerState, charId: string, itemId: string) {
     const ch = p.party.find((c) => c.id === charId);
     const item = p.inventory.find((i) => i.id === itemId);
@@ -1666,39 +1789,43 @@ export class GameInstance implements CombatHost {
     if (actor?.combatId) {
       const c = this.combatOf(actor)!;
       if (c.active !== actor) return this.sendError(p.userId, 'Not your turn.');
-      if (actor.ap < 1) return this.sendError(p.userId, 'Not enough action points.');
+      if (actor.ap < 1) return this.sendError(p.userId, `Not enough ${this.r.terminology.actionPoints}.`);
       actor.ap -= 1;
       this.broadcastCombat(c);
     }
-    const base = ITEM_BASE[item.baseId];
-    if (!base?.slot) return this.sendError(p.userId, 'That cannot be equipped.');
-    let slot: EquipSlot = base.slot;
+    const base = rx(this.r).item.get(item.baseId);
+    if (!base?.slotId) return this.sendError(p.userId, 'That cannot be equipped.');
+    // Same-kind slots (two rings): fill an empty one first.
+    const sameKind = this.r.slots.filter((s) => s.kind === this.slotKindOf(base.slotId!) && (s.id === base.slotId || this.slotKindOf(base.slotId!) === 'accessory'));
+    const slot = sameKind.find((s) => !ch.equipment[s.id])?.id ?? base.slotId;
     removeFromInventory(p.inventory, item.id, item.qty);
     const old = ch.equipment[slot];
-    if (old) addToInventory(p.inventory, [old]);
+    if (old) addToInventory(this.r, p.inventory, [old]);
     ch.equipment[slot] = item;
-    if (slot === 'mainhand' && base.twoHanded && ch.equipment.offhand) {
-      addToInventory(p.inventory, [ch.equipment.offhand]);
-      delete ch.equipment.offhand;
+    const weaponSlot = this.r.slots.find((s) => s.kind === 'weapon')?.id;
+    const offSlot = this.r.slots.find((s) => s.kind === 'offhand')?.id;
+    if (slot === weaponSlot && base.weapon?.twoHanded && offSlot && ch.equipment[offSlot]) {
+      addToInventory(this.r, p.inventory, [ch.equipment[offSlot]!]);
+      delete ch.equipment[offSlot];
     }
-    if (slot === 'offhand' && ch.equipment.mainhand && ITEM_BASE[ch.equipment.mainhand.baseId]?.twoHanded) {
-      addToInventory(p.inventory, [ch.equipment.mainhand]);
-      delete ch.equipment.mainhand;
+    if (slot === offSlot && weaponSlot && ch.equipment[weaponSlot] && rx(this.r).item.get(ch.equipment[weaponSlot]!.baseId)?.weapon?.twoHanded) {
+      addToInventory(this.r, p.inventory, [ch.equipment[weaponSlot]!]);
+      delete ch.equipment[weaponSlot];
     }
-    void slot;
-    clampPools(ch, this.world, this.loneWolf(p));
+    clampPools(this.r, ch, this.loneWolf(p));
     if (actor) actor.dirty = true;
     this.markPlayer(p.userId);
   }
 
-  private cmdUnequip(p: PlayerState, charId: string, slot: EquipSlot) {
+  private cmdUnequip(p: PlayerState, charId: string, slot: string) {
     const ch = p.party.find((c) => c.id === charId);
     if (!ch || !ch.equipment[slot]) return;
     const actor = this.zones.get(p.zoneId)?.actors.get(ch.id);
     if (actor?.combatId) return this.sendError(p.userId, 'Not during combat.');
-    addToInventory(p.inventory, [ch.equipment[slot]!]);
+    if (!fitsInInventory(this.r, p, [ch.equipment[slot]!])) return this.sendError(p.userId, 'Your bag is full.');
+    addToInventory(this.r, p.inventory, [ch.equipment[slot]!]);
     delete ch.equipment[slot];
-    clampPools(ch, this.world, this.loneWolf(p));
+    clampPools(this.r, ch, this.loneWolf(p));
     if (actor) actor.dirty = true;
     this.markPlayer(p.userId);
   }
@@ -1708,6 +1835,7 @@ export class GameInstance implements CombatHost {
     if (!item) return;
     if (item.bound) return this.sendError(p.userId, 'You should hold on to that.');
     const it = removeFromInventory(p.inventory, itemId, qty ?? item.qty);
+    void RULESET_VERSION;
     const z = this.zones.get(p.zoneId);
     const leader = this.leader(p);
     if (it && z && leader) {
@@ -1766,31 +1894,109 @@ export class GameInstance implements CombatHost {
     this.transfer(p, zoneId, undefined, wp ? { x: wp.x, y: wp.y + 1 } : undefined);
   }
 
-  private cmdAllocate(p: PlayerState, charId: string, attr: string) {
+  private cmdAllocate(p: PlayerState, charId: string, nodeId: string) {
     const ch = p.party.find((c) => c.id === charId);
-    if (!ch || ch.unspentAttributes <= 0 || !ATTRIBUTES.includes(attr as AttributeId)) return;
-    ch.attributes[attr as AttributeId]++;
-    ch.unspentAttributes--;
+    if (!ch) return;
+    const err = allocateNode(this.r, ch, nodeId);
+    if (err) return this.sendError(p.userId, err);
+    clampPools(this.r, ch, this.loneWolf(p));
     const a = this.zones.get(p.zoneId)?.actors.get(ch.id);
     if (a) a.dirty = true;
     this.markPlayer(p.userId);
   }
 
-  private cmdLearn(p: PlayerState, charId: string, skillId: string) {
-    const ch = p.party.find((c) => c.id === charId);
-    const s = SKILLS[skillId];
-    if (!ch || !s || !this.world.skills[skillId]) return;
-    if (ch.unspentSkillPoints <= 0) return this.sendError(p.userId, 'No skill points.');
-    if (s.minLevel > ch.level) return this.sendError(p.userId, `Requires ${this.world.terminology.level} ${s.minLevel}.`);
-    if (ch.skills.includes(skillId)) return;
-    ch.skills.push(skillId);
-    ch.unspentSkillPoints--;
-    if (!s.passive && ch.hotbar.filter(Boolean).length < 10) {
-      const i = ch.hotbar.indexOf(null);
-      if (i >= 0) ch.hotbar[i] = skillId;
-      else ch.hotbar.push(skillId);
-    }
+  /** Crafting: raise an item's upgrade level (better base damage/defense). */
+  private cmdUpgrade(p: PlayerState, itemId: string, charId?: string) {
+    const up = this.r.crafting.upgrades;
+    if (!up.enabled) return this.sendError(p.userId, 'Items cannot be upgraded in this world.');
+    if (this.charActors(p).some((a) => a.combatId)) return this.sendError(p.userId, 'Not during combat.');
+    const { item } = this.findOwnedItem(p, itemId, charId);
+    if (!item || rx(this.r).item.get(item.baseId)?.category !== 'equipment') return;
+    const lvl = item.upgrade ?? 0;
+    const cost = upgradeCost(this.r, item);
+    if (!cost) return this.sendError(p.userId, 'Already fully upgraded.');
+    const { gold, material: mat, qty } = cost;
+    if (p.gold < gold) return this.sendError(p.userId, `Needs ${gold} ${this.r.terminology.currency}.`);
+    if (mat && !this.consumeMaterials(p, [{ itemId: mat.id, qty }])) return this.sendError(p.userId, `Needs ${qty} ${mat.name}.`);
+    p.gold -= gold;
+    item.upgrade = lvl + 1;
+    this.refreshCharStats(p);
+    this.sendTo(p.userId, { t: 'toast', text: `${this.ctx.itemName(item)} improved.`, kind: 'good' });
     this.markPlayer(p.userId);
+  }
+
+  /** Crafting: replace one affix with a new random one. */
+  private cmdEnchant(p: PlayerState, itemId: string, affixIndex: number, charId?: string) {
+    const en = this.r.crafting.enchanting;
+    if (!en.enabled) return this.sendError(p.userId, 'Enchanting is not possible in this world.');
+    if (this.charActors(p).some((a) => a.combatId)) return this.sendError(p.userId, 'Not during combat.');
+    const { item } = this.findOwnedItem(p, itemId, charId);
+    if (!item) return;
+    const base = rx(this.r).item.get(item.baseId);
+    const kind = base?.slotId ? this.slotKindOf(base.slotId) : undefined;
+    const cost = enchantCost(this.r, item);
+    if (!kind || !cost) return this.sendError(p.userId, 'That cannot be enchanted.');
+    const { gold, material: mat } = cost;
+    if (p.gold < gold) return this.sendError(p.userId, `Needs ${gold} ${this.r.terminology.currency}.`);
+    if (mat && !this.consumeMaterials(p, [{ itemId: mat.id, qty: 1 }])) return this.sendError(p.userId, `Needs a ${mat.name}.`);
+    p.gold -= gold;
+    const taken = new Set(item.affixes.map((a) => rx(this.r).affix.get(a.affixId)?.stat));
+    const pool = this.r.affixes.filter((a) => a.slotKinds.includes(kind) && !taken.has(a.stat));
+    if (!pool.length) return;
+    const pick = this.rng.pickWeighted(pool, (a) => a.weight);
+    const entry = { affixId: pick.id, value: affixValue(this.r, pick.id, item.level, item.rarityId, this.rng.next()) };
+    if (affixIndex >= 0 && affixIndex < item.affixes.length) item.affixes[affixIndex] = entry;
+    else if (item.affixes.length < (rx(this.r).rarity.get(item.rarityId)?.affixes[1] ?? 0) + 1) item.affixes.push(entry);
+    else item.affixes[item.affixes.length - 1] = entry;
+    this.refreshCharStats(p);
+    this.sendTo(p.userId, { t: 'toast', text: `${this.ctx.itemName(item)} glows with new power.`, kind: 'good' });
+    this.markPlayer(p.userId);
+  }
+
+  private findOwnedItem(p: PlayerState, itemId: string, charId?: string): { item?: ItemInstance } {
+    const inv = p.inventory.find((i) => i.id === itemId);
+    if (inv) return { item: inv };
+    for (const c of p.party) if (!charId || c.id === charId) for (const it of Object.values(c.equipment)) if (it?.id === itemId) return { item: it };
+    return {};
+  }
+
+  private consumeMaterials(p: PlayerState, inputs: { itemId: string; qty: number }[]): boolean {
+    for (const inp of inputs) {
+      const have = p.inventory.filter((i) => i.baseId === inp.itemId).reduce((s, i) => s + i.qty, 0);
+      if (have < inp.qty) return false;
+    }
+    for (const inp of inputs) {
+      let need = inp.qty;
+      for (const it of [...p.inventory].filter((i) => i.baseId === inp.itemId)) {
+        const take = Math.min(need, it.qty);
+        removeFromInventory(p.inventory, it.id, take);
+        need -= take;
+        if (!need) break;
+      }
+    }
+    return true;
+  }
+
+  private refreshCharStats(p: PlayerState) {
+    for (const a of this.charActors(p)) a.dirty = true;
+    for (const c of p.party) clampPools(this.r, c, this.loneWolf(p));
+  }
+
+  /** Merchants sell a limited number of bag upgrades. */
+  private cmdBuyBagSpace(p: PlayerState, npcId: string) {
+    if (this.trades.get(p.userId) !== npcId) return;
+    if (p.inventoryUpgrades >= this.r.inventory.upgrades) return this.sendError(p.userId, 'Your bag cannot get any bigger.');
+    const cost = this.bagUpgradeCost(p);
+    if (p.gold < cost) return this.sendError(p.userId, `Needs ${cost} ${this.r.terminology.currency}.`);
+    p.gold -= cost;
+    p.inventoryUpgrades++;
+    this.sendTo(p.userId, { t: 'toast', text: `Bag enlarged to ${inventoryCapacity(this.r, p)} slots.`, kind: 'good' });
+    this.sendTrade(p.userId);
+    this.markPlayer(p.userId);
+  }
+
+  private bagUpgradeCost(p: PlayerState) {
+    return bagUpgradeCost(this.r, p);
   }
 
   // =================================================================== loot
@@ -1808,7 +2014,8 @@ export class GameInstance implements CombatHost {
     if (l) this.sendTo(p.userId, { t: 'loot', loot: { id: l.id, label: l.label, items: l.items, gold: l.gold, sourceKind: 'pile' } });
   }
 
-  private cmdTakeLoot(p: PlayerState, sourceId: string, itemId?: string, all?: boolean) {
+  /** Take items from a pile or chest. `quiet` skips per-item toasts and the window refresh (lootAll reports instead). */
+  private cmdTakeLoot(p: PlayerState, sourceId: string, itemId?: string, all?: boolean, quiet = false): { names: string[]; gold: number } | undefined {
     const z = this.zones.get(p.zoneId);
     if (!z) return;
     const leader = this.leader(p);
@@ -1835,23 +2042,35 @@ export class GameInstance implements CombatHost {
       setGold = (v) => (l.gold = v);
       pos = l;
     }
-    if (!leader || Math.hypot(pos.x - leader.x, pos.y - leader.y) > 3) return this.sendError(p.userId, 'Too far away.');
-    const take = all ? items : items.filter((i) => i.id === itemId);
+    if (!leader || Math.hypot(pos.x - leader.x, pos.y - leader.y) > (quiet ? 5 : 3)) {
+      if (!quiet) this.sendError(p.userId, 'Too far away.');
+      return;
+    }
+    let take = all ? items : items.filter((i) => i.id === itemId);
+    // The bag has limited slots: take what fits (quest items always fit).
+    const fitting: ItemInstance[] = [];
+    for (const it of take) if (fitsInInventory(this.r, { inventory: [...p.inventory, ...fitting], inventoryUpgrades: p.inventoryUpgrades }, [it])) fitting.push(it);
+    if (fitting.length < take.length) this.sendTo(p.userId, { t: 'toast', text: 'Your bag is full.', kind: 'bad' });
+    take = fitting;
+    const names: string[] = [];
+    let tookGold = 0;
     if (all || itemId === 'gold') {
       if (gold) {
         p.gold += gold;
         p.stats.goldEarned += gold;
-        this.sendTo(p.userId, { t: 'toast', text: `+${gold} ${this.world.terminology.gold}`, kind: 'loot' });
+        tookGold = gold;
+        if (!quiet) this.sendTo(p.userId, { t: 'toast', text: `+${gold} ${this.r.terminology.currency}`, kind: 'loot' });
       }
       setGold(0);
     }
     if (take.length) {
-      addToInventory(p.inventory, take);
+      addToInventory(this.r, p.inventory, take);
       setItems(items.filter((i) => !take.includes(i)));
       for (const it of take) {
-        const name = itemName(this.ctx.naming, it);
-        this.sendTo(p.userId, { t: 'toast', text: `Picked up ${name}${it.qty > 1 ? ` ×${it.qty}` : ''}`, kind: 'loot' });
-        if (it.uniqueId) this.journal(p, 'loot', `Found ${name}.`);
+        const name = `${this.ctx.itemName(it)}${it.qty > 1 ? ` ×${it.qty}` : ''}`;
+        names.push(name);
+        if (!quiet) this.sendTo(p.userId, { t: 'toast', text: `Picked up ${name}`, kind: 'loot' });
+        if (it.uniqueId) this.journal(p, 'loot', `Found ${this.ctx.itemName(it)}.`);
       }
       this.quests.refreshCollect(p);
     }
@@ -1859,11 +2078,14 @@ export class GameInstance implements CombatHost {
     const rest = z.rt.loot.find((x) => x.id === sourceId);
     if (rest && !rest.items.length && !rest.gold) {
       z.rt.loot = z.rt.loot.filter((x) => x !== rest);
-      this.lootOpen.delete(p.userId);
-      this.sendTo(p.userId, { t: 'loot', loot: null });
-    } else this.openLoot(p, sourceId);
+      if (this.lootOpen.get(p.userId) === sourceId) {
+        this.lootOpen.delete(p.userId);
+        this.sendTo(p.userId, { t: 'loot', loot: null });
+      }
+    } else if (!quiet) this.openLoot(p, sourceId);
     z.lootDirty = true;
     this.markPlayer(p.userId);
+    return { names, gold: tookGold };
   }
 
   // =================================================================== trade & crafting
@@ -1871,8 +2093,9 @@ export class GameInstance implements CombatHost {
   private priceMults(p: PlayerState, npcId: string) {
     const rt = this.state.npcs[npcId];
     const disp = rt?.disposition[p.userId] ?? 0;
-    const haggle = p.party.some((c) => c.skills.includes('haggler')) ? 0.15 : 0;
-    return { buy: Math.max(0.7, 1.25 - disp * 0.002 - haggle), sell: Math.min(0.6, 0.3 + Math.max(0, disp) * 0.001 + haggle) };
+    const haggle = Math.max(0, ...p.party.map((c) => characterStats(this.r, c).barter)) / 100;
+    const sell = this.r.economy.sellRatio;
+    return { buy: Math.max(0.7, 1.25 - disp * 0.002 - haggle), sell: Math.min(sell * 2, sell + Math.max(0, disp) * 0.001 + haggle) };
   }
 
   openTrade(userId: string, npcId: string) {
@@ -1883,7 +2106,7 @@ export class GameInstance implements CombatHost {
     if (rt.stockDay !== this.day()) {
       const kind = def.merchantKind ?? (def.role === 'innkeeper' ? 'general' : def.role === 'crafter' ? 'materials' : 'general');
       const level = Math.max(1, this.ctx.zones.get(this.ctx.outerZone(rt.zoneId))?.levelRange[0] ?? def.level);
-      rt.stock = merchantStock(this.world, new Rng(`${this.state.id}:${npcId}:${this.day()}`), kind, Math.max(level, ...p.party.map((c) => c.level - 1)));
+      rt.stock = merchantStock(this.r, new Rng(`${this.state.id}:${npcId}:${this.day()}`), kind, Math.max(level, ...p.party.map((c) => c.level - 1)));
       rt.stockDay = this.day();
       rt.gold = Math.max(rt.gold, 300 + def.level * 60);
     }
@@ -1898,7 +2121,7 @@ export class GameInstance implements CombatHost {
     const rt = this.state.npcs[npcId]!;
     const def = this.ctx.npcs.get(npcId)!;
     const m = this.priceMults(p, npcId);
-    const view: TradeState = { npcId, npcName: def.name, stock: rt.stock.map((it) => ({ ...it, price: Math.max(1, Math.round(itemPrice(it) * m.buy)) })), sellMult: m.sell, npcGold: rt.gold };
+    const view: TradeState = { npcId, npcName: def.name, stock: rt.stock.map((it) => ({ ...it, price: Math.max(1, Math.round(itemPrice(this.r, it) * m.buy)) })), sellMult: m.sell, npcGold: rt.gold, bagUpgrade: p.inventoryUpgrades < this.r.inventory.upgrades ? { cost: this.bagUpgradeCost(p), slots: this.r.inventory.slotsPerUpgrade } : undefined };
     this.sendTo(userId, { t: 'trade', trade: view });
   }
 
@@ -1912,13 +2135,14 @@ export class GameInstance implements CombatHost {
     const it = rt.stock.find((i) => i.id === itemId);
     if (!it) return;
     const n = Math.max(1, Math.min(qty, it.qty));
-    const unit = Math.max(1, Math.round(itemPrice({ ...it, qty: 1 }) * this.priceMults(p, npcId).buy));
+    const unit = Math.max(1, Math.round(itemPrice(this.r, { ...it, qty: 1 }) * this.priceMults(p, npcId).buy));
     const cost = unit * n;
-    if (p.gold < cost) return this.sendError(p.userId, `Not enough ${this.world.terminology.gold}.`);
+    if (p.gold < cost) return this.sendError(p.userId, `Not enough ${this.r.terminology.currency}.`);
+    if (!fitsInInventory(this.r, p, [{ ...it, qty: n }])) return this.sendError(p.userId, 'Your bag is full.');
     p.gold -= cost;
     rt.gold += cost;
     const bought = removeFromInventory(rt.stock, it.id, n)!;
-    addToInventory(p.inventory, [bought]);
+    addToInventory(this.r, p.inventory, [bought]);
     this.quests.refreshCollect(p);
     this.sendTrade(p.userId);
     this.markPlayer(p.userId);
@@ -1929,42 +2153,34 @@ export class GameInstance implements CombatHost {
     const rt = this.state.npcs[npcId]!;
     const it = p.inventory.find((i) => i.id === itemId);
     if (!it) return;
-    if (it.bound || ITEM_BASE[it.baseId]?.category === 'quest') return this.sendError(p.userId, 'They will not buy that.');
+    const cat = rx(this.r).item.get(it.baseId)?.category;
+    if (it.bound || cat === 'quest' || cat === 'key') return this.sendError(p.userId, 'They will not buy that.');
     const n = Math.max(1, Math.min(qty, it.qty));
-    const unit = Math.max(1, Math.round(itemPrice({ ...it, qty: 1 }) * this.priceMults(p, npcId).sell));
+    const unit = Math.max(1, Math.round(itemPrice(this.r, { ...it, qty: 1 }) * this.priceMults(p, npcId).sell));
     const value = unit * n;
     if (rt.gold < value) return this.sendError(p.userId, `They cannot afford it.`);
     p.gold += value;
     rt.gold -= value;
     const sold = removeFromInventory(p.inventory, it.id, n)!;
-    addToInventory(rt.stock, [sold]);
+    addToInventory(this.r, rt.stock, [sold]);
     this.sendTrade(p.userId);
     this.markPlayer(p.userId);
   }
 
   private cmdCraft(p: PlayerState, recipeId: string) {
-    if (!this.world.systems.crafting) return;
-    const r = RECIPES.find((x) => x.id === recipeId);
-    if (!r) return;
-    for (const inp of r.inputs) {
-      const have = p.inventory.filter((i) => i.baseId === inp.baseId).reduce((s, i) => s + i.qty, 0);
-      if (have < inp.qty) return this.sendError(p.userId, 'Missing ingredients.');
-    }
-    for (const inp of r.inputs) {
-      let need = inp.qty;
-      for (const it of [...p.inventory].filter((i) => i.baseId === inp.baseId)) {
-        const take = Math.min(need, it.qty);
-        removeFromInventory(p.inventory, it.id, take);
-        need -= take;
-        if (!need) break;
-      }
-    }
+    if (!this.r.crafting.enabled) return;
+    const rec = this.r.recipes.find((x) => x.id === recipeId);
+    if (!rec) return;
+    if (p.gold < rec.gold) return this.sendError(p.userId, `Needs ${rec.gold} ${this.r.terminology.currency}.`);
     const level = Math.max(...p.party.map((c) => c.level));
-    const out = 'baseId' in r.output ? makeItem(this.world, this.rng, r.output.baseId, level, 'common', r.output.qty) : rollRandomItem(this.world, this.rng, level, 0, { category: r.output.category, minRarity: r.output.rarity });
-    addToInventory(p.inventory, [out]);
+    const out = 'itemId' in rec.output ? makeItem(this.r, this.rng, rec.output.itemId, level, this.r.rarities[0]!.id, rec.output.qty) : rollRandomItem(this.r, this.rng, level, 0, { slotKind: rec.output.slotKind, minRarity: Math.max(0, this.r.rarities.findIndex((x) => x.id === (rec.output as { rarityId: string }).rarityId)) });
+    if (!fitsInInventory(this.r, p, [out])) return this.sendError(p.userId, 'Your bag is full.');
+    if (!this.consumeMaterials(p, rec.inputs)) return this.sendError(p.userId, 'Missing ingredients.');
+    p.gold -= rec.gold;
+    addToInventory(this.r, p.inventory, [out]);
     p.stats.itemsCrafted++;
     this.quests.onCraft(p, out.baseId);
-    this.sendTo(p.userId, { t: 'toast', text: `Crafted ${itemName(this.ctx.naming, out)}${out.qty > 1 ? ` ×${out.qty}` : ''}`, kind: 'loot' });
+    this.sendTo(p.userId, { t: 'toast', text: `Crafted ${this.ctx.itemName(out)}${out.qty > 1 ? ` ×${out.qty}` : ''}`, kind: 'loot' });
     this.markPlayer(p.userId);
   }
 
@@ -1996,20 +2212,20 @@ export class GameInstance implements CombatHost {
     const rt = this.state.npcs[npcId];
     if (!p || !def || !rt) return 'They cannot join.';
     if (this.world.input.combatMode !== 'party_npc') return `${def.name} wishes you well, but prefers to stay.`;
-    if (p.party.length >= MAX_PARTY_SIZE) return `Your ${this.world.terminology.party.toLowerCase()} is full.`;
+    if (p.party.length >= MAX_PARTY_SIZE) return `Your ${this.r.terminology.party.toLowerCase()} is full.`;
     if (rt.partyOf) return 'They are already travelling with someone.';
     const level = Math.max(1, Math.min(def.level, Math.max(...p.party.map((c) => c.level))));
-    const originId = ORIGINS.find((o) => o.archetype === def.archetype)?.id ?? 'o_warrior';
-    const { ch } = createCharacter(this.world, { name: def.name, originId, sprite: def.asset ?? '', colors: def.colors }, new Rng(`${this.state.id}:${npcId}`));
+    const cls = this.r.classes.find((c) => c.aiRole === def.archetype) ?? this.r.classes.find((c) => (def.archetype === 'guardian' || def.archetype === 'brute' ? c.role === 'tank' : def.archetype === 'caster' ? c.role === 'caster' : def.archetype === 'healer' ? c.role === 'support' : def.archetype === 'archer' ? c.role === 'ranged' : c.role === 'melee')) ?? this.r.classes[0]!;
+    const rng = new Rng(`${this.state.id}:${npcId}`);
+    const { ch } = createCharacter(this.r, this.world, { name: def.name, classId: cls.id, kinId: this.r.kins[0]!.id, presentation: 'androgynous', pronouns: def.pronouns, sprite: def.asset ?? '', colors: def.colors }, rng);
     ch.npcId = npcId;
     ch.aiControlled = true;
-    ch.pronouns = def.pronouns;
     ch.sprite = def.asset ?? '';
     ch.colors = def.colors;
-    if (level > 1) grantXp(ch, (ch.xp = 0, require_xp(level)), this.world);
-    autoSpend(ch, this.world);
-    ch.hotbar = defaultHotbar(ch);
-    restoreFully(ch, this.world);
+    ch.archetype = def.archetype;
+    levelUpTo(this.r, ch, level, rng);
+    ch.hotbar = defaultHotbar(this.r, ch);
+    restoreFully(this.r, ch);
     p.party.push(ch);
     rt.partyOf = userId;
     const actor = this.npcActor(npcId);
@@ -2021,11 +2237,11 @@ export class GameInstance implements CombatHost {
     const leader = this.leader(p);
     if (z && leader) {
       const spot = this.nearestFree(z.id, { x: Math.round(leader.x) + 1, y: Math.round(leader.y) });
-      const a = new CharActor(ch, userId, z.id, spot.x, spot.y, this.world, () => this.loneWolf(p));
+      const a = new CharActor(ch, userId, z.id, spot.x, spot.y, this.r, () => this.loneWolf(p), this.world);
       z.actors.set(a.id, a);
     }
-    for (const c of p.party) clampPools(c, this.world, this.loneWolf(p));
-    this.journal(p, 'social', `${def.name} joined your ${this.world.terminology.party.toLowerCase()}.`);
+    for (const c of p.party) clampPools(this.r, c, this.loneWolf(p));
+    this.journal(p, 'social', `${def.name} joined your ${this.r.terminology.party.toLowerCase()}.`);
     this.markPlayer(userId);
     return null;
   }
@@ -2049,15 +2265,15 @@ export class GameInstance implements CombatHost {
       this.broadcastZone(z.id, { t: 'entities', upsert: [], remove: [ch.id] });
     }
     const home = this.zones.get(def.zoneId);
-    if (home && !home.actors.has(npcId)) home.actors.set(npcId, new NpcActor(def, rt, def.zoneId, this.world));
-    this.journal(p, 'social', `${def.name} left your ${this.world.terminology.party.toLowerCase()} and went home.`);
+    if (home && !home.actors.has(npcId)) home.actors.set(npcId, new NpcActor(def, rt, def.zoneId, this.r));
+    this.journal(p, 'social', `${def.name} left your ${this.r.terminology.party.toLowerCase()} and went home.`);
     this.markPlayer(userId);
   }
 
   healParty(userId: string) {
     const p = this.state.players[userId];
     if (!p) return;
-    for (const ch of p.party) restoreFully(ch, this.world, this.loneWolf(p));
+    for (const ch of p.party) restoreFully(this.r, ch, this.loneWolf(p));
     for (const a of this.charActors(p)) a.dirty = true;
     this.markPlayer(userId);
   }
@@ -2138,7 +2354,7 @@ export class GameInstance implements CombatHost {
         const p = this.state.players[u];
         const z = this.zones.get(a.zoneId);
         const leader = p && this.leader(p);
-        if (z && leader) setTimeout(() => this.startCombat(z, a, leader, false), 600);
+        if (z && leader) this.after(600, () => this.startCombat(z, a, leader, false));
       },
       callGuards: (npcId: string, u: string) => {
         const rt = this.state.npcs[npcId];
@@ -2167,7 +2383,7 @@ export class GameInstance implements CombatHost {
       giveItemsToPlayer: (u: string, items: ItemInstance[]) => {
         const p = this.state.players[u];
         if (!p) return;
-        addToInventory(p.inventory, items);
+        addToInventory(this.r, p.inventory, items);
         this.quests.refreshCollect(p);
         this.markPlayer(u);
       },
@@ -2185,17 +2401,27 @@ export class GameInstance implements CombatHost {
         this.markPlayer(u);
         return true;
       },
+      /** Teachable: skills of the leader's class tree whose tier is unlocked; a lesson replaces the tree point. */
+      teachableSkills: (u: string) => {
+        const p = this.state.players[u];
+        if (!p) return [];
+        const lead = p.party.find((c) => c.id === p.leaderId) ?? p.party[0]!;
+        const nodes = [...(rx(this.r).nodes.get(lead.classId)?.values() ?? [])].filter((n) => n.kind === 'skill' && n.skillId && !canAllocate(this.r, { ...lead, treePoints: 1 }, n.id));
+        return nodes.map((n) => n.skillId!);
+      },
       teachSkill: (u: string, skillId: string, price: number) => {
         const p = this.state.players[u];
         if (!p) return 'No one to teach.';
         const leader = p.party.find((c) => c.id === p.leaderId) ?? p.party[0]!;
-        if (leader.skills.includes(skillId)) return `${leader.name} already knows that.`;
-        const s = SKILLS[skillId];
-        if (s && s.minLevel > leader.level) return `${leader.name} needs more experience first (${this.world.terminology.level} ${s.minLevel}).`;
-        if (p.gold < price) return `You cannot afford the lesson (${price} ${this.world.terminology.gold}).`;
+        if (knownSkills(this.r, leader).includes(skillId)) return `${leader.name} already knows that.`;
+        const node = [...(rx(this.r).nodes.get(leader.classId)?.values() ?? [])].find((n) => n.kind === 'skill' && n.skillId === skillId);
+        if (!node) return `${leader.name} could never learn that — it is not of their calling.`;
+        const why = canAllocate(this.r, { ...leader, treePoints: 1 }, node.id);
+        if (why) return `${leader.name} is not ready for that yet (${why.toLowerCase()})`;
+        if (p.gold < price) return `You cannot afford the lesson (${price} ${this.r.terminology.currency}).`;
         p.gold -= price;
-        leader.skills.push(skillId);
-        if (!s?.passive && leader.hotbar.length < 10) leader.hotbar.push(skillId);
+        leader.tree[node.id] = 1;
+        if (leader.hotbar.length < 10) leader.hotbar.push(skillId);
         this.markPlayer(u);
         return null;
       },
@@ -2217,10 +2443,11 @@ export class GameInstance implements CombatHost {
         const p = this.state.players[u];
         if (!p) return '';
         const lead = p.party.find((c) => c.id === p.leaderId) ?? p.party[0]!;
-        const origin = this.world.origins.find((o) => o.id === lead.originId);
-        const rest = p.party.filter((c) => c !== lead).map((c) => `${c.name} (${c.npcId ? 'companion' : this.world.origins.find((o) => o.id === c.originId)?.name})`);
+        const look = this.world.origins.find((o) => o.id === lead.classId);
+        const kin = rx(this.r).kin.get(lead.kinId)?.name;
+        const rest = p.party.filter((c) => c !== lead).map((c) => `${c.name} (${c.npcId ? 'companion' : this.ctx.className(c.classId)})`);
         const fame = p.stats.questsCompleted > 6 ? 'well known in these parts' : p.stats.questsCompleted > 2 ? 'gaining a reputation' : 'a newcomer';
-        return `${lead.name}, a ${this.world.terminology.level.toLowerCase()} ${lead.level} ${origin?.name ?? 'adventurer'} (${origin?.appearance ?? ''}), ${fame}.${rest.length ? ` Travelling with ${rest.join(', ')}.` : ''}${lead.skills.includes('silver_tongue') ? ' They are unusually persuasive.' : ''}`;
+        return `${lead.name} (${lead.pronouns}), a ${this.r.terminology.level.toLowerCase()} ${lead.level} ${kin ? `${kin} ` : ''}${this.ctx.className(lead.classId)}${look?.appearance ? ` (${look.appearance})` : ''}, ${fame}.${rest.length ? ` Travelling with ${rest.join(', ')}.` : ''}`;
       },
       communication: () => this.world.input.communication,
       dynamicQuest: (def: QuestDef) => {
@@ -2233,13 +2460,13 @@ export class GameInstance implements CombatHost {
         const p = this.state.players[u];
         if (!p) return 'No party.';
         const lead = p.party.find((c) => c.id === p.leaderId) ?? p.party[0]!;
-        if (!lead.skills.includes(skillId)) return 'You do not know that ability.';
-        const s = SKILLS[skillId];
+        if (!knownSkills(this.r, lead).includes(skillId)) return 'You do not know that ability.';
+        const s = rx(this.r).skill.get(skillId);
         if (!s) return 'Unknown ability.';
-        const pool = this.world.systems.dualEnergy ? s.pool ?? (s.school === 'elemental' || s.school === 'occult' || s.school === 'restoration' ? 'focus' : 'stamina') : 'stamina';
-        if ((pool === 'focus' ? lead.focus : lead.stamina) < s.cost) return `Not enough ${this.world.terminology[pool]}.`;
-        if (pool === 'focus') lead.focus -= s.cost;
-        else lead.stamina -= s.cost;
+        if (s.cost) {
+          if ((lead.pools[s.cost.poolId] ?? 0) < s.cost.amount) return `Not enough ${rx(this.r).pool.get(s.cost.poolId)?.name ?? 'energy'}.`;
+          lead.pools[s.cost.poolId] = (lead.pools[s.cost.poolId] ?? 0) - s.cost.amount;
+        }
         this.markPlayer(u);
         return null;
       },
@@ -2249,7 +2476,7 @@ export class GameInstance implements CombatHost {
         const leader = p && this.leader(p);
         if (!npc || !leader) return;
         npc.talkingTo = null;
-        const skill = getSkill(skillId);
+        const skill = rx(this.r).skill.get(skillId);
         if (!skill) return;
         if (!npc.rt.hostileTo.includes(u)) npc.rt.hostileTo.push(u);
         executeSkill(this, { user: leader, skill, target: npc }, false);
@@ -2260,7 +2487,7 @@ export class GameInstance implements CombatHost {
   private createDynamicItem(name: string, description: string, nearZoneId: string): string {
     const id = uid('u_dyn');
     this.state.dynamicItems ??= {};
-    this.state.dynamicItems[id] = { id, baseId: 'q_item', name: name.charAt(0).toUpperCase() + name.slice(1), description, rarity: 'rare', questItem: true };
+    this.state.dynamicItems[id] = { id, baseId: 'quest_item', name: name.charAt(0).toUpperCase() + name.slice(1), description, rarityId: this.r.rarities[2]!.id, mods: [], questItem: true };
     this.mergeDynamicItems();
     // Hide it in a nearby non-town zone.
     const outer = this.ctx.zones.get(this.ctx.outerZone(nearZoneId));
@@ -2272,7 +2499,7 @@ export class GameInstance implements CombatHost {
       for (let i = 0; i < 300; i++) {
         const x = r.int(2, map.def.width - 3), y = r.int(2, map.def.height - 3);
         if (!map.solid[y * map.def.width + x] && Math.hypot(x - map.def.entry.x, y - map.def.entry.y) > 10) {
-          rt.loot.push({ id: uid('lp'), x, y, items: [{ id: uid('it'), baseId: 'q_item', level: 1, rarity: 'rare', affixes: [], qty: 1, uniqueId: id, bound: true }], gold: 0, label: name, createdAt: Date.now() });
+          rt.loot.push({ id: uid('lp'), x, y, items: [makeUnique(this.r, this.state.dynamicItems![id]!, 1)], gold: 0, label: name, createdAt: Date.now() });
           const lz = this.zones.get(target.id);
           if (lz) lz.lootDirty = true;
           break;
@@ -2283,8 +2510,7 @@ export class GameInstance implements CombatHost {
   }
 
   private mergeDynamicItems() {
-    const merged = { ...this.world.uniqueItems, ...(this.state.dynamicItems ?? {}) };
-    (this.ctx.naming as unknown as { uniqueItems: typeof merged }).uniqueItems = merged;
+    this.ctx.uniqueItems = { ...this.world.uniqueItems, ...(this.state.dynamicItems ?? {}) };
   }
 
   questDef(id: string): QuestDef | undefined {
@@ -2306,13 +2532,4 @@ export class GameInstance implements CombatHost {
   }
 }
 
-function require_xp(level: number) {
-  let xp = 0;
-  for (let l = 2; l <= level; l++) {
-    const n = l - 1;
-    xp = Math.round(100 * n + 60 * n * n + 6 * n * n * n);
-  }
-  return xp;
-}
-
-export type { MonsterArchetype, CharacterSpec, ORIGIN };
+export type { MonsterArchetype, CharacterSpec, DifficultyId };

@@ -26,9 +26,11 @@ packages/shared   Fixed game rules shared by server and client: attributes, dama
                   types, NPC action vocabulary, stats & combat math, protocol, pathfinding.
 packages/server   TypeScript (Node) authoritative game server.
   genai/          Provider layer: OpenAI-compatible chat, OpenAI Responses, Anthropic, Google Gemini, ComfyUI,
-                  OpenAI images, Gemini images, procedural. Structured output with zod validation, JSON repair,
-                  retry-with-feedback, concurrency limits, call log. Image pipeline: seamless textures,
-                  background removal, cut-off detection, vision-model scoring, regenerate until good enough.
+                  OpenAI images, Gemini images, llama.cpp decision models, procedural. Structured output with zod
+                  validation, JSON repair, retry-with-feedback, concurrency limits, call log, and a GPU scheduler
+                  that keeps one local model resident at a time. Image pipeline: LLM-written descriptive prompts,
+                  native alpha or background removal, seamless textures, cut-off detection, scoring by a decision
+                  model or vision LLM, regenerate until good enough.
   worldgen/       Generation pipeline: concept → atlas → monsters/skills/items/affixes → main story →
                   per-town and per-area content → procedural layouts → assembly & validation → art.
   game/           Instances: zones, movement, traps, interactions, loot, trade, crafting, quests, NPC dialogue,
@@ -43,7 +45,17 @@ config/           genai.example.json, ComfyUI workflow template.
 - **Fixed mechanics, generated flavor.** Every world shares one balanced rule set. The AI renames mechanics ("Health" may be "Hull Integrity", gold may be "Acorns"), picks which skills/systems fit, and writes names, descriptions, characters and story. It never invents numbers.
 - **Closed action sets.** NPCs choose from a fixed list of actions (give item, offer quest, complete/modify/add objective, fail quest, trade, attack, join party, remember, reveal location, teach skill, create a small quest, …). The schema sent to the model uses dynamic enums of the valid quest/item/zone/skill ids for *that* conversation, and the engine validates every action before executing it.
 - **Every generation step has a procedural fallback**, field by field. A weak or misbehaving local model degrades content quality, never playability. The assembler resolves every story reference (fuzzy matching names), guarantees every quest is completable, every exit is reachable, and every quest item can be obtained.
-- **Pre-generate everything that can be.** Worlds are generated once and saved (`data/worlds/<id>/world.json` + `assets/`). Any number of save instances can be played from one world.
+- **Pre-generate everything that can be.** Worlds are generated once and saved. Any number of save instances can be played from one world.
+
+### Storage
+
+| What | Where | Why |
+|---|---|---|
+| Accounts, sessions, catalog of worlds and saves | `data/gd.sqlite` (SQLite, WAL) | Relational, shared by the server and CLI tools |
+| A world | `data/worlds/<id>/world.json` + `assets/` | Written during generation, then read whole: plain JSON stays inspectable, hand-editable and portable (copy the folder) |
+| A save (instance) | `data/instances/<id>.sqlite` | State split into sections (players, zones, NPCs, conversations, journal, explored maps); an autosave writes only what changed, in one transaction; one file per save |
+
+Older layouts are migrated automatically on start (originals of JSON files go to `data/legacy-json/`).
 
 ### Gameplay summary
 
@@ -65,22 +77,24 @@ Each purpose maps to a provider:
 |---|---|---|
 | `world.design` | Concept, map, monsters, main story | Smartest model you have |
 | `world.content` | Towns, residents, side quests, tilesets, item/skill names | Many calls; can run in parallel |
-| `npc.decision` | NPC actions + speech each conversation turn | Latency matters; structured output |
+| `npc.decision` | NPC actions + speech each conversation turn | Latency matters; structured output, or a decision model (actions) with the LLM for speech |
 | `npc.dialogue` | Optional separate speech model | Only when `combineNpcDecisionAndDialogue` is false |
 | `image.texture` / `image.sprite` / `image.icon` | Art | ComfyUI, OpenAI images, Gemini images |
-| `image.check` | Vision model scoring generated images | Optional; heuristics run regardless |
+| `image.check` | Scoring generated images | Decision model or vision LLM; heuristics run regardless |
+| `image.prompt` | Writing long descriptive prompts for the image model | Used when the image provider has `"promptStyle": "descriptive"` |
 
-Provider types: `openai-chat` (OpenAI and any OpenAI-compatible server: llama.cpp, LM Studio, vLLM, Ollama, OpenRouter), `openai-responses`, `anthropic` (official SDK, structured outputs, server-side refusal fallbacks enabled — set `"extraBody": {"fallbacks": false}` to disable), `google`, `comfyui`, `openai-image`, `google-image`, `procedural`. API keys can be literal or `"env:VAR_NAME"`. `structured` can be `json_schema` (native constrained decoding), `json_object`, or `prompt` (schema in the prompt only) for servers without schema support.
+Provider types: `openai-chat` (OpenAI and any OpenAI-compatible server: llama.cpp, LM Studio, vLLM, Ollama, OpenRouter), `llamacpp-decision` (llama.cpp `/v1/systemone` decision models), `openai-responses`, `anthropic` (official SDK, structured outputs, server-side refusal fallbacks enabled — set `"extraBody": {"fallbacks": false}` to disable), `google`, `comfyui`, `openai-image`, `google-image`, `procedural`. API keys can be literal or `"env:VAR_NAME"`. `structured` can be `json_schema` (native constrained decoding), `json_object`, or `prompt` (schema in the prompt only) for servers without schema support.
 
-World generation runs all text steps first and images last, so on a single GPU you can let one model unload before the image model loads (Ollama/LM Studio do this automatically).
+World generation runs all text steps first (including writing image prompts) and images last. Providers that share a `"gpu"` group never run at the same time: before switching models the engine unloads the resident one (llama.cpp router `/models/unload`, ComfyUI `/free`), and when it takes the GPU it also evicts anything another process left loaded. Image providers can set `"promptStyle": "descriptive"` (long observer-style paragraphs, for Qwen Image / Flux / Krea) or `"tags"` (SDXL), and `"alpha": "native"` (the model outputs transparency) or `"cutout"` (background removed in code).
 
-## What I need from you for local testing (16 GB VRAM)
+## Local setup (16 GB VRAM)
 
-1. **A text model behind an OpenAI-compatible endpoint with JSON-schema support.** Recommended: `llama-server` (llama.cpp) or LM Studio with **Qwen3-14B Q4_K_M** (~9 GB) — or Qwen3-8B / Gemma-3-12B if you want more headroom — and a context of at least **16k** tokens (town prompts plus output reach ~10k). Disable "thinking" for speed (the example config passes `enable_thinking: false`). Point `local-llm.baseUrl` at it. This one endpoint can serve `world.design`, `world.content`, `npc.decision` and `narration`.
-2. **ComfyUI** on `http://127.0.0.1:8188` with an **SDXL** checkpoint (base or a stylized finetune). Set `comfy.checkpoint` to the file name. The included workflow (`config/comfyui/sdxl_txt2img.json`) is a plain txt2img graph; swap in your own API-format workflow using the `{{prompt}}`, `{{negative}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{checkpoint}}`, `{{steps}}`, `{{cfg}}` placeholders.
-3. *(Optional)* **A small vision model** for `image.check`, e.g. Qwen2.5-VL-3B/7B via llama.cpp, LM Studio or Ollama. On 16 GB alongside SDXL, prefer the 3B, or leave `image.check` as `procedural` (heuristic checks still catch missing subjects, cut-off figures and failed background removal).
+`config/genai.example.json` matches the tested local setup:
 
-When those are up, tell me the URLs/model names and I'll tune prompts, temperatures and token limits against what your models actually produce.
+1. **llama.cpp in router mode** (`llama-server --models-dir .\models --port 9931 --parallel 1 --ctx-size 16384 --cache-type-k q8_0 --cache-type-v q8_0`) serving a text/vision LLM (tested: Qwen3.8-27B IQ3_S) and a decision model (tested: vllm-d3-flash). `--parallel 1` matters: the default splits the context into 4 slots of 4k, too small for town generation.
+2. **ComfyUI** on `http://127.0.0.1:8188` with Qwen Image 2.1 Turbo (int8, native transparency, `config/comfyui/qwen_image_2_1_turbo_t2i.json`). Krea 2 Turbo and SDXL workflows are included as alternatives. Workflows are API-format JSON with `{{prompt}}`, `{{negative}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{checkpoint}}`, `{{steps}}`, `{{cfg}}` placeholders.
+
+All three share the GPU group `local`, so only one is loaded at a time.
 
 ## Known limitations (v1)
 

@@ -3,7 +3,7 @@
  * modest local models can satisfy them. Everything optional is backfilled from procedural content.
  */
 import { z } from 'zod';
-import { DAMAGE_TYPES, MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES, TILE_ROLES, TRAP_KINDS } from '@gd/shared';
+import { MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES, TILE_ROLES } from '@gd/shared';
 
 const str = (max: number, min = 1) => z.string().trim().min(min).max(max);
 /** Lenient color: models may answer '#a1b2c3', 'a1b2c3', '#abc' or a color name; normalized later by normColor(). */
@@ -32,7 +32,6 @@ export function normColors(list: string[] | undefined): string[] {
 export const TILESET_STYLES = ['grass', 'stone', 'sand', 'snow', 'dirt', 'wood', 'metal', 'crystal', 'flesh', 'void'] as const;
 export const WEATHER = ['none', 'rain', 'snow', 'ash', 'spores', 'embers', 'dust', 'fireflies'] as const;
 
-const names = <T extends readonly string[]>(keys: T) => z.object(Object.fromEntries(keys.map((k) => [k, str(32).optional()])) as Record<T[number], z.ZodOptional<z.ZodString>>);
 
 export const ConceptSchema = z.object({
   title: str(80, 2),
@@ -45,16 +44,6 @@ export const ConceptSchema = z.object({
   secret: str(900, 10).describe('The hidden truth the story builds toward. Never revealed early.'),
   villain: z.object({ name: str(60), title: str(80), motive: str(400) }),
   palette: z.object({ primary: hex, secondary: hex, accent: hex }).optional(),
-  terminology: z
-    .object({
-      health: str(32), stamina: str(32), focus: str(32), physArmor: str(32), magArmor: str(32), gold: str(32), xp: str(32), level: str(32),
-      town: str(32), dungeon: str(32), wilderness: str(32), quest: str(32), party: str(32),
-      attributes: names(['might', 'finesse', 'intellect', 'vitality', 'spirit', 'wits'] as const),
-      schools: names(['warfare', 'marksmanship', 'shadow', 'elemental', 'occult', 'restoration', 'utility'] as const),
-      damageTypes: names(DAMAGE_TYPES),
-    })
-    .partial(),
-  systems: z.object({ crafting: z.boolean(), traps: z.boolean(), dualEnergy: z.boolean(), lockpicking: z.boolean() }).partial().optional(),
   factions: z.array(z.object({ name: str(60), description: str(300) })).max(5),
   worldFacts: z.array(str(300)).max(14),
 });
@@ -147,37 +136,13 @@ export function storySchema(townSlots: string[], dungeonSlots: string[], allSlot
 }
 export type StoryOut = z.infer<ReturnType<typeof storySchema>>;
 
-export function skillsSchema(skillIds: string[], originIds: string[]) {
-  return z.object({
-    skills: z.array(z.object({ id: z.enum(skillIds as [string, ...string[]]), name: str(40), description: str(240) })).min(8),
-    origins: z.array(z.object({ id: z.enum(originIds as [string, ...string[]]), name: str(40), description: str(300), appearance: str(300) })),
-  });
-}
-export type SkillsOut = z.infer<ReturnType<typeof skillsSchema>>;
-
-export function itemsSchema(baseIds: string[]) {
-  return z.object({
-    items: z.array(z.object({ baseId: z.enum(baseIds as [string, ...string[]]), names: z.array(str(40)).min(1).max(3), description: str(240) })),
-  });
-}
-export type ItemsOut = z.infer<ReturnType<typeof itemsSchema>>;
-
-export function affixSchema(affixIds: string[], recipeIds: string[]) {
-  return z.object({
-    affixes: z.array(z.object({ id: z.enum(affixIds as [string, ...string[]]), prefix: str(24), suffix: str(32) })),
-    traps: z.array(z.object({ kind: z.enum(TRAP_KINDS), name: str(40) })),
-    recipes: z.array(z.object({ id: z.enum(recipeIds as [string, ...string[]]), name: str(48) })).optional(),
-  });
-}
-export type AffixOut = z.infer<ReturnType<typeof affixSchema>>;
-
 export const FamiliesSchema = z.object({
   families: z
     .array(
       z.object({
         name: str(48),
         description: str(300),
-        element: z.enum(DAMAGE_TYPES),
+        element: z.string().max(40).describe('Name of the damage subtype (or damage type) they deal'),
         habitat: str(120).describe('Space-separated words for where they live, e.g. "forest cave swamp".'),
         colors: z.array(hex).min(1).max(4),
         members: z.array(z.object({ archetype: z.enum(MONSTER_ARCHETYPES), name: str(48), description: str(240), appearance: str(240) })).min(2).max(5),

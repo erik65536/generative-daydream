@@ -8,6 +8,7 @@ const P = {
   menu: 'M4 6h16M4 12h16M4 18h16',
   help: 'M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.8.4-1 1-1 1.7v.5M12 17h.01M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z',
   craft: 'M14 6l4 4-9 9-4-4zM16 4l4 4M4 20l2-2',
+  codex: 'M4 5a2 2 0 0 1 2-2h5v17H6a2 2 0 0 0-2 2zM20 5a2 2 0 0 0-2-2h-5v17h5a2 2 0 0 1 2 2zM7 8h2M15 8h2M7 12h2M15 12h2',
 };
 
 export function Icon({ name, size = 18 }: { name: keyof typeof P; size?: number }) {

@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { getSkill } from '@gd/shared';
+import { rx } from '@gd/shared';
 import type { Me } from '../api';
 import { GameClient, setClient, clearClient, useGame, client } from '../net/game';
 import { Renderer, type HoverInfo } from '../render/renderer';
 import { ActionBar, CombatLog, Narration, PartyFrames, Toasts, TopRight, TurnBar, startSkill } from '../ui/hud';
-import { CharacterWindow, CraftWindow, DialogWindow, HelpWindow, InventoryWindow, LootWindow, MapWindow, MenuWindow, QuestWindow, SkillsWindow, TradeWindow } from '../ui/windows';
+import { CharacterWindow, CodexWindow, CraftWindow, DialogWindow, HelpWindow, InventoryWindow, LootWindow, MapWindow, MenuWindow, QuestWindow, SkillsWindow, TradeWindow } from '../ui/windows';
 import { hideTip } from '../ui/common';
 import { navigate } from '../App';
+import { applyWorldTheme } from '../ui/theme';
 
 export function GameScreen({ me, instanceId }: { me: Me; instanceId: string }) {
   const [gc, setGc] = useState<GameClient | null>(null);
@@ -25,7 +26,7 @@ export function GameScreen({ me, instanceId }: { me: Me; instanceId: string }) {
   return <GameView key={instanceId} me={me} />;
 }
 
-function handleClick(r: Renderer, info: HoverInfo, button: number) {
+function handleClick(r: Renderer, info: HoverInfo, button: number, ev?: MouseEvent) {
   const c = client();
   const st = c.state;
   hideTip();
@@ -42,10 +43,9 @@ function handleClick(r: Renderer, info: HoverInfo, button: number) {
     const point = info.tile ? { x: info.tile.x, y: info.tile.y } : undefined;
     const targetId = info.entityId;
     if (tgt.skillId) {
-      const s = getSkill(tgt.skillId);
+      const s = rx(c.r).skill.get(tgt.skillId);
       const needsEntity = s?.targeting === 'enemy' || s?.targeting === 'ally';
-      if (s?.utility === 'disarm_trap' || s?.utility === 'pick_lock') c.send({ t: 'use_skill', charId: tgt.charId, skillId: tgt.skillId, targetId: info.featureId, x: point?.x, y: point?.y });
-      else if (needsEntity && !targetId) return c.toast('Choose a target.', 'bad');
+      if (needsEntity && !targetId) return c.toast('Choose a target.', 'bad');
       else c.send({ t: 'use_skill', charId: tgt.charId, skillId: tgt.skillId, targetId, x: point?.x, y: point?.y });
     } else if (tgt.itemId) c.send({ t: 'use_item', charId: tgt.charId, itemId: tgt.itemId, targetId, x: point?.x, y: point?.y });
     c.update({ targeting: null });
@@ -70,10 +70,14 @@ function handleClick(r: Renderer, info: HoverInfo, button: number) {
     }
   }
   if ((info.featureId || info.lootId) && !st.combat) {
-    c.send({ t: 'interact', targetId: (info.lootId ?? info.featureId)!, charId });
+    // Click takes everything; shift-click opens the container to pick items.
+    c.send({ t: 'interact', targetId: (info.lootId ?? info.featureId)!, charId, inspect: !!ev?.shiftKey });
     return;
   }
-  if (info.tile) c.send({ t: 'move', x: info.tile.x, y: info.tile.y, charId: st.combat ? undefined : charId });
+  if (info.tile) {
+    const at = !st.combat && info.point ? info.point : info.tile;
+    c.send({ t: 'move', x: at.x, y: at.y, charId: st.combat ? undefined : charId });
+  }
   void r;
 }
 
@@ -87,7 +91,7 @@ function GameView({ me }: { me: Me }) {
   useEffect(() => {
     const r = new Renderer(canvasRef.current!, c);
     rendererRef.current = r;
-    r.onClick = (info, button) => handleClick(r, info, button);
+    r.onClick = (info, button, ev) => handleClick(r, info, button, ev);
     const noteTimer = setInterval(() => {
       const n = r.cursorNote;
       r.cursorNote = null;
@@ -99,12 +103,8 @@ function GameView({ me }: { me: Me }) {
     };
   }, []);
 
-  // Apply world palette accent to the UI.
-  useEffect(() => {
-    if (world?.concept.palette) {
-      document.documentElement.style.setProperty('--accent', world.concept.palette.accent);
-    }
-  }, [world?.id]);
+  // The UI takes its colours and typefaces from the world.
+  useEffect(() => applyWorldTheme(world), [world?.id]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -153,7 +153,8 @@ function GameView({ me }: { me: Me }) {
       else if (k === 'k') toggle('skills');
       else if (k === 'j' || k === 'l' || k === 'q') toggle('quests');
       else if (k === 'm') toggle('map');
-      else if (k === 'b' && st.world?.systems.crafting) toggle('craft');
+      else if (k === 'b' && st.world && (st.world.ruleset.crafting.enabled || st.world.ruleset.crafting.upgrades.enabled || st.world.ruleset.crafting.enchanting.enabled)) toggle('craft');
+      else if (k === 'x') toggle('codex');
       else if (k === 'h' || k === '?') toggle('help');
     };
     window.addEventListener('keydown', onKey);
@@ -162,8 +163,17 @@ function GameView({ me }: { me: Me }) {
 
   const close = () => c.update({ panel: null });
   return (
-    <div className={`game ${targeting ? 'targeting' : ''}`}>
+    <div
+      className={`game ${targeting ? 'targeting' : ''}`}
+      onContextMenu={(e) => {
+        // The game uses right-click; keep the browser menu only for text fields.
+        const tag = (e.target as HTMLElement).tagName;
+        if (tag !== 'INPUT' && tag !== 'TEXTAREA') e.preventDefault();
+      }}
+    >
       <canvas ref={canvasRef} className="view" />
+      {/* Per-world colour grading over the scene (below the HUD). */}
+      <div className="grade" aria-hidden><i className="grain" /></div>
       <div className="hud">
         <PartyFrames />
         <TopRight open={(p) => c.update({ panel: panel === p ? null : p })} />
@@ -173,7 +183,7 @@ function GameView({ me }: { me: Me }) {
         <Toasts />
         {targeting && (
           <div className="badge" style={{ position: 'absolute', bottom: 132, left: '50%', transform: 'translateX(-50%)', padding: '6px 14px', fontSize: 12 }}>
-            {targeting.skillId ? `Choose a target for ${c.naming()?.skills[targeting.skillId]?.name ?? getSkill(targeting.skillId)?.defaultName}` : 'Choose where to use it'} — right-click to cancel
+            {targeting.skillId ? `Choose a target for ${c.skillName(targeting.skillId)}` : 'Choose where to use it'} — right-click to cancel
           </div>
         )}
         {panel === 'inventory' && <InventoryWindow onClose={close} />}
@@ -182,8 +192,9 @@ function GameView({ me }: { me: Me }) {
         {panel === 'quests' && <QuestWindow onClose={close} />}
         {panel === 'map' && <MapWindow onClose={close} />}
         {panel === 'craft' && <CraftWindow onClose={close} />}
-        {panel === 'menu' && <MenuWindow onClose={close} onHelp={() => c.update({ panel: 'help' })} />}
+        {panel === 'menu' && <MenuWindow onClose={close} onHelp={() => c.update({ panel: 'help' })} onCodex={() => c.update({ panel: 'codex' })} />}
         {panel === 'help' && <HelpWindow onClose={close} />}
+        {panel === 'codex' && <CodexWindow onClose={close} />}
         {trade && <TradeWindow />}
         {trade && panel !== 'inventory' && <InventoryWindow onClose={() => c.send({ t: 'end_trade' })} />}
         {dialog && !trade && <DialogWindow />}

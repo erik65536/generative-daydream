@@ -35,14 +35,15 @@ export interface WorldSummary {
   public: boolean;
   status: 'generating' | 'ready' | 'failed';
   createdAt: number;
-  input: { size: string; length: string; combatMode: string; communication: number; art: string };
+  input: { size: string; length: string; combatMode: string; communication: number; art: string; difficulty: import('@gd/shared').DifficultyId };
+  rules?: { name: string; classes: string[]; balance?: { at: number; ok: number; total: number; durationMs: number } };
   zones: number;
   npcs: number;
   quests: number;
   palette: { primary: string; secondary: string; accent: string; ui: string };
   cover?: string;
   artProgress: { ok: number; total: number };
-  job?: { status: string; progress: number; step: string };
+  job?: { status: string; progress: number; step: string; error?: string };
 }
 
 export interface JobStatus {
@@ -57,20 +58,15 @@ export interface JobStatus {
 export interface WorldSetup {
   id: string;
   concept: { title: string; pitch: string; tone: string; playerRole: string; genre: string; palette: WorldSummary['palette'] };
-  terminology: import('@gd/shared').Terminology;
+  ruleset: import('@gd/shared').Ruleset;
   combatMode: 'solo' | 'party_manual' | 'party_npc';
-  origins: { id: string; name: string; description: string; appearance: string; asset?: string; template: import('@gd/shared').OriginTemplate }[];
-  skills: { id: string; name: string; description: string; school: string; minLevel: number; passive: boolean; summary: string }[];
+  difficulty: import('@gd/shared').DifficultyId;
+  /** Look of each class (id = class id). */
+  origins: { id: string; name: string; description: string; appearance: string; asset?: string }[];
   assets: Record<string, string>;
 }
 
-export interface CharSpec {
-  name: string;
-  originId: string;
-  attributes?: Record<string, number>;
-  skills?: string[];
-  colors?: string[];
-}
+export type CharSpec = Omit<import('@gd/shared').CharacterSpec, 'sprite'>;
 
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
@@ -86,11 +82,14 @@ export const api = {
   regenArt: (id: string, level: 'essential' | 'full', retryFailed = false) => call<{ ok: true }>('POST', `/api/worlds/${id}/art`, { level, retryFailed }),
   setup: (id: string) => call<WorldSetup>('GET', `/api/worlds/${id}/setup`),
   instances: (worldId: string) => call<import('@gd/shared').InstanceSummary[]>('GET', `/api/worlds/${worldId}/instances`),
-  createInstance: (worldId: string, name: string, party: CharSpec[]) => call<{ instanceId: string }>('POST', `/api/worlds/${worldId}/instances`, { name, party }),
+  createInstance: (worldId: string, name: string, party: CharSpec[], difficulty?: import('@gd/shared').DifficultyId) => call<{ instanceId: string }>('POST', `/api/worlds/${worldId}/instances`, { name, party, difficulty }),
+  rules: (id: string) => call<{ ruleset: import('@gd/shared').Ruleset | null; canRebalance: boolean }>('GET', `/api/worlds/${id}/rules`),
+  regenRules: (id: string, mode: 'regenerate' | 'rebalance') => call<{ ok: true; mode: string }>('POST', `/api/worlds/${id}/rules`, { mode }),
   instance: (id: string) => call<import('@gd/shared').InstanceSummary & { hasCharacter: boolean }>('GET', `/api/instances/${id}`),
   joinInstance: (id: string, party: CharSpec[]) => call<{ ok: true }>('POST', `/api/instances/${id}/join`, { party }),
   deleteInstance: (id: string) => call<{ ok: true }>('DELETE', `/api/instances/${id}`),
-  genai: () => call<{ purposes: { purpose: string; provider: string; type: string; model?: string }[]; recent: { at: number; purpose: string; provider: string; ms: number; ok: boolean; error?: string; attempt: number; preview?: string }[]; configFile: string | null }>('GET', '/api/genai'),
+  genai: () => call<{ purposes: { purpose: string; provider: string; type: string; model?: string; gpu?: string }[]; recent: { at: number; purpose: string; provider: string; ms: number; ok: boolean; error?: string; attempt: number; preview?: string }[]; gpu: { group: string; resident: string | null; switches: number }[]; configFile: string | null }>('GET', '/api/genai'),
+  genaiRelease: () => call<{ gpu: { group: string; resident: string | null; switches: number }[] }>('POST', '/api/genai/release'),
   genaiReload: () => call<unknown>('POST', '/api/genai/reload', {}),
   genaiTest: (purpose: string) => call<{ ok: boolean; ms: number; text?: string; json?: unknown; image?: string; error?: string }>('POST', '/api/genai/test', { purpose }),
 };

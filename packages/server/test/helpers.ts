@@ -1,5 +1,5 @@
 import { expect } from 'vitest';
-import { base64ToBytes, GROUND, findPath, type WorldDefinition } from '@gd/shared';
+import { base64ToBytes, GROUND, findPath, type CharacterSpec, type ClassRole, type WorldDefinition } from '@gd/shared';
 import { WorldGenJob, runGeneration } from '../src/worldgen/pipeline';
 import { loadWorld } from '../src/storage';
 
@@ -49,3 +49,9 @@ export function validateWorld(w: WorldDefinition) {
   return errors;
 }
 
+
+/** A character spec for the world's class with the given role (or the first class). */
+export function hero(w: WorldDefinition, name: string, role: ClassRole = 'tank'): CharacterSpec {
+  const cls = w.ruleset.classes.find((c) => c.role === role) ?? w.ruleset.classes[0]!;
+  return { name, classId: cls.id, kinId: w.ruleset.kins[0]!.id, presentation: 'androgynous', pronouns: 'they/them' };
+}

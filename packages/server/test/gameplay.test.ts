@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ServerMessage } from '@gd/shared';
-import { genWorld } from './helpers';
+import { genWorld, hero } from './helpers';
 import { instances } from '../src/game/manager';
 import { Combat } from '../src/game/combat';
 import { MonsterActor, CharActor, NpcActor } from '../src/game/actors';
@@ -11,7 +11,7 @@ describe('gameplay simulation', () => {
   it('plays through dialogue, travel and combat', async () => {
     Combat.instant = true;
     const w = await genWorld('A windswept island kingdom of fishing villages and sea caves', 'small', 'solo');
-    const inst = instances.create(w, 'u1', 'Tester', 'test run', [{ name: 'Mara', originId: 'o_warrior' }]);
+    const inst = instances.create(w, 'u1', 'Tester', 'test run', [hero(w, 'Mara', 'tank')]);
     const msgs: ServerMessage[] = [];
     inst.join({ userId: 'u1', send: (m) => msgs.push(m) });
     const p = inst.state.players.u1!;
@@ -71,7 +71,7 @@ describe('gameplay simulation', () => {
 describe('companions', () => {
   it('recruits an NPC companion through conversation', async () => {
     const w = await genWorld('A misty kingdom of dragons and ruined castles', 'small', 'party_npc');
-    const inst = instances.create(w, 'uc', 'Tester', 'companions', [{ name: 'Lead', originId: 'o_ranger' }]);
+    const inst = instances.create(w, 'uc', 'Tester', 'companions', [hero(w, 'Lead', 'ranged')]);
     inst.join({ userId: 'uc', send: () => {} });
     const comp = w.npcs.find((n) => n.canJoinParty)!;
     expect(comp).toBeTruthy();
@@ -85,4 +85,37 @@ describe('companions', () => {
     await inst.dialogue.say('uc', 'It is time we parted ways.');
     expect(p.party.length).toBe(1);
   }, 60000);
+});
+
+describe('combat movement', () => {
+  it('lets allies pass through each other at a cost, but never share a tile', async () => {
+    Combat.instant = true;
+    const w = await genWorld('A sunburnt frontier of mesas and copper mines', 'small', 'party_manual');
+    const inst = instances.create(w, 'ua', 'Tester', 'ally pass', [hero(w, 'Ana', 'tank'), hero(w, 'Bo', 'ranged')]);
+    inst.join({ userId: 'ua', send: () => {} });
+    const p = inst.state.players.ua!;
+    const wild = w.zones.find((z) => z.kind === 'wilderness')!;
+    inst.transfer(p, wild.id);
+    const zone = inst._live(wild.id);
+    const monster = [...zone.actors.values()].find((a) => a instanceof MonsterActor && a.alive()) as MonsterActor;
+    const [a, b] = inst._charActors('ua') as CharActor[];
+    a!.x = Math.round(monster.x) + 1;
+    a!.y = Math.round(monster.y);
+    inst.handle('ua', { t: 'use_skill', charId: a!.id, skillId: 'attack', targetId: monster.id });
+    await wait(20);
+    const combat = inst._combats()[0]!;
+    expect(combat).toBeTruthy();
+    // Put Bo on a free tile next to Ana, with a free tile beyond him.
+    const free = (x: number, y: number) => !combat.occupied(x, y) && !zone.map.solid[y * zone.map.def.width + x];
+    const dir = [[1, 0], [-1, 0], [0, 1], [0, -1]].find(([dx, dy]) => free(a!.x + dx!, a!.y + dy!) && free(a!.x + 2 * dx!, a!.y + 2 * dy!))!;
+    b!.x = a!.x + dir[0]!;
+    b!.y = a!.y + dir[1]!;
+    expect(combat.allyAt(a!, b!.x, b!.y)).toBe(true);
+    expect(combat.allyAt(a!, Math.round(monster.x), Math.round(monster.y))).toBe(false);
+    // Can't end a move on an ally.
+    expect(combat.pathFor(a!, { x: b!.x, y: b!.y })).toBeNull();
+    // Walking across Bo's tile costs one extra tile of movement.
+    const across = [{ x: b!.x, y: b!.y }, { x: b!.x + dir[0]!, y: b!.y + dir[1]! }];
+    expect(combat.pathCost(a!, across)).toBeCloseTo(3, 5);
+  });
 });

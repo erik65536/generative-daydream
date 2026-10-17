@@ -1,5 +1,6 @@
 /** Procedural icons for skills and items (used when no generated icon exists). */
-import { DAMAGE_INFO, SCHOOL_INFO, getSkill, RARITY_INFO, type SkillEffect, type ItemInstance, ITEM_BASE } from '@gd/shared';
+import { rx, type DamageEffect } from '@gd/shared';
+import { kindColor, rules } from '../rules';
 import { hexToRgb, rgb, shade } from './textures';
 
 function frame(ctx: CanvasRenderingContext2D, s: number, color: string) {
@@ -18,12 +19,15 @@ function frame(ctx: CanvasRenderingContext2D, s: number, color: string) {
 
 export function drawSkillIcon(ctx: CanvasRenderingContext2D, s: number, skillId: string) {
   ctx.clearRect(0, 0, s, s);
-  const sk = getSkill(skillId);
-  if (!sk) return;
-  const school = SCHOOL_INFO[sk.school];
-  const dmg = sk.effects.find((e) => e.kind === 'damage') as Extract<SkillEffect, { kind: 'damage' }> | undefined;
-  const elem = dmg && dmg.type !== 'weapon' ? DAMAGE_INFO[dmg.type].color : school.color;
-  frame(ctx, s, school.color);
+  const rs = rules();
+  const sk = rs ? rx(rs).skill.get(skillId) : undefined;
+  if (!sk || !rs) return;
+  const dmg = sk.effects.find((e) => e.kind === 'damage') as DamageEffect | undefined;
+  const heals = sk.effects.some((e) => e.kind === 'heal' || e.kind === 'barrier' || e.kind === 'revive');
+  const status = sk.effects.find((e) => e.kind === 'status') as { statusId: string } | undefined;
+  const elem = dmg ? kindColor(dmg.subtypeId === '$family' ? undefined : dmg.subtypeId ?? (dmg.weapon ? undefined : dmg.typeId), '#e8d8b0') : heals ? '#7dff9a' : status ? kindColor(status.statusId, '#c9a6ff') : '#e8d8b0';
+  const frameColor = sk.tags.includes('weapon') || sk.tags.includes('basic') ? '#c8a060' : heals ? '#5ac0a8' : '#8a7ab8';
+  frame(ctx, s, frameColor);
   ctx.save();
   ctx.translate(s / 2, s / 2);
   ctx.strokeStyle = '#fff6dc';
@@ -34,7 +38,7 @@ export function drawSkillIcon(ctx: CanvasRenderingContext2D, s: number, skillId:
   ctx.shadowColor = elem;
   ctx.shadowBlur = s * 0.25;
   const r = s * 0.3;
-  if (skillId === 'attack') {
+  if (sk.tags.includes('basic')) {
     ctx.rotate(-0.8);
     ctx.beginPath();
     ctx.moveTo(0, r * 1.1);
@@ -44,7 +48,7 @@ export function drawSkillIcon(ctx: CanvasRenderingContext2D, s: number, skillId:
     ctx.moveTo(-r * 0.45, r * 0.55);
     ctx.lineTo(r * 0.45, r * 0.55);
     ctx.stroke();
-  } else if (sk.utility === 'disarm_trap' || sk.utility === 'pick_lock') {
+  } else if (sk.utility) {
     ctx.beginPath();
     ctx.arc(-r * 0.3, -r * 0.3, r * 0.45, 0, Math.PI * 2);
     ctx.stroke();
@@ -53,7 +57,7 @@ export function drawSkillIcon(ctx: CanvasRenderingContext2D, s: number, skillId:
     ctx.lineTo(r, r);
     ctx.lineTo(r * 0.6, r);
     ctx.stroke();
-  } else if (sk.passive) {
+  } else if (sk.fx === 'none') {
     ctx.beginPath();
     for (let i = 0; i < 5; i++) {
       const a = -Math.PI / 2 + (i * Math.PI * 4) / 5;
@@ -160,11 +164,13 @@ export function drawSkillIcon(ctx: CanvasRenderingContext2D, s: number, skillId:
   ctx.restore();
 }
 
-export function drawItemIcon(ctx: CanvasRenderingContext2D, s: number, item: Pick<ItemInstance, 'baseId' | 'rarity' | 'element'>) {
+export function drawItemIcon(ctx: CanvasRenderingContext2D, s: number, item: { baseId: string; rarityId?: string }) {
   ctx.clearRect(0, 0, s, s);
-  const base = ITEM_BASE[item.baseId];
+  const rs = rules();
+  const base = rs ? rx(rs).item.get(item.baseId) : undefined;
   const icon = base?.icon ?? 'quest';
-  const rc = RARITY_INFO[item.rarity]?.color ?? '#ccc';
+  const rc = (rs && item.rarityId ? rx(rs).rarity.get(item.rarityId)?.color : undefined) ?? '#ccc';
+  const element = base?.weapon?.subtypeId ?? base?.weapon?.typeId;
   ctx.save();
   ctx.translate(s / 2, s / 2);
   const r = s * 0.34;
@@ -237,7 +243,7 @@ export function drawItemIcon(ctx: CanvasRenderingContext2D, s: number, item: Pic
       ctx.moveTo(0, r * 1.1);
       ctx.lineTo(0, -r * (icon === 'staff' ? 0.9 : 0.5));
       ctx.stroke();
-      const ec = DAMAGE_INFO[item.element ?? 'fire']?.color ?? '#8ad';
+      const ec = kindColor(element, '#8ad');
       ctx.shadowColor = ec;
       ctx.shadowBlur = 8;
       ctx.fillStyle = ec;
@@ -347,7 +353,7 @@ export function drawItemIcon(ctx: CanvasRenderingContext2D, s: number, item: Pic
     case 'potion_blue':
     case 'potion_white':
     case 'potion_orange': {
-      const col = { potion_red: '#e0304a', potion_green: '#5ad040', potion_blue: '#4a8ae8', potion_white: '#e8e8f0', potion_orange: '#f09a30' }[icon];
+      const col = ({ potion_red: '#e0304a', potion_green: '#5ad040', potion_blue: '#4a8ae8', potion_white: '#e8e8f0', potion_orange: '#f09a30' } as Record<string, string>)[icon] ?? '#e0304a';
       ctx.fillStyle = 'rgba(220,230,240,0.35)';
       ctx.beginPath();
       ctx.arc(0, r * 0.25, r * 0.7, 0, Math.PI * 2);

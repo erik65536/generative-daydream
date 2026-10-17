@@ -209,3 +209,59 @@ export function reachable(start: Vec2, maxCost: number, opts: PathOptions): Map<
   }
   return out;
 }
+
+/** Body radius (in tiles) used when checking that a straight walk doesn't clip walls or corners. */
+const BODY = 0.24;
+
+function clearAt(x: number, y: number, ok: (x: number, y: number) => boolean): boolean {
+  return ok(Math.round(x - BODY), Math.round(y - BODY)) && ok(Math.round(x + BODY), Math.round(y - BODY)) && ok(Math.round(x - BODY), Math.round(y + BODY)) && ok(Math.round(x + BODY), Math.round(y + BODY));
+}
+
+/** True when a body can walk the straight segment a→b without touching tiles that `ok` rejects. */
+export function segmentClear(a: Vec2, b: Vec2, ok: (x: number, y: number) => boolean): boolean {
+  const len = Math.hypot(b.x - a.x, b.y - a.y);
+  const steps = Math.max(1, Math.ceil(len / 0.2));
+  for (let i = 1; i <= steps; i++) {
+    const f = i / steps;
+    if (!clearAt(a.x + (b.x - a.x) * f, a.y + (b.y - a.y) * f, ok)) return false;
+  }
+  return true;
+}
+
+/**
+ * Where inside tile (tx,ty) a body may stand near the requested point: the offset is clamped so the body
+ * stays clear of blocked neighbours.
+ */
+export function standPoint(tx: number, ty: number, want: Vec2, ok: (x: number, y: number) => boolean): Vec2 {
+  const maxX = ok(tx + 1, ty) ? 0.45 : 0.5 - BODY - 0.01;
+  const minX = ok(tx - 1, ty) ? -0.45 : -(0.5 - BODY - 0.01);
+  const maxY = ok(tx, ty + 1) ? 0.45 : 0.5 - BODY - 0.01;
+  const minY = ok(tx, ty - 1) ? -0.45 : -(0.5 - BODY - 0.01);
+  let p = { x: tx + Math.max(minX, Math.min(maxX, want.x - tx)), y: ty + Math.max(minY, Math.min(maxY, want.y - ty)) };
+  if (!clearAt(p.x, p.y, ok)) p = { x: tx, y: ty };
+  return p;
+}
+
+/**
+ * Turn a tile path into an any-angle path: greedily skip waypoints while the straight line stays clear.
+ * `start` and `end` may be off tile centres.
+ */
+export function smoothPath(start: Vec2, path: Vec2[], ok: (x: number, y: number) => boolean, end?: Vec2): Vec2[] {
+  const pts: Vec2[] = path.map((p) => ({ x: p.x, y: p.y }));
+  if (end && pts.length) pts[pts.length - 1] = end;
+  else if (end && !pts.length && Math.hypot(end.x - start.x, end.y - start.y) > 0.01) pts.push(end);
+  const out: Vec2[] = [];
+  let cur = start;
+  let i = 0;
+  while (i < pts.length) {
+    let j = pts.length - 1;
+    while (j > i && !segmentClear(cur, pts[j]!, ok)) j--;
+    out.push(pts[j]!);
+    cur = pts[j]!;
+    i = j + 1;
+  }
+  return out;
+}
+
+/** Extra movement (in tiles) for squeezing past an ally's tile in combat. Allies can be passed, never shared. */
+export const ALLY_PASS_COST = 1;

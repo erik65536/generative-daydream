@@ -1,5 +1,5 @@
 import { Component, useEffect, useState, type ReactNode } from 'react';
-import { api, type Me } from './api';
+import { api, ApiError, type Me } from './api';
 import { AuthScreen } from './screens/Auth';
 import { Lobby } from './screens/Lobby';
 import { CreateWorld } from './screens/CreateWorld';
@@ -50,7 +50,22 @@ export function App() {
   const [me, setMe] = useState<Me | null | undefined>(undefined);
   const hash = useHash();
   useEffect(() => {
-    api.me().then(setMe, () => setMe(null));
+    // Only a real 401 means signed out; while the server is unreachable (e.g. restarting), keep retrying.
+    let stop = false;
+    let delay = 500;
+    const attempt = () =>
+      api.me().then(
+        (m) => !stop && setMe(m),
+        (e) => {
+          if (stop) return;
+          if (e instanceof ApiError && e.status === 401) return setMe(null);
+          setTimeout(attempt, (delay = Math.min(5000, delay * 1.6)));
+        },
+      );
+    attempt();
+    return () => {
+      stop = true;
+    };
   }, []);
   if (me === undefined)
     return (

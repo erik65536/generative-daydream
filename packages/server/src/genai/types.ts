@@ -10,10 +10,11 @@ export const PURPOSES = [
   'image.sprite', // characters, monsters, objects
   'image.icon', // item icons
   'image.check', // vision model judging generated images
+  'image.prompt', // LLM that turns asset briefs into prompts in the image model's preferred style
 ] as const;
 export type Purpose = (typeof PURPOSES)[number];
 
-export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'google' | 'comfyui' | 'openai-image' | 'google-image';
+export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'google' | 'comfyui' | 'openai-image' | 'google-image' | 'llamacpp-decision';
 
 export interface ProviderConfig {
   type: ProviderType;
@@ -37,8 +38,22 @@ export interface ProviderConfig {
   cfg?: number;
   /** Strip <think>...</think> blocks emitted by reasoning models. */
   stripThinking?: boolean;
+  /**
+   * Image models: how prompts are written. 'tags' = comma-separated keywords (SDXL style);
+   * 'descriptive' = a long observer-style paragraph written by the image.prompt LLM (Qwen Image, Flux, Krea).
+   */
+  promptStyle?: 'tags' | 'descriptive';
+  /** Image models: 'native' when the model outputs real transparency, 'cutout' to remove a flat background in code. */
+  alpha?: 'native' | 'cutout';
+  /** Text wrapped around sprite prompts to request transparency, with {prompt} as the placeholder. */
+  alphaPrompt?: string;
   /** Supports image inputs (for image.check). */
   vision?: boolean;
+  /**
+   * Name of an exclusive GPU group. Providers in the same group never have models resident at the same time:
+   * the scheduler unloads the previous model (llama.cpp router /models/unload, ComfyUI /free) before switching.
+   */
+  gpu?: string;
 }
 
 export interface PurposeConfig {
@@ -65,6 +80,31 @@ export interface GenAIConfig {
   combineNpcDecisionAndDialogue: boolean;
   /** Max parallel zone-content generations during world creation. */
   worldGenParallelism: number;
+  /** Unload a GPU-group model after this long without use (ms). 0 = keep loaded. */
+  gpuIdleUnloadMs?: number;
+}
+
+// ------------------------------------------------------------------------------- decision models
+
+/** Questions for decision models (llama.cpp /v1/systemone). Each is answered independently. */
+export type DecisionQuestion =
+  | { type: 'choice'; instructions: string; criteria: Record<string, string | null> }
+  | { type: 'score'; instructions: string; criteria: string[] }
+  | { type: 'noul'; instructions: string };
+
+export type DecisionAnswer =
+  | { type: 'choice'; choice: string; probabilities: Record<string, number>; confidence: number }
+  | { type: 'score'; score: number; legend: Record<string, string>; probabilities: Record<string, number>; confidence: number }
+  | { type: 'noul'; noul: number };
+
+export interface DecisionRequest {
+  state: string | ChatMessage[];
+  questions: Record<string, DecisionQuestion>;
+  images?: Buffer[];
+}
+
+export interface DecisionProvider {
+  decide(req: DecisionRequest, model?: string): Promise<Record<string, DecisionAnswer>>;
 }
 
 export interface ChatMessage {

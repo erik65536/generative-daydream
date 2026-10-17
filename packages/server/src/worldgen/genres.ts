@@ -2,7 +2,7 @@
  * Procedural content banks. Used when a purpose is configured as 'procedural' and as a per-field
  * fallback whenever a model's output is missing or invalid. Genre is guessed from the user's prompt.
  */
-import type { DamageType, MonsterArchetype, TilesetDef, Terminology } from '@gd/shared';
+import type { MonsterArchetype, TilesetDef } from '@gd/shared';
 
 export type Genre = 'fantasy' | 'scifi' | 'cozy' | 'modern' | 'horror' | 'whimsy';
 
@@ -32,7 +32,8 @@ export function detectGenre(text: string): Genre {
 export interface FamilyTemplate {
   name: string;
   description: string;
-  element: DamageType;
+  /** Damage kind name; matched against the world's ruleset. */
+  element: string;
   habitat: string;
   colors: string[];
   members: Partial<Record<MonsterArchetype, string>>;
@@ -43,7 +44,8 @@ export interface GenreBank {
   tone: string;
   artStyle: string;
   playerRole: string;
-  terminology: Partial<Terminology> & { attributes?: Partial<Terminology['attributes']>; schools?: Partial<Terminology['schools']>; damageTypes?: Partial<Terminology['damageTypes']> };
+  /** Legacy naming hints (only `town` is still used, in the fallback intro). */
+  terminology: Record<string, unknown>;
   syllables: { start: string[]; mid: string[]; end: string[] };
   firstNames: string[];
   lastNames: string[];

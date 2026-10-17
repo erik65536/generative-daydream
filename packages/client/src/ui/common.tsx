@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { RARITY_INFO, ITEM_BASE, itemName, itemStatLines, itemDescription, itemPrice, getSkill, skillName, fillTerms, type ItemInstance, type NamingContext, type Terminology } from '@gd/shared';
+import { itemDisplayName, itemLines, itemPrice, rx, skillCostLine, skillLines, type ItemInstance, type Ruleset, type StatBlock } from '@gd/shared';
 import { drawItemIcon, drawSkillIcon } from '../render/icons';
 import { drawFigure, drawShadow, loadImage } from '../render/sprites';
 
@@ -23,10 +23,10 @@ export function SkillIcon({ id, size = 40 }: { id: string; size?: number }) {
   return <CanvasDraw size={size} deps={[id, size]} draw={(ctx, s) => drawSkillIcon(ctx, s, id)} />;
 }
 
-export function ItemIcon({ item, size = 40, url }: { item: Pick<ItemInstance, 'baseId' | 'rarity' | 'element'>; size?: number; url?: string }) {
+export function ItemIcon({ item, size = 40, url }: { item: { baseId: string; rarityId?: string }; size?: number; url?: string }) {
   const [ok, setOk] = useState(!!url);
   if (url && ok) return <img src={url} width={size} height={size} onError={() => setOk(false)} alt="" />;
-  return <CanvasDraw size={size} deps={[item.baseId, item.rarity, item.element, size]} draw={(ctx, s) => drawItemIcon(ctx, s, item)} />;
+  return <CanvasDraw size={size} deps={[item.baseId, item.rarityId, size]} draw={(ctx, s) => drawItemIcon(ctx, s, item)} />;
 }
 
 export interface PortraitProps {
@@ -77,11 +77,13 @@ export function Portrait({ sprite, colors, shape = 'humanoid', archetype, weapon
   return <canvas ref={ref} style={{ width: size, height: size }} />;
 }
 
-export function Bar({ value, max, color, label, thin }: { value: number; max: number; color: string; label?: string; thin?: boolean }) {
+export function Bar({ value, max, color, label, thin, extra, extraColor }: { value: number; max: number; color: string; label?: string; thin?: boolean; extra?: number; extraColor?: string }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
+  const ex = extra && max > 0 ? Math.max(0, Math.min(100 - pct, (extra / max) * 100)) : 0;
   return (
     <div className={`bar${thin ? ' thin' : ''}`}>
       <div style={{ width: `${pct}%`, background: color }} />
+      {ex > 0 && <div style={{ position: 'absolute', left: `${pct}%`, top: 0, bottom: 0, width: `${ex}%`, background: extraColor ?? 'rgba(160,216,255,.8)' }} />}
       {label && !thin && <div className="lbl">{label}</div>}
     </div>
   );
@@ -116,15 +118,24 @@ export function hideTip() {
   setTip?.(null);
 }
 
-export function ItemTooltip({ item, ctx, price, compare }: { item: ItemInstance; ctx: NamingContext; price?: number; compare?: ItemInstance }) {
-  const base = ITEM_BASE[item.baseId];
-  const lines = itemStatLines(ctx, item);
-  const color = item.uniqueId ? '#ffd24a' : RARITY_INFO[item.rarity].color;
+export interface Uniques {
+  uniqueItems: Record<string, { name: string; description: string }>;
+}
+
+export function ItemTooltip({ item, r, uniques, price, compare }: { item: ItemInstance; r: Ruleset; uniques: Uniques; price?: number; compare?: ItemInstance }) {
+  const ix = rx(r);
+  const base = ix.item.get(item.baseId);
+  const lines = itemLines(r, item, base);
+  const rarity = ix.rarity.get(item.rarityId);
+  const color = item.uniqueId ? '#ffd24a' : rarity?.color ?? '#ddd';
+  const desc = item.uniqueId ? uniques.uniqueItems[item.uniqueId]?.description : base?.description;
+  const slot = base?.slotId ? ix.slot.get(base.slotId)?.name : undefined;
+  const value = itemPrice(r, item);
   return (
     <div>
-      <div className="tname" style={{ color }}>{itemName(ctx, item)}</div>
+      <div className="tname" style={{ color }}>{itemDisplayName(r, item, uniques)}</div>
       <div className="tsub">
-        {base?.slot ? `${ctx.terminology.rarities[item.rarity]} · ${ctx.terminology.level} ${item.level}` : base?.category === 'quest' ? 'Story item' : base?.category}
+        {base?.category === 'equipment' ? `${item.uniqueId ? 'Unique' : rarity?.name ?? ''}${slot ? ` ${slot.toLowerCase()}` : ''} · ${r.terminology.level} ${item.level}` : base?.category === 'quest' || item.bound ? 'Story item' : base?.category}
         {item.qty > 1 ? ` · ×${item.qty}` : ''}
       </div>
       <div style={{ marginTop: 6 }}>
@@ -132,31 +143,29 @@ export function ItemTooltip({ item, ctx, price, compare }: { item: ItemInstance;
           <div className="tline" key={i}>{l}</div>
         ))}
       </div>
-      {itemDescription(ctx, item) && <div className="tdesc">{itemDescription(ctx, item)}</div>}
-      {compare && <div className="tsub" style={{ marginTop: 6 }}>Equipped: {itemName(ctx, compare)}</div>}
+      {desc && <div className="tdesc">{desc}</div>}
+      {compare && <div className="tsub" style={{ marginTop: 6 }}>Equipped: {itemDisplayName(r, compare, uniques)}</div>}
       <div className="tsub" style={{ marginTop: 6 }}>
-        {price !== undefined ? `Price: ${price} ${ctx.terminology.gold}` : itemPrice(item) > 0 ? `Value: ${itemPrice(item)} ${ctx.terminology.gold}` : ''}
+        {price !== undefined ? `Price: ${price} ${r.terminology.currency}` : value > 0 ? `Value: ${value} ${r.terminology.currency}` : ''}
       </div>
     </div>
   );
 }
 
-export function SkillTooltip({ id, ctx, terms, cooldown, known }: { id: string; ctx: Pick<NamingContext, 'skills'>; terms: Terminology; cooldown?: number; known?: boolean }) {
-  const s = getSkill(id);
+export function SkillTooltip({ id, r, stats, rank, cooldown, known }: { id: string; r: Ruleset; stats?: StatBlock; rank?: number; cooldown?: number; known?: boolean }) {
+  const s = rx(r).skill.get(id);
   if (!s) return null;
-  const flavor = ctx.skills[id]?.description;
+  const owner = rx(r).cls.get(s.owner)?.name;
   return (
     <div>
-      <div className="tname gold">{skillName(ctx, id)}</div>
-      <div className="tsub">
-        {terms.schools[s.school]}
-        {s.passive ? ' · Passive' : ` · ${s.ap} ${terms.actionPoints}`}
-        {s.cost ? ` · ${s.cost} ${terms[s.school === 'elemental' || s.school === 'occult' || s.school === 'restoration' ? 'focus' : 'stamina']}` : ''}
-        {s.cooldown ? ` · ${s.cooldown} turn cooldown` : ''}
-        {s.minLevel > 1 ? ` · ${terms.level} ${s.minLevel}+` : ''}
+      <div className="tname gold">{s.name}{rank && rank > 1 ? <span className="dim"> · rank {rank}</span> : null}</div>
+      <div className="tsub">{skillCostLine(r, s, stats)}{owner ? ` · ${owner}` : ''}</div>
+      <div style={{ marginTop: 6 }}>
+        {skillLines(r, s, rank ?? 1, stats).map((l, i) => (
+          <div className="tline" key={i}>{l}</div>
+        ))}
       </div>
-      <div className="tline" style={{ marginTop: 6 }}>{fillTerms(s.summary, terms)}</div>
-      {flavor && flavor !== s.summary && <div className="tdesc">{flavor}</div>}
+      {s.description && <div className="tdesc">{s.description}</div>}
       {cooldown ? <div className="tsub" style={{ color: '#f0c070' }}>Ready in {cooldown}</div> : null}
       {known === false && <div className="tsub">Not learned</div>}
     </div>
@@ -167,7 +176,11 @@ export function Window({ title, onClose, children, style, className, actions }: 
   // Tooltips belong to the window that opened them.
   useEffect(() => () => hideTip(), []);
   return (
-    <div className={`window panel ${className ?? ''}`} style={style} onMouseDown={(e) => e.stopPropagation()}>
+    <div className={`window panel ornate ${className ?? ''}`} style={style} onMouseDown={(e) => e.stopPropagation()}>
+      <span className="corner tl" />
+      <span className="corner tr" />
+      <span className="corner bl" />
+      <span className="corner br" />
       <div className="panel-head">
         <h3>{title}</h3>
         <div className="spacer" />

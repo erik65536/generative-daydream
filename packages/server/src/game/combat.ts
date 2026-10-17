@@ -1,12 +1,15 @@
-/** Turn-based combat encounter on the zone grid. */
+/**
+ * Turn-based combat encounter on the zone grid. The core is synchronous: every action applies immediately
+ * and returns how long its animation takes; pacing goes through `host.after`, so the live game paces with
+ * timers while the balance simulator runs the very same code instantly.
+ */
 import {
-  MAX_AP, findPath, getSkill, pathLength, hashOf,
-  type CombatView, type CombatantView, type Vec2,
+  ALLY_PASS_COST, findPath, hasLineOfSight, hashOf, pathLength, rx, skillAp, skillRange,
+  type CombatView, type CombatantView, type ItemInstance, type Ruleset, type Vec2,
 } from '@gd/shared';
 import { Actor, CharActor, MonsterActor, NpcActor, WALK_SPEED } from './actors';
 import { applySurface, checkItemUse, checkSkill, executeSkill, isHostileTo, surfaceAt, tickStatuses, useConsumable, type EffectHost } from './effects';
-import { runAiTurn } from './ai';
-import type { ItemInstance } from '@gd/shared';
+import { aiStep, type AiMemory } from './ai';
 
 export interface CombatHost extends EffectHost {
   broadcastCombat(c: Combat): void;
@@ -17,9 +20,75 @@ export interface CombatHost extends EffectHost {
   sendError(userId: string, msg: string): void;
   playersInCombat(c: Combat): string[];
   isMultiplayer(c: Combat): boolean;
+  /** Run `fn` after `ms` of game time (timers live, immediate in simulation). */
+  after(ms: number, fn: () => void): void;
 }
 
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+// ------------------------------------------------------------------------------------ turn models
+
+/** How a turn model hands out and spends action resources. Only the AP model exists today. */
+interface TurnModel {
+  /** Resources when joining combat. */
+  enter(a: Actor): void;
+  /** Resources at the start of each of the actor's turns. */
+  beginTurn(a: Actor, first: boolean): void;
+  /** Tiles the actor can still move this turn. */
+  moveBudget(a: Actor): number;
+  /** Tiles the actor can move and still afford an action costing `ap`. */
+  moveBudgetReserving(a: Actor, ap: number): number;
+  /** Pay for moving `len` tiles (already checked against the budget). */
+  payMove(a: Actor, len: number): void;
+  canAfford(a: Actor, ap: number): boolean;
+  view(a: Actor): { ap: number; maxAp: number; movementLeft: number };
+}
+
+function apModel(r: Ruleset): TurnModel {
+  const tpa = (a: Actor) => a.stats().move;
+  return {
+    enter(a) {
+      a.ap = Math.min(a.stats().apMax, a.stats().apStart);
+      a.movementLeft = 0;
+    },
+    beginTurn(a, first) {
+      const s = a.stats();
+      a.ap = first ? Math.min(s.apMax, s.apStart) : Math.min(s.apMax, a.ap + s.apPerTurn);
+      a.movementLeft = 0;
+    },
+    moveBudget(a) {
+      return a.movementLeft + a.ap * tpa(a);
+    },
+    moveBudgetReserving(a, ap) {
+      return a.ap < ap ? -1 : a.movementLeft + (a.ap - ap) * tpa(a);
+    },
+    payMove(a, len) {
+      const per = tpa(a);
+      if (len <= a.movementLeft + 1e-6) {
+        a.movementLeft -= len;
+        return;
+      }
+      const cost = Math.ceil((len - a.movementLeft - 1e-6) / per);
+      a.ap -= cost;
+      a.movementLeft = a.movementLeft + cost * per - len;
+    },
+    canAfford(a, ap) {
+      return a.ap >= ap;
+    },
+    view(a) {
+      return { ap: a.ap, maxAp: a.stats().apMax, movementLeft: Math.round(a.movementLeft * 10) / 10 };
+    },
+  };
+  void r;
+}
+
+export function turnModelFor(r: Ruleset): TurnModel {
+  switch (r.turn.model) {
+    case 'ap':
+    default:
+      return apModel(r);
+  }
+}
+
+// ------------------------------------------------------------------------------------ combat
 
 export class Combat {
   round = 1;
@@ -27,14 +96,21 @@ export class Combat {
   idx = 0;
   turnStartedAt = Date.now();
   ended = false;
+  /** An AI or animation is in progress; humans must wait. */
   busy = false;
   private pendingJoin: Actor[] = [];
-  /** Fast mode for tests (no animation delays). */
-  static instant = false;
   private turnToken = 0;
   private started = false;
+  private acted = new Set<string>();
+  private initiative = new Map<string, number>();
+  readonly model: TurnModel;
+  readonly ai = new Map<string, AiMemory>();
+  /** Fast mode for tests (no animation delays). */
+  static instant = false;
 
-  constructor(public readonly id: string, public readonly zoneId: string, private host: CombatHost) {}
+  constructor(public readonly id: string, public readonly zoneId: string, readonly host: CombatHost) {
+    this.model = turnModelFor(host.r);
+  }
 
   get active(): Actor | undefined {
     return this.order[this.idx];
@@ -50,24 +126,22 @@ export class Combat {
     a.motion = null;
     a.x = Math.round(a.x);
     a.y = Math.round(a.y);
-    a.ap = Math.min(MAX_AP, a.stats().apStart);
-    a.movementLeft = 0;
+    this.model.enter(a);
     a.dirty = true;
-    (a as Actor & { _init?: number })._init = a.stats().initiative + this.host.rng.int(0, 6) + initiativeBonus;
+    this.initiative.set(a.id, a.stats().initiative + this.host.rng.int(0, 6) + initiativeBonus);
     if (this.started) this.pendingJoin.push(a);
     else this.order.push(a);
   }
 
   start() {
     this.started = true;
-    this.order.sort((a, b) => ((b as Actor & { _init?: number })._init ?? 0) - ((a as Actor & { _init?: number })._init ?? 0));
+    this.order.sort((a, b) => (this.initiative.get(b.id) ?? 0) - (this.initiative.get(a.id) ?? 0));
     this.idx = 0;
     this.host.broadcastCombat(this);
-    void this.beginTurn();
+    this.beginTurn();
   }
 
   view(): CombatView {
-    const w = this.host.world;
     return {
       id: this.id,
       round: this.round,
@@ -75,77 +149,83 @@ export class Combat {
         id: a.id,
         name: a.name,
         team: a.team() === 'players' ? 'players' : 'enemies',
-        ap: a.ap,
-        maxAp: MAX_AP,
-        initiative: (a as Actor & { _init?: number })._init ?? 0,
+        ...this.model.view(a),
+        initiative: this.initiative.get(a.id) ?? 0,
         controllerUserId: a instanceof CharActor && !a.aiDriven(this.host.commandCompanions(a.userId)) ? a.userId : undefined,
-        movementLeft: Math.round(a.movementLeft * 10) / 10,
       })),
       activeId: this.active?.id ?? '',
       turnStartedAt: this.turnStartedAt,
       turnLimit: this.host.isMultiplayer(this) ? 60 : undefined,
     };
-    void w;
   }
 
   isHumanControlled(a: Actor): boolean {
     return a instanceof CharActor && !a.aiDriven(this.host.commandCompanions(a.userId));
   }
 
-  private async beginTurn() {
+  private delay(ms: number) {
+    return Combat.instant ? 0 : ms;
+  }
+
+  private beginTurn() {
     if (this.ended) return;
     const a = this.active;
     if (!a) return this.finish(false);
     if (!a.alive()) return this.advance();
     const token = ++this.turnToken;
     this.turnStartedAt = Date.now();
-    a.ap = Math.min(MAX_AP, (this.round === 1 && !(a as Actor & { _acted?: boolean })._acted ? a.stats().apStart : a.ap + a.stats().apPerTurn));
-    (a as Actor & { _acted?: boolean })._acted = true;
-    a.movementLeft = 0;
-    // Regenerate a little energy every turn.
+    this.model.beginTurn(a, !this.acted.has(a.id));
+    this.acted.add(a.id);
+    // Pools refill a little every turn.
     const s = a.stats();
-    a.stamina = Math.min(s.maxStamina, a.stamina + Math.max(3, s.maxStamina * 0.12));
-    a.focus = Math.min(s.maxFocus, a.focus + Math.max(3, s.maxFocus * 0.12));
+    for (const [poolId, p] of Object.entries(s.pools)) a.pools[poolId] = Math.min(p.max, (a.pools[poolId] ?? p.max) + p.max * p.regen);
     const surf = surfaceAt(this.host, this.zoneId, a.x, a.y);
     if (surf) applySurface(this.host, a, surf);
-    const skip = a.alive() ? tickStatuses(this.host, a) : false;
+    if (a.alive()) tickStatuses(this.host, a);
     this.host.broadcastCombat(this);
     if (this.checkEnd()) return;
-    if (!a.alive() || skip) {
-      if (skip) this.host.fx(this.zoneId, [{ kind: 'text', targetId: a.id, text: 'Skips turn', color: '#c9a6ff' }]);
-      await sleep(Combat.instant ? 0 : 700);
-      if (token === this.turnToken) this.advance();
+    if (!a.alive()) {
+      this.host.after(this.delay(500), () => token === this.turnToken && this.advance());
       return;
     }
     if (!this.isHumanControlled(a)) {
       this.busy = true;
-      try {
-        await runAiTurn(this, a, this.host, Combat.instant);
-      } catch (e) {
-        console.error('[combat] AI error', e);
-      }
+      this.host.after(this.delay(450), () => this.driveAi(a, token, 0));
+    } else if (this.host.isMultiplayer(this)) {
+      this.host.after(60_000, () => token === this.turnToken && !this.ended && this.active === a && this.advance());
+    }
+  }
+
+  private driveAi(a: Actor, token: number, step: number) {
+    if (token !== this.turnToken || this.ended || this.active !== a) return;
+    let ms = -1;
+    try {
+      ms = step < 10 && a.alive() ? aiStep(this, a) : -1;
+    } catch (e) {
+      console.error('[combat] AI error', e);
+    }
+    if (ms < 0 || this.ended) {
       this.busy = false;
       if (token === this.turnToken && !this.ended) this.advance();
-    } else if (this.host.isMultiplayer(this)) {
-      setTimeout(() => {
-        if (token === this.turnToken && !this.ended && this.active === a) this.advance();
-      }, 60_000);
+      return;
     }
+    this.host.after(this.delay(ms), () => this.driveAi(a, token, step + 1));
   }
 
   advance() {
     if (this.ended) return;
     if (this.checkEnd()) return;
+    this.busy = false;
     this.idx++;
     if (this.idx >= this.order.length) {
       this.idx = 0;
       this.round++;
       this.order.push(...this.pendingJoin);
       this.pendingJoin = [];
-      this.order = this.order.filter((a) => a.alive() || (a instanceof CharActor && a.ch.downed));
+      this.order = this.order.filter((a) => a.alive() || a.downed());
       this.tickSurfaces();
     }
-    void this.beginTurn();
+    this.beginTurn();
   }
 
   private tickSurfaces() {
@@ -161,7 +241,7 @@ export class Combat {
     if (this.ended) return true;
     const alive = this.participants().filter((a) => a.alive());
     const players = alive.filter((a) => a.team() === 'players');
-    const enemies = alive.filter((a) => players.some((p) => isHostileTo(p, a)) || (a instanceof MonsterActor));
+    const enemies = alive.filter((a) => players.some((p) => isHostileTo(p, a)) || a instanceof MonsterActor);
     if (!enemies.length) {
       this.finish(true);
       return true;
@@ -176,10 +256,12 @@ export class Combat {
   private finish(victory: boolean) {
     if (this.ended) return;
     this.ended = true;
+    this.busy = false;
     for (const a of this.participants()) {
       a.combatId = null;
       a.ap = 0;
       a.movementLeft = 0;
+      a.controlImmune = 0;
       a.dirty = true;
     }
     this.host.combatEnded(this, victory);
@@ -201,42 +283,66 @@ export class Combat {
     this.checkEnd();
   }
 
-  // ------------------------------------------------------------------ actions
+  // ------------------------------------------------------------------ space
+
+  /** The actor standing on a tile (alive, or downed but not dead), if any. */
+  occupant(x: number, y: number, ignore?: Actor): Actor | undefined {
+    return this.host.actorsInZone(this.zoneId).find((a) => a !== ignore && (a.alive() || a.downed()) && Math.round(a.x) === x && Math.round(a.y) === y);
+  }
 
   occupied(x: number, y: number, ignore?: Actor): boolean {
-    return this.host.actorsInZone(this.zoneId).some((a) => a !== ignore && (a.alive() || (a instanceof CharActor && a.ch.downed)) && Math.round(a.x) === x && Math.round(a.y) === y);
+    return !!this.occupant(x, y, ignore);
+  }
+
+  /** An ally of `a` stands here: passable at a movement penalty, but not a place to stop. */
+  allyAt(a: Actor, x: number, y: number): boolean {
+    const o = this.occupant(x, y, a);
+    return !!o && o.team() === a.team();
+  }
+
+  private hazardous(x: number, y: number): boolean {
+    return this.host.surfaces(this.zoneId).some((s) => s.x === x && s.y === y && !!rx(this.host.r).surface.get(s.type)?.dot);
   }
 
   pathFor(a: Actor, to: Vec2): Vec2[] | null {
     const map = this.host.zoneMap(this.zoneId);
     const W = map.def.width;
+    if (this.occupied(Math.round(to.x), Math.round(to.y), a)) return null;
     return findPath(a, to, {
       width: W,
       height: map.def.height,
-      passable: (x, y) => !map.solid[y * W + x] && !this.occupied(x, y, a),
-      extraCost: (x, y) => (this.host.surfaces(this.zoneId).some((s) => s.x === x && s.y === y && (s.type === 'fire' || s.type === 'poison')) ? 3 : 0),
+      passable: (x, y) => !map.solid[y * W + x] && (!this.occupied(x, y, a) || this.allyAt(a, x, y)),
+      extraCost: (x, y) => (this.allyAt(a, x, y) ? ALLY_PASS_COST : 0) + (this.hazardous(x, y) ? 3 : 0),
       maxNodes: 6000,
     });
   }
 
-  /** AP needed to walk a path of given length. */
-  moveCost(a: Actor, len: number): number {
-    if (len <= a.movementLeft + 1e-6) return 0;
-    return Math.ceil((len - a.movementLeft - 1e-6) / a.stats().tilesPerAp);
+  /** Movement a path uses: its length plus the penalty for each ally squeezed past and surface move costs. */
+  pathCost(a: Actor, path: Vec2[]): number {
+    const ix = rx(this.host.r);
+    let extra = 0;
+    for (const p of path) {
+      if (this.allyAt(a, p.x, p.y)) extra += ALLY_PASS_COST;
+      const s = surfaceAt(this.host, this.zoneId, p.x, p.y);
+      if (s) extra += ix.surface.get(s.type)?.moveCost ?? 0;
+    }
+    return pathLength(a, path) + extra;
   }
 
-  async move(a: Actor, to: Vec2): Promise<string | null> {
-    if (this.active !== a) return 'Not your turn.';
+  // ------------------------------------------------------------------ actions
+
+  /** Move the active actor; returns an error, or the animation duration in ms. */
+  move(a: Actor, to: Vec2): { error?: string; ms: number } {
+    if (this.active !== a) return { error: 'Not your turn.', ms: 0 };
+    if (a.stats().rooted) return { error: 'You are rooted in place.', ms: 0 };
     let path = this.pathFor(a, to);
-    if (!path || !path.length) return 'Cannot reach that spot.';
-    // Truncate to what we can afford.
-    const tpa = a.stats().tilesPerAp;
-    const budget = a.movementLeft + a.ap * tpa;
+    if (!path || !path.length) return { error: 'Cannot reach that spot.', ms: 0 };
+    const budget = this.model.moveBudget(a);
     let len = 0;
     let cut = path.length;
     let px = a.x, py = a.y;
     for (let i = 0; i < path.length; i++) {
-      const step = Math.hypot(path[i]!.x - px, path[i]!.y - py);
+      const step = Math.hypot(path[i]!.x - px, path[i]!.y - py) + (this.allyAt(a, path[i]!.x, path[i]!.y) ? ALLY_PASS_COST : 0);
       if (len + step > budget + 1e-6) {
         cut = i;
         break;
@@ -246,13 +352,16 @@ export class Combat {
       py = path[i]!.y;
     }
     path = path.slice(0, cut);
-    if (!path.length) return 'Not enough action points to move.';
+    // Never stop on an ally's tile.
+    while (path.length && this.occupied(path[path.length - 1]!.x, path[path.length - 1]!.y, a)) path.pop();
+    if (!path.length) return { error: `Not enough ${this.host.r.terminology.actionPoints} to move.`, ms: 0 };
     const trapIdx = this.host.checkTrapsAlong(a, path);
-    if (trapIdx >= 0) path = path.slice(0, trapIdx + 1);
-    len = pathLength(a, path);
-    const cost = this.moveCost(a, len);
-    a.ap -= cost;
-    a.movementLeft = a.movementLeft + cost * tpa - len;
+    if (trapIdx >= 0) {
+      path = path.slice(0, trapIdx + 1);
+      while (path.length > 1 && this.occupied(path[path.length - 1]!.x, path[path.length - 1]!.y, a)) path.pop();
+    }
+    len = this.pathCost(a, path);
+    this.model.payMove(a, Math.min(len, this.model.moveBudget(a)));
     const from = { x: a.x, y: a.y };
     const last = path[path.length - 1]!;
     a.motion = { path, from, speed: WALK_SPEED, t0: this.host.now() };
@@ -264,28 +373,67 @@ export class Combat {
     const surf = surfaceAt(this.host, this.zoneId, a.x, a.y);
     if (surf) applySurface(this.host, a, surf);
     this.host.broadcastCombat(this);
-    if (!Combat.instant) await sleep((len / WALK_SPEED) * 1000 + 80);
-    a.motion = null;
+    const ms = (pathLength(from, path) / WALK_SPEED) * 1000 + 80;
+    this.host.after(this.delay(ms), () => {
+      if (a.motion?.t0 !== undefined && a.motion.path === path) a.motion = null;
+    });
     this.checkEnd();
-    return null;
+    return { ms };
   }
 
   useSkill(a: Actor, skillId: string, target?: Actor, point?: Vec2): string | null {
     if (this.active !== a) return 'Not your turn.';
-    const skill = getSkill(skillId);
+    const skill = rx(this.host.r).skill.get(skillId);
     if (!skill) return 'Unknown skill.';
     if (!a.skillIds().includes(skillId)) return 'You do not know that.';
-    const taunt = a.statuses.find((s) => s.id === 'taunted');
-    if (taunt && target && taunt.sourceId && target.id !== taunt.sourceId && skill.effects.some((e) => e.kind === 'damage')) {
-      const t = this.participants().find((x) => x.id === taunt.sourceId);
-      if (t?.alive()) return `Taunted — you must attack ${t.name}.`;
-    }
     const use = { user: a, skill, target, point };
     const err = checkSkill(this.host, use, { inCombat: true });
     if (err) return err;
+    if (!this.model.canAfford(a, skillAp(skill, a.stats()))) return `Not enough ${this.host.r.terminology.actionPoints}.`;
     executeSkill(this.host, use, true);
     this.host.broadcastCombat(this);
     this.checkEnd();
+    return null;
+  }
+
+  /** Attack-move: walk to the cheapest reachable spot in range (with line of sight) that leaves enough to act, then act. */
+  approachAndUse(a: Actor, skillId: string, target: Actor): string | null {
+    if (this.active !== a) return 'Not your turn.';
+    const skill = rx(this.host.r).skill.get(skillId);
+    if (!skill || !a.skillIds().includes(skillId)) return 'Unknown skill.';
+    const stats = a.stats();
+    if (stats.rooted) return 'Out of range.';
+    const cost = skillAp(skill, stats);
+    const budget = this.model.moveBudgetReserving(a, cost);
+    if (budget < 0) return `Not enough ${this.host.r.terminology.actionPoints}.`;
+    const range = skillRange(skill, stats);
+    const map = this.host.zoneMap(this.zoneId);
+    const W = map.def.width, H = map.def.height;
+    const sees = (p: Vec2) => range <= 2 || hasLineOfSight(p, target, (x, y) => map.opaque[y * W + x] === 1);
+    const R = Math.ceil(range);
+    const spots: Vec2[] = [];
+    for (let dy = -R; dy <= R; dy++)
+      for (let dx = -R; dx <= R; dx++) {
+        const p = { x: Math.round(target.x) + dx, y: Math.round(target.y) + dy };
+        if (p.x < 0 || p.y < 0 || p.x >= W || p.y >= H || map.solid[p.y * W + p.x]) continue;
+        if (Math.hypot(p.x - target.x, p.y - target.y) > range - 0.05 || this.occupied(p.x, p.y, a)) continue;
+        if (Math.hypot(p.x - a.x, p.y - a.y) > budget + 0.5) continue;
+        if (sees(p)) spots.push(p);
+      }
+    spots.sort((p, q) => Math.hypot(p.x - a.x, p.y - a.y) - Math.hypot(q.x - a.x, q.y - a.y));
+    let best: { p: Vec2; cost: number } | null = null;
+    for (const p of spots.slice(0, 16)) {
+      const path = this.pathFor(a, p);
+      if (!path?.length) continue;
+      const c = this.pathCost(a, path);
+      if (c <= budget + 1e-6 && (!best || c < best.cost)) best = { p, cost: c };
+    }
+    if (!best) return budget <= 0 ? 'Out of range.' : 'Cannot get in range this turn.';
+    const moved = this.move(a, best.p);
+    if (moved.error) return moved.error;
+    this.host.after(moved.ms + 80, () => {
+      if (this.active === a && target.alive() && a.alive()) this.useSkill(a, skillId, target);
+    });
     return null;
   }
 

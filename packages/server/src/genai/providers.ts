@@ -1,8 +1,9 @@
 /** Concrete GenAI provider adapters. */
+import { Agent, fetch as undiciFetch } from 'undici';
 import fs from 'node:fs';
 import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
-import { GenAIError, type ImageProvider, type ImageRequest, type ProviderConfig, type StructuredRequest, type TextProvider, type TextRequest } from './types';
+import { GenAIError, type DecisionAnswer, type DecisionProvider, type DecisionRequest, type ImageProvider, type ImageRequest, type ProviderConfig, type StructuredRequest, type TextProvider, type TextRequest } from './types';
 import { ROOT_DIR } from '../paths';
 
 export function resolveSecret(v?: string): string | undefined {
@@ -11,10 +12,16 @@ export function resolveSecret(v?: string): string | undefined {
   return v;
 }
 
+/**
+ * Local models can take many minutes before the first byte (no streaming), so the default 300 s header timeout
+ * of Node's fetch is disabled; the per-provider `timeoutMs` abort signal is the only limit.
+ */
+const patientAgent = new Agent({ headersTimeout: 0, bodyTimeout: 0, connect: { timeout: 30_000 } });
+
 async function httpJson(url: string, init: RequestInit & { timeoutMs?: number }): Promise<any> {
   let res: Response;
   try {
-    res = await fetch(url, { ...init, signal: AbortSignal.timeout(init.timeoutMs ?? 180_000) });
+    res = (await undiciFetch(url, { ...(init as object), dispatcher: patientAgent, signal: AbortSignal.timeout(init.timeoutMs ?? 180_000) })) as unknown as Response;
   } catch (e) {
     throw new GenAIError(`Request to ${url} failed: ${(e as Error).message}`);
   }
@@ -64,12 +71,20 @@ export class OpenAIChatProvider implements TextProvider {
   }
 
   private async call(body: Record<string, unknown>): Promise<string> {
-    const data = await httpJson(`${trimSlash(this.cfg.baseUrl ?? 'https://api.openai.com/v1')}/chat/completions`, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify({ ...body, ...(this.cfg.extraBody ?? {}) }),
-      timeoutMs: this.cfg.timeoutMs,
-    });
+    let data: any;
+    try {
+      data = await httpJson(`${trimSlash(this.cfg.baseUrl ?? 'https://api.openai.com/v1')}/chat/completions`, {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify({ ...body, ...(this.cfg.extraBody ?? {}) }),
+        timeoutMs: this.cfg.timeoutMs,
+      });
+    } catch (e) {
+      // Retrying can't help when the server's context window is too small; say what to change.
+      if (/exceeds the available context size|Context size has been exceeded|context_length_exceeded|maximum context length/i.test((e as Error).message))
+        throw new GenAIError(`Context window too small for this request (prompt + ${body.max_tokens ?? '?'} output tokens). For llama.cpp, start the server with --parallel 1 --ctx-size 16384 or more.`, false);
+      throw e;
+    }
     const choice = data?.choices?.[0];
     const content = choice?.message?.content;
     if (typeof content === 'string' && content.length) return content;
@@ -372,5 +387,29 @@ export class ComfyUIProvider implements ImageProvider {
       }
     }
     throw new GenAIError('ComfyUI timed out');
+  }
+}
+
+// ---------------------------------------------------------------------------- llama.cpp decision models
+
+/** Decision models answer choice / score / yes-no questions with probabilities (llama.cpp `/v1/systemone`). */
+export class LlamaDecisionProvider implements DecisionProvider {
+  constructor(private cfg: ProviderConfig) {}
+  async decide(req: DecisionRequest, model?: string): Promise<Record<string, DecisionAnswer>> {
+    const base = trimSlash(this.cfg.baseUrl ?? 'http://127.0.0.1:8080').replace(/\/v1$/, '');
+    const data = await httpJson(`${base}/v1/systemone`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(this.cfg.headers ?? {}) },
+      body: JSON.stringify({
+        model: model ?? this.cfg.model,
+        state: req.state,
+        questions: req.questions,
+        images: req.images?.map((b) => `data:image/png;base64,${b.toString('base64')}`),
+        ...(this.cfg.extraBody ?? {}),
+      }),
+      timeoutMs: this.cfg.timeoutMs ?? 120_000,
+    });
+    if (!data?.answers || typeof data.answers !== 'object') throw new GenAIError(`Decision model returned no answers: ${JSON.stringify(data).slice(0, 300)}`);
+    return data.answers as Record<string, DecisionAnswer>;
   }
 }

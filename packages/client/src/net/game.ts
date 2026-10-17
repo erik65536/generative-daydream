@@ -1,11 +1,12 @@
 /** WebSocket connection + client-side game state store shared by the renderer and React UI. */
 import { useSyncExternalStore } from 'react';
 import {
-  BitSet, base64ToBytes, sampleMotion, computeCharacterStats,
+  BitSet, base64ToBytes, sampleMotion, characterStats, itemDisplayName, rx,
   type ClientMessage, type ClientWorld, type ClockView, type CombatView, type DialogState, type EntityView, type FeatureState, type FxEvent,
-  type LootPile, type LootView, type PlayerView, type ServerMessage, type Surface, type TradeState, type ZoneView, type CharacterState, type DerivedStats,
-  type NamingContext, type JournalEntry,
+  type LootPile, type LootView, type PlayerView, type ServerMessage, type Surface, type TradeState, type ZoneView, type CharacterState, type StatBlock,
+  type JournalEntry, type ItemInstance, type Ruleset,
 } from '@gd/shared';
+import { setRules } from '../rules';
 
 export interface ZoneData extends ZoneView {
   groundBytes: Uint8Array;
@@ -13,7 +14,7 @@ export interface ZoneData extends ZoneView {
   variationBytes: Uint8Array;
 }
 
-export type Panel = 'inventory' | 'character' | 'skills' | 'quests' | 'map' | 'craft' | 'menu' | 'help' | null;
+export type Panel = 'inventory' | 'character' | 'skills' | 'quests' | 'map' | 'craft' | 'menu' | 'help' | 'codex' | null;
 
 export interface Targeting {
   charId: string;
@@ -171,6 +172,7 @@ export class GameClient {
     switch (m.t) {
       case 'welcome':
         s.world = m.world;
+        setRules(m.world.ruleset);
         s.userId = m.userId;
         s.instanceId = m.instanceId;
         s.instanceName = m.instanceName;
@@ -230,9 +232,13 @@ export class GameClient {
           if (s.targeting && s.targeting.charId !== m.combat.activeId) s.targeting = null;
         }
         break;
-      case 'fx':
+      case 'fx': {
         for (const l of this.fxListeners) l(m.events);
-        return;
+        const lines = this.combatLines(m.events);
+        if (!lines.length) return;
+        s.log = [...s.log, ...lines].slice(-30);
+        break;
+      }
       case 'dialog':
         s.dialog = m.dialog;
         if (m.dialog) s.panel = null;
@@ -288,21 +294,73 @@ export class GameClient {
     return this.state.player?.party ?? [];
   }
 
-  charStats(ch: CharacterState): DerivedStats {
-    return computeCharacterStats(ch, { loneWolf: this.state.player?.loneWolf, dualEnergy: this.state.world?.systems.dualEnergy });
+  /** Readable combat log lines for skill uses, hits, misses and deaths. */
+  private combatLines(events: FxEvent[]): { text: string; color?: string; at: number }[] {
+    const s = this.state;
+    if (!s.world) return [];
+    const ix = rx(s.world.ruleset);
+    const name = (id?: string) => (id ? s.entities.get(id)?.name : undefined);
+    const mine = (id?: string) => !!id && s.entities.get(id)?.ownerUserId === s.userId;
+    const at = Date.now();
+    const out: { text: string; color?: string; at: number }[] = [];
+    for (const ev of events) {
+      if (ev.kind === 'skill' && ev.skillId && ev.skillId !== s.world.ruleset.basicAttackId) {
+        const who = name(ev.sourceId);
+        const sk = ix.skill.get(ev.skillId);
+        if (who && sk) out.push({ text: `${who} uses ${sk.name}.`, color: mine(ev.sourceId) ? '#cfe4ff' : '#e8c8b8', at });
+      } else if (ev.kind === 'damage' && ev.damage) {
+        const d = ev.damage;
+        const target = name(d.targetId);
+        if (!target) continue;
+        const src = name(ev.sourceId);
+        if (d.miss) out.push({ text: `${src ? `${src} misses ${target}` : `${target} dodges`}.`, color: '#a69c8c', at });
+        else if (d.type === 'heal') out.push({ text: `${target} recovers ${Math.round(d.amount)}.`, color: '#9fe0a0', at });
+        else if (d.type === 'barrier') out.push({ text: `${target} is shielded (${Math.round(d.amount)}).`, color: '#9fd8ff', at });
+        else {
+          const kind = ix.subtype.get(d.type)?.name ?? ix.type.get(d.type)?.name ?? '';
+          const verb = d.crit ? 'critically hits' : 'hits';
+          out.push({ text: src && src !== target ? `${src} ${verb} ${target} for ${Math.round(d.amount)}${kind ? ` ${kind.toLowerCase()}` : ''}.` : `${target} takes ${Math.round(d.amount)}${kind ? ` ${kind.toLowerCase()}` : ''} damage.`, color: mine(d.targetId) ? '#ffb0a0' : d.crit ? '#ffe08a' : '#d8d0c0', at });
+        }
+      } else if (ev.kind === 'text' && ev.text === 'Dodged') {
+        const who = name(ev.targetId);
+        if (who) out.push({ text: `${who} dodges${name(ev.sourceId) ? ` ${name(ev.sourceId)}’s attack` : ''}.`, color: '#a69c8c', at });
+      } else if (ev.kind === 'death') {
+        const who = name(ev.targetId ?? ev.sourceId);
+        if (who) out.push({ text: `${who} falls.`, color: mine(ev.targetId ?? ev.sourceId) ? '#ff8a70' : '#f0c070', at });
+      }
+    }
+    return out;
+  }
+
+  get r(): Ruleset {
+    return this.state.world!.ruleset;
+  }
+
+  charStats(ch: CharacterState): StatBlock {
+    return characterStats(this.r, ch, { solo: this.state.player?.loneWolf });
+  }
+
+  uniqueItems() {
+    return { ...(this.state.world?.uniqueItems ?? {}), ...(this.state.player?.dynamicItems ?? {}) } as Record<string, { name: string; description: string }>;
+  }
+
+  itemName(item: ItemInstance): string {
+    return itemDisplayName(this.r, item, { uniqueItems: this.uniqueItems() });
+  }
+
+  itemDescription(item: ItemInstance): string {
+    if (item.uniqueId) return this.uniqueItems()[item.uniqueId]?.description ?? '';
+    return rx(this.r).item.get(item.baseId)?.description ?? '';
+  }
+
+  skillName(id: string): string {
+    return rx(this.r).skill.get(id)?.name ?? id;
   }
 
   leaderEntity(): EntityView | undefined {
     const p = this.state.player;
     if (!p) return undefined;
     return this.state.entities.get(p.leaderId) ?? [...this.state.entities.values()].find((e) => e.ownerUserId === this.state.userId);
-  }
-
-  naming(): NamingContext | null {
-    const w = this.state.world;
-    if (!w) return null;
-    const dyn = this.state.player?.dynamicItems ?? {};
-    return { terminology: w.terminology, itemNames: w.itemNames, affixNames: w.affixNames, uniqueItems: { ...w.uniqueItems, ...dyn }, skills: w.skills, maxLevel: w.maxLevel };
   }
 
   isMyTurn(): boolean {

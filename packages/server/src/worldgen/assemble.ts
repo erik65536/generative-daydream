@@ -1,14 +1,16 @@
 /** Turns all generated pieces into a validated, fully linked WorldDefinition. */
 import {
-  AFFIXES, ARCHETYPES, DEFAULT_SYSTEMS, ITEM_BASES, MONSTER_ARCHETYPES, ORIGIN, ORIGINS, PLAYER_SKILL_IDS, RECIPES, Rng, SIZE_PROFILES, SKILLS, TRAP_INFO, TRAP_KINDS,
-  mergeTerminology, questGold, questXp, slugify,
-  type BossDef, type FeatureDef, type LoreNote, type MonsterArchetype, type MonsterFamily, type NpcDef, type NpcRole, type QuestDef, type QuestObjective,
-  type SpawnDef, type TilesetDef, type UniqueItemDef, type Vec2, type WorldDefinition, type WorldInput, type ZoneDef, type ArcDef, type TrapKind,
+  MONSTER_ARCHETYPES, Rng, SIZE_PROFILES, slugify,
+  type BossDef, type LoreNote, type MonsterArchetype, type MonsterFamily, type NpcDef, type NpcRole, type QuestDef, type QuestObjective,
+  type Ruleset, type TilesetDef, type UniqueItemDef, type Vec2, type WorldDefinition, type WorldInput, type ZoneDef, type ArcDef,
 } from '@gd/shared';
+import { bindWorld, resolveElement, uniqueBase } from '../rules/bind';
+import { buildPack } from '../rules/encounters';
+import type { RulesetIntent } from '../rules/intent';
 import { BANKS, fallbackTileset, type Genre } from './genres';
 import { fallbackNpc, tilesetFromOut } from './fallbacks';
 import { generateDungeon, generateInterior, generateTown, generateWilderness, type EdgeDir, type LayoutResult } from './layout';
-import { normColor, normColors, type AffixOut, type AreaContentOut, type AtlasOut, type ConceptOut, type FamiliesOut, type ItemsOut, type NpcOut, type SkillsOut, type StoryOut, type TownContentOut } from './schemas';
+import { normColor, normColors, type AreaContentOut, type AtlasOut, type ConceptOut, type FamiliesOut, type NpcOut, type StoryOut, type TownContentOut } from './schemas';
 import type { WorldSkeleton, ZoneSlot } from './structure';
 
 export interface Draft {
@@ -20,9 +22,8 @@ export interface Draft {
   concept: ConceptOut;
   atlas: AtlasOut;
   story: StoryOut;
-  skills: SkillsOut;
-  items: ItemsOut;
-  affixes: AffixOut;
+  ruleset: Ruleset;
+  rulesIntent: RulesetIntent;
   families: FamiliesOut;
   towns: Record<string, TownContentOut>;
   areas: Record<string, AreaContentOut>;
@@ -78,8 +79,8 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   const rng = new Rng(`${d.seed}:assemble`);
   const bank = BANKS[d.genre];
   const sk = d.skeleton;
-  const terminology = mergeTerminology(d.concept.terminology);
-  const systems = { ...DEFAULT_SYSTEMS, ...(d.concept.systems ?? {}) };
+  const r = d.ruleset;
+  const systems = { traps: r.systems.traps, lockpicking: r.systems.locks, crafting: r.crafting.enabled };
   const size = SIZE_PROFILES[d.input.size];
   const zoneInfo = (slot: string) => d.atlas.zones.find((z) => z.slotId === slot);
   const slotById = new Map(sk.slots.map((s) => [s.slotId, s]));
@@ -88,10 +89,10 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   const families: MonsterFamily[] = d.families.families.map((f, i) => {
     const members = f.members.filter((m, j, arr) => arr.findIndex((x) => x.archetype === m.archetype) === j);
     // Every family needs at least a melee and a ranged option for interesting fights.
-    if (!members.some((m) => ARCHETYPES[m.archetype].range < 2)) members.push({ archetype: 'skirmisher', name: `${f.name} Warrior`, description: '', appearance: `${f.name} warrior` });
-    if (!members.some((m) => ARCHETYPES[m.archetype].range >= 2)) members.push({ archetype: 'archer', name: `${f.name} Hunter`, description: '', appearance: `${f.name} hunter` });
+    if (!members.some((m) => r.monsters[m.archetype].range < 2)) members.push({ archetype: 'skirmisher', name: `${f.name} Warrior`, description: '', appearance: `${f.name} warrior` });
+    if (!members.some((m) => r.monsters[m.archetype].range >= 2)) members.push({ archetype: 'archer', name: `${f.name} Hunter`, description: '', appearance: `${f.name} hunter` });
     const colors = normColors(f.colors);
-    return { id: `f${i}_${slugify(f.name)}`, name: f.name, description: f.description, element: f.element, habitat: f.habitat, colors: colors.length ? colors : ['#6a6a6a', '#3a3a3a', '#d0c080'], members };
+    return { id: `f${i}_${slugify(f.name)}`, name: f.name, description: f.description, element: resolveElement(r, f.element, i), habitat: f.habitat, colors: colors.length ? colors : ['#6a6a6a', '#3a3a3a', '#d0c080'], members };
   });
 
   // ------------------------------------------------------------------ zones (definitions; layout later)
@@ -141,8 +142,8 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   const itemKey = new Map<string, string>();
   d.story.keyItems.forEach((it, i) => {
     const id = `u_${i}_${slugify(it.name)}`;
-    const baseId = it.kind === 'weapon' ? 'w_blade' : it.kind === 'armor' ? 'a_chest_heavy' : it.kind === 'trinket' ? 't_amulet' : 'q_item';
-    uniqueItems[id] = { id, baseId, name: it.name, description: it.description, rarity: 'legendary', questItem: true };
+    const baseId = uniqueBase(r, it.kind, rng.fork(id));
+    uniqueItems[id] = { id, baseId, name: it.name, description: it.description, rarityId: baseId === 'quest_item' ? r.rarities[2]!.id : r.rarities[4]!.id, mods: [], questItem: true };
     itemKey.set(it.key, id);
   });
   const dungeonSlots = sk.slots.filter((s) => s.kind === 'dungeon');
@@ -254,15 +255,6 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       me.relations = (o.friends ?? []).map((f) => fuzzy(f, npcs, (n) => n.name)?.id).filter((x): x is string => !!x && x !== me.id);
     }
   }
-  // Trainers teach skills.
-  const enabledSkills = resolveSkills(d, systems);
-  for (const n of npcs) {
-    if (n.role === 'trainer' || n.role === 'mystic') {
-      const pool = Object.keys(enabledSkills).filter((id) => !SKILLS[id]?.passive || n.role === 'trainer');
-      n.teaches = rng.shuffle([...pool]).slice(0, 6);
-    }
-  }
-
   // ------------------------------------------------------------------ quests
   const quests: QuestDef[] = [];
   const arcs: ArcDef[] = [];
@@ -379,7 +371,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
         giverNpcId: giverId,
         turnInNpcId: turnIn,
         objectives,
-        rewards: { xp: questXp(level, 1.8), gold: questGold(level, 1.5), items: isFinal ? [] : [`base:${rng.pick(['w_blade', 'w_bow', 'w_staff', 'a_chest_heavy', 'a_chest_light', 't_amulet', 't_ring', 'w_dagger'])}:${qi === arc.quests.length - 1 ? 'epic' : 'rare'}`] },
+        rewards: { xp: 0, gold: 0, items: isFinal ? [] : [`slot:${rng.pick(['weapon', 'armor', 'accessory'])}:${qi === arc.quests.length - 1 ? 3 : 2}`] },
         prerequisites: prevMain ? [prevMain.id] : [],
         autoStart: true,
         completionText: q.completionText,
@@ -395,6 +387,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   const finalQuestId = prevMain ? (prevMain as QuestDef).id : '';
 
   // Side quests per town.
+  const healPotion = r.items.find((i) => i.category === 'potion' && i.use?.effects.some((e) => e.kind === 'heal'))?.id;
   for (const t of townSlots) {
     const content = d.towns[t.slotId];
     const townNpcs = npcs.filter((n) => n.zoneId === zid(t.slotId));
@@ -418,7 +411,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
         } else if (o.type === 'collect') {
           const uid = `u_side_${t.slotId}_${i}_${oi}`;
           const nm = (o.target ?? o.description).replace(/^(find|collect|recover|retrieve|get)\s+(the\s+)?/i, '').slice(0, 48);
-          uniqueItems[uid] = { id: uid, baseId: 'q_item', name: nm.charAt(0).toUpperCase() + nm.slice(1), description: o.description, rarity: 'rare', questItem: true };
+          uniqueItems[uid] = { id: uid, baseId: 'quest_item', name: nm.charAt(0).toUpperCase() + nm.slice(1), description: o.description, rarityId: r.rarities[2]!.id, mods: [], questItem: true };
           const host = nearbyHunting[(i + oi) % Math.max(1, nearbyHunting.length)] ?? nearby[0];
           itemPlacements.push({ uniqueId: uid, zoneId: host ? zid(host.slotId) : zid(t.slotId) });
           objectives.push({ ...base, type: 'collect', itemUniqueId: uid, count: 1 });
@@ -428,7 +421,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
           let item = lastItem;
           if (!item) {
             item = `u_side_${t.slotId}_${i}_pkg`;
-            uniqueItems[item] = { id: item, baseId: 'q_item', name: `Parcel for ${npc.name}`, description: `A wrapped parcel ${giver.name} asked you to deliver.`, rarity: 'uncommon', questItem: true };
+            uniqueItems[item] = { id: item, baseId: 'quest_item', name: `Parcel for ${npc.name}`, description: `A wrapped parcel ${giver.name} asked you to deliver.`, rarityId: r.rarities[1]!.id, mods: [], questItem: true };
             grants.push(item);
           }
           objectives.push({ ...base, type: 'deliver', itemUniqueId: item, npcId: npc.id, count: 1 });
@@ -458,7 +451,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
         turnInNpcId: giver.id,
         zoneId: zid(t.slotId),
         objectives,
-        rewards: { xp: questXp(level, 1), gold: questGold(level, 1), items: rng.chance(0.6) ? [`base:${rng.pick(ITEM_BASES.filter((b) => b.slot).map((b) => b.id))}:${rng.chance(0.3) ? 'rare' : 'uncommon'}`] : ['base:c_heal:common'] },
+        rewards: { xp: 0, gold: 0, items: rng.chance(0.6) ? [`slot:${rng.pick(['weapon', 'armor', 'armor', 'accessory'])}:${rng.chance(0.3) ? 2 : 1}`] : healPotion ? [`base:${healPotion}:0`] : [] },
         prerequisites: [],
         completionText: sq.completionText,
         grantsOnStart: grants.length ? grants : undefined,
@@ -632,8 +625,9 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   }
 
   // Wilds & dungeons: spawns, chests, traps, shrines, lore.
-  const packSize = d.input.combatMode === 'solo' ? [2, 3] : d.input.combatMode === 'party_npc' ? [2, 4] : [3, 5];
   let loreN = 0;
+  /** Packs keep their distance so fighting one never drags in the next (aggro radius is 6.5 tiles). */
+  const PACK_SPACING = 13;
   for (const s of sk.slots.filter((x) => x.kind !== 'town')) {
     const z = zoneById.get(zid(s.slotId))!;
     const lay = layouts.get(z.id)!;
@@ -641,21 +635,21 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     const fams = z.familyIds.map((id) => families.find((f) => f.id === id)!).filter(Boolean);
     const exitsNear = (p: Vec2, r: number) => z.features.some((f) => (f.kind === 'exit' || f.kind === 'door') && Math.hypot(f.x - p.x, f.y - p.y) < r) || Math.hypot(p.x - lay.entry.x, p.y - lay.entry.y) < r;
     let packN = 0;
+    const used: Vec2[] = [];
+    const bossSpots = bosses.filter((x) => x.zoneId === z.id).map(() => lay.bossSpot ?? lay.entry);
     for (const spot of lay.packSpots) {
       if (exitsNear(spot, 9) || !fams.length) continue;
+      if ([...used, ...bossSpots].some((u) => Math.hypot(u.x - spot.x, u.y - spot.y) < PACK_SPACING)) continue;
+      used.push(spot);
       const fam = zrng.pick(fams);
-      const level = Math.round(z.levelRange[0] + (z.levelRange[1] - z.levelRange[0]) * spot.depth);
-      const n = d.input.combatMode === 'solo' ? 2 + (spot.depth > 0.6 ? 1 : 0) : zrng.int(packSize[0]!, packSize[1]!) + (spot.depth > 0.7 ? 1 : 0);
+      const level = Math.max(1, Math.round(z.levelRange[0] + (z.levelRange[1] - z.levelRange[0]) * spot.depth));
+      const kind = zrng.chance(0.15 + spot.depth * 0.1) ? 'elite' : 'normal';
+      const pack = buildPack(r, zrng, { mode: d.input.combatMode, level, kind, roles: fam.members.map((m) => m.archetype), depth: spot.depth });
       const groupId = `${z.id}_g${packN++}`;
-      for (let i = 0; i < n; i++) {
-        const mem = zrng.pick(fam.members);
-        const p = lay.map.randomFree(zrng, (x, y) => Math.hypot(x - spot.x, y - spot.y) < 3) ?? spot;
-        z.spawns.push({ id: `${groupId}_${i}`, kind: 'monster', familyId: fam.id, archetype: mem.archetype, level: Math.max(1, level), x: p.x, y: p.y, groupId, elite: i === 0 && zrng.chance(0.18) });
-        if (mem.archetype === 'swarm' && d.input.combatMode !== 'solo') {
-          const p2 = lay.map.randomFree(zrng, (x, y) => Math.hypot(x - spot.x, y - spot.y) < 3);
-          if (p2) z.spawns.push({ id: `${groupId}_${i}s`, kind: 'monster', familyId: fam.id, archetype: 'swarm', level: Math.max(1, level - 1), x: p2.x, y: p2.y, groupId });
-        }
-      }
+      pack.forEach((m, i) => {
+        const p = lay.map.randomFree(zrng, (x, y) => Math.hypot(x - spot.x, y - spot.y) < 2.6 && !z.spawns.some((sp) => sp.x === x && sp.y === y)) ?? spot;
+        z.spawns.push({ id: `${groupId}_${i}`, kind: 'monster', familyId: fam.id, archetype: m.role, level: m.level, x: p.x, y: p.y, groupId, elite: m.elite });
+      });
     }
     // Boss
     for (const b of bosses.filter((x) => x.zoneId === z.id)) {
@@ -663,10 +657,11 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       const groupId = `${z.id}_boss`;
       z.spawns.push({ id: `${groupId}_${b.id}`, kind: 'monster', familyId: b.familyId, archetype: b.archetype, level: b.level, x: spot.x, y: spot.y, groupId, bossId: b.id });
       const fam = families.find((f) => f.id === b.familyId) ?? families[0]!;
-      for (let i = 0; i < 2; i++) {
+      const adds = buildPack(r, zrng, { mode: d.input.combatMode, level: b.level, kind: 'boss', roles: fam.members.map((m) => m.archetype) }).filter((m) => !m.boss);
+      adds.forEach((m, i) => {
         const p = lay.map.randomFree(zrng, (x, y) => Math.hypot(x - spot.x, y - spot.y) < 4);
-        if (p) z.spawns.push({ id: `${groupId}_m${i}`, kind: 'monster', familyId: fam.id, archetype: zrng.pick(fam.members).archetype, level: Math.max(1, b.level - 1), x: p.x, y: p.y, groupId });
-      }
+        if (p) z.spawns.push({ id: `${groupId}_m${i}`, kind: 'monster', familyId: fam.id, archetype: m.role, level: Math.max(1, b.level - 1), x: p.x, y: p.y, groupId });
+      });
     }
     // Chests (quest items placed first in the deepest chests).
     const chests = [...lay.chestSpots].sort((a, b) => b.depth - a.depth);
@@ -684,8 +679,8 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       const rate = s.kind === 'dungeon' ? 0.55 : 0.3;
       lay.trapSpots.forEach((t, i) => {
         if (!zrng.chance(rate) || exitsNear(t, 5)) return;
-        const kind = zrng.pick(TRAP_KINDS.filter((k) => k !== 'alarm' || s.kind === 'dungeon')) as TrapKind;
-        z.features.push({ id: featureId(z.id, 'trap', i), kind: 'trap', x: t.x, y: t.y, trapKind: kind, trapLevel: z.levelRange[1], name: d.affixes.traps.find((x) => x.kind === kind)?.name ?? TRAP_INFO[kind].defaultName });
+        const trap = zrng.pick(r.traps);
+        if (trap) z.features.push({ id: featureId(z.id, 'trap', i), kind: 'trap', x: t.x, y: t.y, trapKind: trap.id, trapLevel: z.levelRange[1], name: trap.name });
       });
     }
     // Shrine, lore notes, interact objectives.
@@ -707,11 +702,14 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       lore.push({ id: lid, title: note.title, text: note.text });
       z.features.push({ id: featureId(z.id, 'lore', loreN), kind: 'lore', x: p.x, y: p.y, loreId: lid, name: note.title });
     }
-    if ('gate' in lay && (lay as { gate?: { gate: Vec2; lever: Vec2 } }).gate) {
-      const g = (lay as { gate: { gate: Vec2; lever: Vec2 } }).gate;
-      const gid = featureId(z.id, 'gate', 0);
-      z.features.push({ id: gid, kind: 'gate', x: g.gate.x, y: g.gate.y, name: 'Sealed Gate' });
-      z.features.push({ id: featureId(z.id, 'lever', 0), kind: 'lever', x: g.lever.x, y: g.lever.y, gateIds: [gid], name: tilesets[z.tilesetId]!.roles.lever.name });
+    if ('gate' in lay && (lay as { gate?: { gates: Vec2[]; lever: Vec2 } }).gate) {
+      const g = (lay as { gate: { gates: Vec2[]; lever: Vec2 } }).gate;
+      const gids = g.gates.map((t, i) => {
+        const gid = featureId(z.id, 'gate', i);
+        z.features.push({ id: gid, kind: 'gate', x: t.x, y: t.y, name: 'Sealed Gate' });
+        return gid;
+      });
+      z.features.push({ id: featureId(z.id, 'lever', 0), kind: 'lever', x: g.lever.x, y: g.lever.y, gateIds: gids, name: tilesets[z.tilesetId]!.roles.lever.name });
     }
   }
   // Interact-objective features (any zone kind).
@@ -751,27 +749,6 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     z.variation = enc.variation;
   }
 
-  // ------------------------------------------------------------------ names
-  const itemNames: WorldDefinition['itemNames'] = {};
-  for (const b of ITEM_BASES) {
-    const out = d.items.items.find((x) => x.baseId === b.id);
-    itemNames[b.id] = { names: out?.names?.length ? out.names : bank.items[b.id] ?? [b.defaultName], description: out?.description ?? '' };
-  }
-  const affixNames: WorldDefinition['affixNames'] = {};
-  for (const a of AFFIXES) {
-    const out = d.affixes.affixes.find((x) => x.id === a.id);
-    affixNames[a.id] = { prefix: out?.prefix ?? a.defaultPrefix, suffix: out?.suffix ?? a.defaultSuffix };
-  }
-  const recipeNames: Record<string, string> = {};
-  for (const r of RECIPES) recipeNames[r.id] = d.affixes.recipes?.find((x) => x.id === r.id)?.name ?? r.defaultName;
-  const trapNames: Record<string, string> = {};
-  for (const k of TRAP_KINDS) trapNames[k] = d.affixes.traps.find((x) => x.kind === k)?.name ?? TRAP_INFO[k].defaultName;
-
-  const origins = ORIGINS.map((o) => {
-    const out = d.skills.origins.find((x) => x.id === o.id);
-    return { id: o.id, name: out?.name ?? bank.origins[o.id] ?? o.defaultName, description: out?.description ?? '', appearance: out?.appearance ?? o.defaultName };
-  });
-
   const worldFacts = [
     ...d.concept.worldFacts,
     ...d.atlas.regions.map((r) => `${r.name}: ${r.description}`),
@@ -798,15 +775,10 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
         ui: '#1a1a22',
       },
     } as WorldDefinition['concept'],
-    terminology,
-    systems,
+    ruleset: r,
+    rulesIntent: d.rulesIntent,
     maxLevel: sk.maxLevel,
-    origins,
-    skills: enabledSkills,
-    itemNames,
-    affixNames,
-    recipeNames,
-    trapNames,
+    origins: [],
     uniqueItems,
     families,
     bosses,
@@ -825,27 +797,9 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     generationLog: d.log,
   };
   (world.concept as { palette: WorldDefinition['concept']['palette'] }).palette.ui ??= '#1a1a22';
+  delete (world.concept as { _rules?: string })._rules;
+  bindWorld(world, r, d.rulesIntent.classes);
   return world;
 }
 
-function resolveSkills(d: Draft, systems: { traps: boolean; lockpicking: boolean }): Record<string, { name: string; description: string }> {
-  const out: Record<string, { name: string; description: string }> = {};
-  const bank = BANKS[d.genre];
-  for (const s of d.skills.skills) if (PLAYER_SKILL_IDS.includes(s.id)) out[s.id] = { name: s.name, description: s.description };
-  const ensure = (id: string) => {
-    if (!out[id]) out[id] = { name: bank.skills[id] ?? SKILLS[id]!.defaultName, description: SKILLS[id]!.summary };
-  };
-  for (const o of ORIGINS) o.suggestedSkills.forEach(ensure);
-  ensure('first_aid');
-  ensure('heal');
-  if (systems.traps) ensure('disarm_trap');
-  else {
-    delete out.disarm_trap;
-    delete out.keen_eye;
-  }
-  if (systems.lockpicking) ensure('pick_lock');
-  else delete out.pick_lock;
-  return out;
-}
-
-export { MONSTER_ARCHETYPES, ORIGIN };
+export { MONSTER_ARCHETYPES };

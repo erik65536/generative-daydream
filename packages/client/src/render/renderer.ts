@@ -1,6 +1,6 @@
 /** Isometric 2D renderer and mouse input for the game view. */
 import {
-  GROUND, OBJ, DAMAGE_INFO, findPath, reachable, getSkill, skillRange, hasLineOfSight, STATUS_INFO, ITEM_BASE, SKILLS,
+  ALLY_PASS_COST, GROUND, OBJ, findPath, reachable, rx, skillRange, hasLineOfSight,
   type EntityView, type FeatureDef, type FxEvent, type TilesetDef, type TileRole, type Vec2,
 } from '@gd/shared';
 import type { GameClient } from '../net/game';
@@ -8,6 +8,7 @@ import { TEX, hexToRgb, imageTexture, mix, proceduralTexture, rgb, shade, strHas
 import { featureSprite, furnitureSprite, lightSprite, pillarSprite, plantSprite, rockSprite, rubbleSprite, treeSprite, type Sprite } from './props';
 import { drawFigure, drawImageSprite, drawShadow, loadImage } from './sprites';
 import { FxSystem } from './fx';
+import { kindColor, rules } from '../rules';
 
 const HW = 32; // half tile width
 const HH = 16; // half tile height
@@ -16,10 +17,16 @@ const CHUNK = 12;
 const iso = (x: number, y: number) => ({ x: (x - y) * HW, y: (x + y) * HH });
 
 interface Anim {
+  /** Displayed position: eases toward the server position so path changes never pop. */
   px: number;
   py: number;
   walk: number;
   moving: boolean;
+  /** 0..1 blend between idle and walk poses, so starts and stops ease in and out. */
+  amt: number;
+  /** Screen-facing with hysteresis, so figures don't flicker when walking straight up or down the screen. */
+  dir: 1 | -1;
+  face: number;
   hurt: number;
   attack: number;
   death: number;
@@ -34,6 +41,8 @@ interface Drawable {
 
 export interface HoverInfo {
   tile: Vec2 | null;
+  /** Exact ground point under the cursor, in tile coordinates. */
+  point: Vec2 | null;
   entityId?: string;
   featureId?: string;
   lootId?: string;
@@ -61,7 +70,7 @@ export class Renderer {
   private fogCanvas = document.createElement('canvas');
   private anims = new Map<string, Anim>();
   readonly fx = new FxSystem();
-  hover: HoverInfo = { tile: null, screenX: 0, screenY: 0 };
+  hover: HoverInfo = { tile: null, point: null, screenX: 0, screenY: 0 };
   private hitRects: { id: string; kind: 'entity' | 'feature' | 'loot'; x: number; y: number; w: number; h: number; depth: number }[] = [];
   private raf = 0;
   private last = performance.now();
@@ -158,13 +167,20 @@ export class Renderer {
     const t = this.screenToTile(sx, sy);
     const tile = { x: Math.round(t.x), y: Math.round(t.y) };
     const z = this.client.state.zone;
-    const info: HoverInfo = { tile: z && tile.x >= 0 && tile.y >= 0 && tile.x < z.width && tile.y < z.height ? tile : null, screenX: sx, screenY: sy };
-    // Topmost hit rect wins (entities preferred over features at equal depth).
+    const inside = !!z && tile.x >= 0 && tile.y >= 0 && tile.x < z.width && tile.y < z.height;
+    const info: HoverInfo = { tile: inside ? tile : null, point: inside ? t : null, screenX: sx, screenY: sy };
+    // Overlapping figures: the one whose body centre is nearest the cursor wins, so a figure standing just
+    // behind another can still be clicked on its visible part. Entities beat features and loot.
     let best: (typeof this.hitRects)[number] | null = null;
+    let bestScore = Infinity;
     for (const h of this.hitRects) {
       if (sx < h.x || sy < h.y || sx > h.x + h.w || sy > h.y + h.h) continue;
-      const score = h.depth + (h.kind === 'entity' ? 0.5 : 0);
-      if (!best || score > best.depth + (best.kind === 'entity' ? 0.5 : 0)) best = h;
+      const nx = (sx - (h.x + h.w / 2)) / (h.w / 2), ny = (sy - (h.y + h.h * 0.45)) / (h.h / 2);
+      const score = nx * nx + ny * ny + (h.kind === 'entity' ? 0 : 0.6) - h.depth * 1e-4;
+      if (score < bestScore) {
+        best = h;
+        bestScore = score;
+      }
     }
     if (best) {
       if (best.kind === 'entity') info.entityId = best.id;
@@ -940,6 +956,22 @@ export class Renderer {
               ctx.shadowBlur = 14;
             }
             if (f.kind === 'waypoint') ctx.globalAlpha = 0.7 + Math.sin(this.t * 2) * 0.2;
+            if (f.kind === 'trap' && !fs?.disarmed && !fs?.triggered) {
+              // Spotted, live traps pulse with a warning outline so they read clearly against any floor.
+              ctx.save();
+              ctx.strokeStyle = `rgba(255,70,50,${0.55 + Math.sin(this.t * 4) * 0.35})`;
+              ctx.lineWidth = 2;
+              ctx.setLineDash([5, 4]);
+              ctx.lineDashOffset = -this.t * 12;
+              ctx.beginPath();
+              ctx.moveTo(p.x - HW * 0.9, p.y);
+              ctx.lineTo(p.x, p.y + HH * 0.9);
+              ctx.lineTo(p.x + HW * 0.9, p.y);
+              ctx.lineTo(p.x, p.y - HH * 0.9);
+              ctx.closePath();
+              ctx.stroke();
+              ctx.restore();
+            }
             ctx.drawImage(spr.canvas, p.x - spr.ax, p.y - spr.ay);
             ctx.globalAlpha = 1;
             if (hovered) ctx.restore();
@@ -986,7 +1018,7 @@ export class Renderer {
   private anim(e: EntityView): Anim {
     let a = this.anims.get(e.id);
     if (!a) {
-      a = { px: e.x, py: e.y, walk: 0, moving: false, hurt: 0, attack: 0, death: 0, lastHp: e.hp, fade: 0 };
+      a = { px: e.x, py: e.y, walk: 0, moving: false, amt: 0, dir: 1, face: e.facing, hurt: 0, attack: 0, death: 0, lastHp: e.hp, fade: 0 };
       this.anims.set(e.id, a);
     }
     return a;
@@ -999,13 +1031,23 @@ export class Renderer {
     const combat = st.combat;
     const markers = st.player?.npcMarkers ?? {};
     for (const e of st.entities.values()) {
-      const pos = this.client.entityPos(e);
+      const target = this.client.entityPos(e);
       const a = this.anim(e);
-      const moved = Math.hypot(pos.x - a.px, pos.y - a.py);
-      a.moving = pos.moving || moved > 0.001;
-      if (a.moving) a.walk += moved * 7.5 + dt * 0.5;
-      a.px = pos.x;
-      a.py = pos.y;
+      const gap = Math.hypot(target.x - a.px, target.y - a.py);
+      // Small discrepancies (a new path, server correction) are eased out; big ones (teleport, zone entry) snap.
+      const k = gap > 2.5 ? 1 : 1 - Math.exp(-dt * (target.moving ? 18 : 12));
+      const nx = a.px + (target.x - a.px) * k, ny = a.py + (target.y - a.py) * k;
+      const moved = Math.hypot(nx - a.px, ny - a.py);
+      a.px = nx;
+      a.py = ny;
+      a.moving = target.moving || moved > 0.004;
+      a.amt = Math.max(0, Math.min(1, a.amt + (a.moving ? dt * 7 : -dt * 5)));
+      // Stride length ~0.9 tiles per cycle; keep the phase running while easing out so legs settle.
+      if (a.amt > 0) a.walk += (gap > 2.5 ? 0 : moved) * 7 + (a.moving ? 0 : dt * 2);
+      // Turn smoothly toward the direction of travel.
+      const dFace = Math.atan2(Math.sin(target.facing - a.face), Math.cos(target.facing - a.face));
+      a.face += dFace * Math.min(1, dt * 14);
+      const pos = { x: a.px, y: a.py, facing: a.face };
       a.hurt = Math.max(0, a.hurt - dt);
       a.attack = Math.max(0, a.attack - dt * 2.5);
       if (e.dead) a.death = Math.min(1, a.death + dt * 1.2);
@@ -1014,7 +1056,9 @@ export class Renderer {
       // Screen-space facing from tile-space direction.
       const fx = Math.cos(pos.facing), fy = Math.sin(pos.facing);
       const sdx = fx - fy, sdy = (fx + fy) / 2;
-      const dir: 1 | -1 = sdx < -0.05 ? -1 : 1;
+      if (sdx < -0.3) a.dir = -1;
+      else if (sdx > 0.3) a.dir = 1;
+      const dir = a.dir;
       const back = sdy < -0.25;
       const depth = pos.x + pos.y + 0.1;
       const hovered = this.hover.entityId === e.id;
@@ -1046,7 +1090,7 @@ export class Renderer {
             ctx.shadowBlur = 12;
           }
           if (e.boss || e.elite) {
-            const glow = e.boss ? DAMAGE_INFO[e.element ?? 'fire']?.color ?? '#ff6040' : '#ffd060';
+            const glow = e.boss ? kindColor(e.element, '#ff6040') : '#ffd060';
             ctx.save();
             ctx.globalCompositeOperation = 'lighter';
             const gr = ctx.createRadialGradient(0, -height * 0.45, 4, 0, -height * 0.45, height * 0.7);
@@ -1056,12 +1100,12 @@ export class Renderer {
             ctx.fillRect(-height, -height * 1.2, height * 2, height * 1.5);
             ctx.restore();
           }
-          const walk = a.moving ? a.walk : NaN;
-          if (img) drawImageSprite(ctx, img, { height, dir, walk, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack });
+          const walk = a.amt > 0.02 ? a.walk : NaN;
+          if (img) drawImageSprite(ctx, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack });
           else
             drawFigure(ctx, {
               shape: e.shape, colors: e.colors.length ? e.colors : this.defaultColors(e, ts), scale: e.scale * 1.15, dir, back, walk, t: this.t, weapon: e.weapon, archetype: e.archetype,
-              seed: e.id, downed: e.downed, hurt: a.hurt, attack: a.attack, role: e.role, kind: e.kind,
+              seed: e.id, downed: e.downed, hurt: a.hurt, attack: a.attack, role: e.role, kind: e.kind, amt: a.amt,
             });
           ctx.shadowBlur = 0;
           // Status tint
@@ -1122,14 +1166,13 @@ export class Renderer {
           by -= h + 2;
         };
         bar(e.hp / Math.max(1, e.maxHp), e.hostile ? '#c8322a' : '#3fb34a', 5);
-        if (e.maxMag > 0) bar(e.magArmor / e.maxMag, '#4a8ae0', 3);
-        if (e.maxPhys > 0) bar(e.physArmor / e.maxPhys, '#b8b8c0', 3);
+        if (e.barrier > 0) bar(e.barrier / Math.max(1, e.maxHp), '#9fd8ff', 3);
         y = by - 2;
       }
       if (l.hovered || (e.boss && l.inCombat)) {
         ctx.font = `600 ${e.boss ? 14 : 12}px Inter, sans-serif`;
         ctx.textAlign = 'center';
-        const name = `${e.name}${e.kind === 'monster' ? `  ·  ${this.client.state.world?.terminology.level ?? 'Lv'} ${e.level}` : ''}`;
+        const name = `${e.name}${e.kind === 'monster' ? `  ·  ${this.client.state.world?.ruleset.terminology.level ?? 'Lv'} ${e.level}` : ''}`;
         ctx.lineWidth = 3;
         ctx.strokeStyle = 'rgba(0,0,0,0.85)';
         ctx.strokeText(name, l.x, y - 4);
@@ -1143,7 +1186,7 @@ export class Renderer {
         }
         // Statuses
         e.statuses.slice(0, 6).forEach((s, i) => {
-          ctx.fillStyle = STATUS_INFO[s.id]?.color ?? '#fff';
+          ctx.fillStyle = kindColor(s.id, '#fff');
           ctx.beginPath();
           ctx.arc(l.x - 25 + i * 10, y + 4, 3.5, 0, Math.PI * 2);
           ctx.fill();
@@ -1180,7 +1223,7 @@ export class Renderer {
       case 'chest':
         return `${f.name ?? 'Chest'}${f.lockLevel && !fs?.unlocked ? ' (locked)' : fs?.empty ? ' (empty)' : ''}`;
       case 'trap':
-        return `${w?.trapNames[f.trapKind ?? 'spike'] ?? 'Trap'}${fs?.disarmed ? ' (disarmed)' : fs?.triggered ? ' (sprung)' : ' — click to disarm'}`;
+        return `${(w && rx(w.ruleset).trap.get(f.trapKind ?? '')?.name) ?? f.name ?? 'Trap'}${fs?.disarmed ? ' (disarmed)' : fs?.triggered ? ' (sprung)' : ' — click to disarm'}`;
       default:
         return f.name ?? f.kind;
     }
@@ -1236,7 +1279,7 @@ export class Renderer {
     }
   }
 
-  private passable(x: number, y: number, ignoreId?: string): boolean {
+  private passable(x: number, y: number, ignoreId?: string, ignoreEntities = false): boolean {
     const st = this.client.state;
     const z = st.zone!;
     if (x < 0 || y < 0 || x >= z.width || y >= z.height) return false;
@@ -1245,7 +1288,7 @@ export class Renderer {
     if (!(g === GROUND.floor || g === GROUND.floorAlt || g === GROUND.path)) return false;
     if (BLOCKING.has(z.objectBytes[i]!)) return false;
     for (const f of z.features) if (f.x === x && f.y === y && (SOLID_FEATURE.has(f.kind) || (f.kind === 'gate' && !st.features.get(f.id)?.toggled))) return false;
-    for (const e of st.entities.values()) if (e.id !== ignoreId && !e.dead && Math.round(e.x) === x && Math.round(e.y) === y && st.combat && e.inCombat) return false;
+    if (!ignoreEntities) for (const e of st.entities.values()) if (e.id !== ignoreId && !e.dead && Math.round(e.x) === x && Math.round(e.y) === y && st.combat && e.inCombat) return false;
     return true;
   }
 
@@ -1278,11 +1321,17 @@ export class Renderer {
     if (myTurn && ch && !tgt?.skillId && !tgt?.itemId) {
       const stats = this.client.charStats(ch);
       const order = combat!.order.find((o) => o.id === active!.id)!;
-      const budget = order.movementLeft + order.ap * stats.tilesPerAp;
+      const budget = order.movementLeft + order.ap * stats.move;
       const key = `${active!.x},${active!.y},${budget},${combat!.round}`;
-      if (this.reach?.key !== key) this.reach = { key, map: reachable(active!, budget, { width: z.width, height: z.height, passable: (x, y) => this.passable(x, y, active!.id) }) };
+      if (this.reach?.key !== key) {
+        // Allies can be walked past (at a cost) but not stood on — same rule as the server.
+        const ally = (x: number, y: number) => [...st.entities.values()].some((e) => e.id !== active!.id && !e.dead && e.inCombat && !e.hostile && Math.round(e.x) === x && Math.round(e.y) === y);
+        const map = reachable(active!, budget, { width: z.width, height: z.height, passable: (x, y) => this.passable(x, y, active!.id) || (ally(x, y) && this.passable(x, y, active!.id, true)), extraCost: (x, y) => (ally(x, y) ? ALLY_PASS_COST : 0) });
+        for (const k of [...map.keys()]) if (!this.passable(k % z.width, Math.floor(k / z.width), active!.id)) map.delete(k);
+        this.reach = { key, map };
+      }
       const reach = this.reach.map;
-      const apOf = (cost: number) => (cost <= order.movementLeft ? 0 : Math.ceil((cost - order.movementLeft) / stats.tilesPerAp));
+      const apOf = (cost: number) => (cost <= order.movementLeft ? 0 : Math.ceil((cost - order.movementLeft) / stats.move));
       for (const [idx, cost] of reach) {
         const x = idx % z.width, y = Math.floor(idx / z.width);
         const apNeeded = apOf(cost);
@@ -1317,7 +1366,8 @@ export class Renderer {
       // Path preview to hovered tile.
       const h = this.hover.tile;
       if (h && !this.hover.entityId && this.passable(h.x, h.y, active!.id)) {
-        const path = findPath(active!, h, { width: z.width, height: z.height, passable: (x, y) => this.passable(x, y, active!.id), maxNodes: 4000 });
+        const allyAt = (x: number, y: number) => [...st.entities.values()].some((e) => e.id !== active!.id && !e.dead && e.inCombat && !e.hostile && Math.round(e.x) === x && Math.round(e.y) === y);
+        const path = this.passable(h.x, h.y, active!.id) ? findPath(active!, h, { width: z.width, height: z.height, passable: (x, y) => this.passable(x, y, active!.id) || (allyAt(x, y) && this.passable(x, y, active!.id, true)), extraCost: (x, y) => (allyAt(x, y) ? ALLY_PASS_COST : 0), maxNodes: 4000 }) : null;
         if (path && path.length) {
           let len = 0;
           let px = active!.x, py = active!.y;
@@ -1328,7 +1378,7 @@ export class Renderer {
           const s0 = iso(px, py);
           ctx.moveTo(s0.x, s0.y);
           for (const t of path) {
-            len += Math.hypot(t.x - px, t.y - py);
+            len += Math.hypot(t.x - px, t.y - py) + (allyAt(t.x, t.y) ? ALLY_PASS_COST : 0);
             px = t.x;
             py = t.y;
             const s = iso(t.x, t.y);
@@ -1336,23 +1386,24 @@ export class Renderer {
           }
           ctx.stroke();
           ctx.setLineDash([]);
-          const cost = len <= order.movementLeft ? 0 : Math.ceil((len - order.movementLeft) / stats.tilesPerAp);
+          const cost = len <= order.movementLeft ? 0 : Math.ceil((len - order.movementLeft) / stats.move);
           const ok = cost <= order.ap;
           diamond(h.x, h.y, ok ? 'rgba(255,230,140,0.35)' : 'rgba(255,80,60,0.35)', ok ? 'rgba(255,230,140,0.9)' : 'rgba(255,80,60,0.9)');
-          this.cursorNote = { text: ok ? `${cost} ${st.world?.terminology.actionPoints ?? 'AP'}` : 'Too far', ok };
+          this.cursorNote = { text: ok ? `${cost} ${st.world?.ruleset.terminology.actionPoints ?? 'AP'}` : 'Too far', ok };
         }
       }
     }
     // Skill / item targeting.
     if (tgt && (tgt.skillId || tgt.itemId)) {
       const user = st.entities.get(tgt.charId);
-      const skill = tgt.skillId ? getSkill(tgt.skillId) : undefined;
+      const skill = tgt.skillId && st.world ? rx(st.world.ruleset).skill.get(tgt.skillId) : undefined;
       const chr = st.player?.party.find((c) => c.id === tgt.charId);
       if (user && chr) {
         const stats = this.client.charStats(chr);
         const item = tgt.itemId ? st.player?.inventory.find((i) => i.id === tgt.itemId) : undefined;
-        const range = skill ? skillRange(skill, stats) : item && ITEM_BASE[item.baseId]?.consumable?.kind === 'bomb' ? 9 : 1.6;
-        const radius = skill?.radius ?? (item && ITEM_BASE[item.baseId]?.consumable?.kind === 'bomb' ? (ITEM_BASE[item.baseId]!.consumable as { radius: number }).radius : 0);
+        const use = item && st.world ? rx(st.world.ruleset).item.get(item.baseId)?.use : undefined;
+        const range = skill ? skillRange(skill, stats) : use?.targeting === 'ground' ? 8 : use?.targeting === 'ally' ? 6 : 1.6;
+        const radius = skill?.radius ?? use?.radius ?? 0;
         const up = this.client.entityPos(user);
         // Range ring
         if (range > 0) {
@@ -1410,7 +1461,7 @@ export class Renderer {
           if (ev.damage.type !== 'heal' && !ev.damage.type.startsWith('armor')) {
             const a = ev.targetId ? this.anims.get(ev.targetId) : undefined;
             if (a) a.hurt = 0.3;
-            this.fx.burst(tp.x, tp.y, DAMAGE_INFO[ev.damage.type as keyof typeof DAMAGE_INFO]?.color ?? '#ffffff', ev.damage.crit ? 16 : 8, 1.8, 1);
+            this.fx.burst(tp.x, tp.y, kindColor(ev.damage.type), ev.damage.crit ? 16 : 8, 1.8, 1);
           }
           break;
         }
@@ -1420,7 +1471,7 @@ export class Renderer {
         case 'projectile': {
           const sp = posOf(ev.sourceId) ?? { x: ev.x ?? 0, y: ev.y ?? 0 };
           const to = posOf(ev.targetId) ?? { x: ev.tx ?? sp.x, y: ev.ty ?? sp.y };
-          const color = DAMAGE_INFO[ev.element ?? 'physical']?.color ?? '#ffffff';
+          const color = kindColor(ev.element);
           const a = ev.sourceId ? this.anims.get(ev.sourceId) : undefined;
           if (a) a.attack = 1;
           const kind = ev.fx === 'arrow' ? 'arrow' : ev.fx === 'beam' ? 'beam' : 'bolt';
@@ -1433,7 +1484,7 @@ export class Renderer {
         case 'skill': {
           const sp = posOf(ev.sourceId) ?? { x: ev.x ?? 0, y: ev.y ?? 0 };
           const center = { x: ev.tx ?? sp.x, y: ev.ty ?? sp.y };
-          const color = DAMAGE_INFO[ev.element ?? 'physical']?.color ?? '#ffffff';
+          const color = kindColor(ev.element);
           const a = ev.sourceId ? this.anims.get(ev.sourceId) : undefined;
           if (a) a.attack = 1;
           if (ev.fx === 'heal') this.fx.rise(center.x, center.y, '#8dffb0', ev.radius ? 30 : 16);
@@ -1461,7 +1512,7 @@ export class Renderer {
           break;
         case 'trap': {
           const p = { x: ev.x ?? 0, y: ev.y ?? 0 };
-          const color = DAMAGE_INFO[ev.element ?? 'physical']?.color ?? '#ffffff';
+          const color = kindColor(ev.element);
           this.fx.burst(p.x, p.y, color, 26, 3);
           if (ev.radius) this.fx.ring(p.x, p.y, ev.radius, color);
           this.fx.text(p.x, p.y, ev.text ?? 'Trap!', '#ff9070', true);
@@ -1666,40 +1717,55 @@ export class Renderer {
     ctx.restore();
   }
 
+  private fogMap: { key: string; canvas: HTMLCanvasElement; img: ImageData } | null = null;
+
+  /**
+   * Fog of war: one alpha value per tile, written into a tiny map-sized image and drawn with an isometric
+   * transform and bilinear smoothing, so the fog is a continuous gradient with no overlapping tile seams.
+   */
   private drawFog(minX: number, maxX: number, minY: number, maxY: number) {
     const st = this.client.state;
     const z = st.zone!;
     if (!st.explored) return;
+    const key = `${z.id}:${z.width}x${z.height}`;
+    if (this.fogMap?.key !== key) {
+      const canvas = document.createElement('canvas');
+      canvas.width = z.width;
+      canvas.height = z.height;
+      this.fogMap = { key, canvas, img: canvas.getContext('2d')!.createImageData(z.width, z.height) };
+    }
+    const { canvas, img } = this.fogMap;
+    const data = img.data;
+    const party = [...st.entities.values()].filter((e) => e.ownerUserId === st.userId).map((e) => this.client.entityPos(e));
+    const W = z.width;
+    const x0 = Math.max(0, minX - 3), x1 = Math.min(z.width - 1, maxX + 3);
+    const y0 = Math.max(0, minY - 3), y1 = Math.min(z.height - 1, maxY + 3);
+    for (let y = y0; y <= y1; y++)
+      for (let x = x0; x <= x1; x++) {
+        let alpha: number;
+        if (!st.explored.get(y * W + x)) alpha = 1;
+        else {
+          let d = 99;
+          for (const p of party) d = Math.min(d, Math.hypot(p.x - x, p.y - y));
+          // Remembered-but-unseen ground dims smoothly with distance from the party.
+          alpha = d > 13 ? 0.45 : d > 8 ? ((d - 8) / 5) ** 1.5 * 0.45 : 0;
+        }
+        data[(y * W + x) * 4 + 3] = Math.round(alpha * 255);
+      }
+    canvas.getContext('2d')!.putImageData(img, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
     const fc = this.fogCanvas;
     const f = fc.getContext('2d')!;
     f.setTransform(1, 0, 0, 1, 0, 0);
     f.clearRect(0, 0, fc.width, fc.height);
-    const party = [...st.entities.values()].filter((e) => e.ownerUserId === st.userId).map((e) => this.client.entityPos(e));
-    const W = z.width;
-    f.fillStyle = '#000';
-    const sc = 0.25;
-    for (let y = Math.max(0, minY - 2); y <= Math.min(z.height - 1, maxY + 2); y++)
-      for (let x = Math.max(0, minX - 2); x <= Math.min(z.width - 1, maxX + 2); x++) {
-        const explored = st.explored.get(y * W + x);
-        let alpha = 0;
-        if (!explored) alpha = 1;
-        else {
-          const d = Math.min(...party.map((p) => Math.hypot(p.x - x, p.y - y)), 99);
-          alpha = d > 13 ? 0.45 : d > 9 ? ((d - 9) / 4) * 0.45 : 0;
-        }
-        if (alpha <= 0) continue;
-        const s = this.tileToScreen(x, y);
-        f.globalAlpha = alpha;
-        const hw = HW * this.zoom * sc * 1.15, hh = HH * this.zoom * sc * 1.15;
-        f.beginPath();
-        f.moveTo(s.x * sc, s.y * sc - hh);
-        f.lineTo(s.x * sc + hw, s.y * sc);
-        f.lineTo(s.x * sc, s.y * sc + hh);
-        f.lineTo(s.x * sc - hw, s.y * sc);
-        f.closePath();
-        f.fill();
-      }
-    f.globalAlpha = 1;
+    const sc = fc.width / this.W;
+    const o = this.tileToScreen(0, 0);
+    const k = this.zoom * sc;
+    // Tile (x,y) maps to screen ((x−y)·HW, (x+y)·HH); pixel corners sit half a tile before the centres.
+    f.setTransform(HW * k, HH * k, -HW * k, HH * k, o.x * sc, o.y * sc);
+    f.imageSmoothingEnabled = true;
+    f.imageSmoothingQuality = 'high';
+    f.drawImage(canvas, -0.5, -0.5);
+    f.setTransform(1, 0, 0, 1, 0, 0);
     this.setScreenTransform();
     this.ctx.imageSmoothingEnabled = true;
     this.ctx.drawImage(fc, 0, 0, this.W, this.H);
@@ -1778,7 +1844,6 @@ export class Renderer {
   }
 }
 
-export { SKILLS };
 
 interface Building {
   x0: number;

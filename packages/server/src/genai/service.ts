@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { CONFIG_DIR, DATA_DIR } from '../paths';
-import { AnthropicProvider, ComfyUIProvider, GoogleProvider, OpenAIChatProvider, OpenAIImageProvider, OpenAIResponsesProvider } from './providers';
+import { AnthropicProvider, ComfyUIProvider, GoogleProvider, LlamaDecisionProvider, OpenAIChatProvider, OpenAIImageProvider, OpenAIResponsesProvider } from './providers';
+import { GpuScheduler } from './gpu';
 import { parseModelJson } from './json';
 import {
   GenAIError, PURPOSES, ProceduralOnly,
-  type GenAIConfig, type ImageProvider, type ImageRequest, type ProviderConfig, type Purpose, type PurposeConfig, type TextProvider, type TextRequest,
+  type DecisionAnswer, type DecisionProvider, type DecisionRequest, type GenAIConfig, type ImageProvider, type ImageRequest, type ProviderConfig, type Purpose, type PurposeConfig, type TextProvider, type TextRequest,
 } from './types';
 
 export const DEFAULT_CONFIG: GenAIConfig = {
@@ -75,6 +76,9 @@ export class GenAI {
   private textProviders = new Map<string, TextProvider>();
   private imageProviders = new Map<string, ImageProvider>();
   private limiters = new Map<string, Limiter>();
+  private decisionProviders = new Map<string, DecisionProvider>();
+  readonly gpu = new GpuScheduler(() => this.config.gpuIdleUnloadMs ?? 300_000);
+  private gpuMembersRegistered = false;
   readonly recent: CallLog[] = [];
   private logFile: string;
 
@@ -98,11 +102,11 @@ export class GenAI {
     return !pc || pc.provider === 'procedural' || this.config.providers[pc.provider]?.type === 'procedural';
   }
 
-  describe(): { purpose: Purpose; provider: string; type: string; model?: string }[] {
+  describe(): { purpose: Purpose; provider: string; type: string; model?: string; gpu?: string }[] {
     return PURPOSES.map((p) => {
       const pc = this.purpose(p);
       const prov = this.config.providers[pc.provider];
-      return { purpose: p, provider: pc.provider, type: prov?.type ?? 'missing', model: pc.model ?? prov?.model ?? prov?.checkpoint };
+      return { purpose: p, provider: pc.provider, type: prov?.type ?? 'missing', model: pc.model ?? prov?.model ?? prov?.checkpoint, gpu: prov?.gpu };
     });
   }
 
@@ -113,6 +117,50 @@ export class GenAI {
       this.limiters.set(name, l);
     }
     return l;
+  }
+
+  /** Run a provider call, serialized through its exclusive GPU group when it has one. */
+  private exec<T>(providerName: string, model: string | undefined, fn: () => Promise<T>): Promise<T> {
+    const cfg = this.providerConfig(providerName);
+    const m = model ?? cfg.model ?? cfg.checkpoint ?? providerName;
+    if (cfg.gpu && !this.gpuMembersRegistered) {
+      // Every provider sharing a GPU group is known up front, so eviction covers servers not used yet.
+      this.gpuMembersRegistered = true;
+      for (const [n, c] of Object.entries(this.config.providers)) if (c.gpu) this.gpu.group(c.gpu).members.set(n, c);
+    }
+    if (cfg.gpu) return this.gpu.group(cfg.gpu).run(providerName, m, cfg, () => this.limiter(providerName).run(fn));
+    return this.limiter(providerName).run(fn);
+  }
+
+  /** Unload every local model (call after a batch of work such as world generation). */
+  releaseGpu(): Promise<void> {
+    return this.gpu.releaseAll();
+  }
+
+  /** Is this purpose served by a decision model (choice/score/yes-no answers) rather than an LLM? */
+  isDecision(p: Purpose): boolean {
+    const pc = this.config.purposes[p];
+    return !!pc && this.config.providers[pc.provider]?.type === 'llamacpp-decision';
+  }
+
+  async decide(p: Purpose, req: DecisionRequest): Promise<Record<string, DecisionAnswer>> {
+    const pc = this.purpose(p);
+    let prov = this.decisionProviders.get(pc.provider);
+    if (!prov) {
+      const cfg = this.providerConfig(pc.provider);
+      if (cfg.type !== 'llamacpp-decision') throw new GenAIError(`Provider "${pc.provider}" is not a decision model`, false);
+      prov = new LlamaDecisionProvider(cfg);
+      this.decisionProviders.set(pc.provider, prov);
+    }
+    const t0 = Date.now();
+    try {
+      const out = await this.exec(pc.provider, pc.model, () => prov!.decide(req, pc.model));
+      this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: true, attempt: 1, promptChars: JSON.stringify(req.state).length, preview: Object.entries(out).map(([k, v]) => `${k}=${v.type === 'choice' ? v.choice : v.type === 'score' ? v.score.toFixed(2) : v.noul.toFixed(2)}`).join(' ').slice(0, 160) });
+      return out;
+    } catch (e) {
+      this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: false, error: (e as Error).message.slice(0, 300), attempt: 1, promptChars: 0 });
+      throw e;
+    }
   }
 
   private text_(name: string): TextProvider {
@@ -159,7 +207,7 @@ export class GenAI {
     const provider = this.text_(pc.provider);
     const t0 = Date.now();
     try {
-      const out = await this.limiter(pc.provider).run(() =>
+      const out = await this.exec(pc.provider, pc.model, () =>
         provider.text({ ...req, temperature: req.temperature ?? pc.temperature, maxTokens: req.maxTokens ?? pc.maxTokens }, pc.model, pc.extraBody),
       );
       const cleaned = out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
@@ -184,7 +232,7 @@ export class GenAI {
       const t0 = Date.now();
       let raw = '';
       try {
-        raw = await this.limiter(pc.provider).run(() =>
+        raw = await this.exec(pc.provider, pc.model, () =>
           provider.structured(
             { system: opts.system, messages, schema: jsonSchema, schemaName: opts.name, temperature: opts.temperature ?? pc.temperature, maxTokens: opts.maxTokens ?? pc.maxTokens, images: opts.images },
             pc.model,
@@ -223,7 +271,7 @@ export class GenAI {
       negativePrompt: [req.negativePrompt, pc.negativePrompt].filter(Boolean).join(', '),
     };
     try {
-      const buf = await this.limiter(pc.provider).run(() => provider.generate(full, pc.model, pc.extraBody));
+      const buf = await this.exec(pc.provider, pc.model, () => provider.generate(full, pc.model, pc.extraBody));
       this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: true, attempt: 1, promptChars: req.prompt.length, responseChars: buf.length });
       return buf;
     } catch (e) {

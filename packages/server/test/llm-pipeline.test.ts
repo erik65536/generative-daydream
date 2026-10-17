@@ -12,7 +12,7 @@ import { reloadGenAI, genai } from '../src/genai/service';
 import { WorldGenJob, runGeneration } from '../src/worldgen/pipeline';
 import { loadWorld } from '../src/storage';
 import { instances } from '../src/game/manager';
-import { validateWorld } from './helpers';
+import { validateWorld, hero } from './helpers';
 
 type Json = Record<string, unknown>;
 let counter = 0;
@@ -114,7 +114,7 @@ describe('LLM pipeline against a mock OpenAI-compatible server', () => {
     expect(w.status).toBe('ready');
     expect(validateWorld(w)).toEqual([]);
     const names = new Set(seen.map((s) => s.name));
-    for (const n of ['world_concept', 'world_atlas', 'monster_families', 'skills', 'items', 'affixes', 'main_story', 'town_content', 'area_content']) expect(names.has(n)).toBe(true);
+    for (const n of ['world_concept', 'world_atlas', 'monster_families', 'rules_core', 'rules_gear', 'rules_classes', 'rules_tree', 'main_story', 'town_content', 'area_content']) expect(names.has(n)).toBe(true);
     // The junk story response must have been retried.
     expect(seen.filter((s) => s.name === 'main_story').length).toBeGreaterThanOrEqual(2);
     // Model-provided names made it into the world.
@@ -125,7 +125,7 @@ describe('LLM pipeline against a mock OpenAI-compatible server', () => {
     expect(calls.filter((c) => c.ok).length).toBeGreaterThan(8);
 
     // NPC dialogue through the decision model.
-    const inst = instances.create(w, 'u1', 'T', 'llm run', [{ name: 'Tess', originId: 'o_rogue' }]);
+    const inst = instances.create(w, 'u1', 'T', 'llm run', [hero(w, 'Tess', 'melee')]);
     const msgs: unknown[] = [];
     inst.join({ userId: 'u1', send: (m) => msgs.push(m) });
     const npc = w.npcs.find((n) => n.questIds.some((q) => q.startsWith('q_side')))!;

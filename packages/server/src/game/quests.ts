@@ -43,12 +43,12 @@ export class QuestEngine {
     for (const o of def.objectives) prog.objectives[o.id] = { progress: 0, done: false };
     p.quests[questId] = prog;
     if (def.grantsOnStart?.length) {
-      const items = def.grantsOnStart.map((u) => rewardItems(this.h.ctx.world, this.h.rng, [u], def.level)).flat();
-      addToInventory(p.inventory, items);
-      for (const it of items) this.h.toast(p, `Received ${this.h.ctx.world.uniqueItems[it.uniqueId ?? '']?.name ?? 'an item'}`, 'loot');
+      const items = def.grantsOnStart.map((u) => rewardItems(this.h.ctx.r, this.h.ctx.uniqueItems, this.h.rng, [u], def.level)).flat();
+      addToInventory(this.h.ctx.r, p.inventory, items);
+      for (const it of items) this.h.toast(p, `Received ${this.h.ctx.uniqueItems[it.uniqueId ?? '']?.name ?? 'an item'}`, 'loot');
     }
-    this.h.journal(p, 'quest', `${def.main ? 'Story' : this.h.ctx.world.terminology.quest} started: ${def.title}`);
-    this.h.toast(p, `New ${def.main ? 'story ' : ''}${this.h.ctx.world.terminology.quest.toLowerCase()}: ${def.title}`, 'quest');
+    this.h.journal(p, 'quest', `${def.main ? 'Story' : this.h.ctx.r.terminology.quest} started: ${def.title}`);
+    this.h.toast(p, `New ${def.main ? 'story ' : ''}${this.h.ctx.r.terminology.quest.toLowerCase()}: ${def.title}`, 'quest');
     // Objectives may already be satisfied (e.g. already carrying the item, already in the zone).
     this.refreshCollect(p);
     this.h.playerChanged(p);
@@ -243,12 +243,12 @@ export class QuestEngine {
     prog.status = 'completed';
     prog.log.push({ day: this.h.day(), text: note ?? 'Completed.' });
     p.stats.questsCompleted++;
-    const items = rewardItems(this.h.ctx.world, this.h.rng, def.rewards.items, def.level);
-    addToInventory(p.inventory, items);
+    const items = rewardItems(this.h.ctx.r, this.h.ctx.uniqueItems, this.h.rng, def.rewards.items, def.level);
+    addToInventory(this.h.ctx.r, p.inventory, items);
     this.h.grantGold(p, def.rewards.gold);
     this.h.grantXp(p, def.rewards.xp);
     this.h.journal(p, 'quest', `Completed: ${def.title}`);
-    this.h.toast(p, `${this.h.ctx.world.terminology.quest} complete: ${def.title} (+${def.rewards.xp} ${this.h.ctx.world.terminology.xp}, +${def.rewards.gold} ${this.h.ctx.world.terminology.gold})`, 'good');
+    this.h.toast(p, `${this.h.ctx.r.terminology.quest} complete: ${def.title} (+${def.rewards.xp} ${this.h.ctx.r.terminology.xp}, +${def.rewards.gold} ${this.h.ctx.r.terminology.currency})`, 'good');
     if (def.completionText) this.h.narrate(p, def.title, def.completionText, 'quest');
     this.h.questEvent(p, def, 'completed');
     // Arc revelations and ending.
@@ -282,7 +282,7 @@ export class QuestEngine {
     prog.status = 'failed';
     prog.log.push({ day: this.h.day(), text: `Failed: ${reason}` });
     this.h.journal(p, 'quest', `Failed: ${def.title} — ${reason}`);
-    this.h.toast(p, `${this.h.ctx.world.terminology.quest} failed: ${def.title}`, 'bad');
+    this.h.toast(p, `${this.h.ctx.r.terminology.quest} failed: ${def.title}`, 'bad');
     this.h.questEvent(p, def, 'failed');
     this.h.playerChanged(p);
   }

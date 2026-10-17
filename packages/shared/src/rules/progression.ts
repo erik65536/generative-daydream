@@ -43,45 +43,8 @@ export const LENGTH_PROFILES: Record<GameLength, LengthProfile> = {
   epic: { maxLevel: 30, arcs: 5, mainQuestsPerArc: [3, 5] },
 };
 
-/** Total experience required to reach `level` (level 1 = 0). */
-export function xpForLevel(level: number): number {
-  if (level <= 1) return 0;
-  const n = level - 1;
-  return Math.round(100 * n + 60 * n * n + 6 * n * n * n);
-}
-
-export function levelForXp(xp: number, maxLevel: number): number {
-  let l = 1;
-  while (l < maxLevel && xp >= xpForLevel(l + 1)) l++;
-  return l;
-}
-
-/** Experience granted for defeating a creature of `level` with a strength multiplier (boss = ~5). */
-export function killXp(level: number, strength = 1): number {
-  return Math.round((20 + level * 12) * strength);
-}
-
-/** Expected number of standard kills to level, used to size quest rewards. */
-export function questXp(level: number, weight = 1): number {
-  return Math.round((xpForLevel(level + 1) - xpForLevel(level)) * 0.35 * weight);
-}
-
-export function questGold(level: number, weight = 1): number {
-  return Math.round((25 + level * 18) * weight);
-}
-
-/** Base "power" number at a level that weapon damage and skill power derive from. */
-export function powerAtLevel(level: number): number {
-  return 6 + level * 3.2 + Math.pow(level, 1.35) * 0.6;
-}
-
-export const ATTRIBUTE_BASE = 10;
-export const ATTRIBUTE_POINTS_PER_LEVEL = 2;
-export const SKILL_POINTS_PER_LEVEL = 1;
-export const STARTING_SKILL_POINTS = 2;
 export const MAX_PARTY_SIZE = 4;
-export const BASE_AP_PER_TURN = 4;
-export const MAX_AP = 6;
-export const TILES_PER_AP = 3;
 export const REAL_MS_PER_GAME_MINUTE = 1000; // 1 game hour = 1 real minute, 1 day = 24 real minutes
 export const GAME_MINUTES_PER_DAY = 24 * 60;
+/** Slain non-boss monsters return this long after death (6 game hours = 6 real minutes), when their zone is next entered. */
+export const RESPAWN_GAME_MINUTES = 6 * 60;

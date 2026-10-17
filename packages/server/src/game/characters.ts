@@ -1,138 +1,172 @@
-/** Character creation and progression. */
+/** Character creation and progression on the world's ruleset: class, kin, upgrade tree, levels. */
 import {
-  ATTRIBUTES, ATTRIBUTE_BASE, ATTRIBUTE_POINTS_PER_LEVEL, ORIGIN, SKILL_POINTS_PER_LEVEL, STARTING_SKILL_POINTS, Rng, computeCharacterStats, levelForXp, uid,
-  type AttributeId, type CharacterState, type WorldDefinition, type ItemInstance,
+  branchSpent, canAllocate, characterStats, knownSkills, levelForXp, rx, treePointsAt, uid,
+  type CharacterSpec, type CharacterState, type ItemInstance, type Rng, type Ruleset, type TreeNode, type WorldDefinition,
 } from '@gd/shared';
 import { makeItem } from './loot';
 
-export interface CharacterSpec {
-  name: string;
-  originId: string;
-  /** Extra attribute points the player allocated at creation (max 3 total). */
-  attributes?: Partial<Record<AttributeId, number>>;
-  /** Starting skills (up to STARTING_SKILL_POINTS) chosen among enabled skills. */
-  skills?: string[];
-  sprite?: string;
-  colors?: string[];
-}
+export type { CharacterSpec };
 
-export function createCharacter(w: WorldDefinition, spec: CharacterSpec, rng: Rng): { ch: CharacterState; inventory: ItemInstance[] } {
-  const origin = ORIGIN[spec.originId] ?? ORIGIN.o_warrior!;
-  const attributes = Object.fromEntries(ATTRIBUTES.map((a) => [a, ATTRIBUTE_BASE])) as Record<AttributeId, number>;
-  for (const [k, v] of Object.entries(origin.attributes)) attributes[k as AttributeId] += v ?? 0;
-  let spent = 0;
-  for (const [k, v] of Object.entries(spec.attributes ?? {})) {
-    const n = Math.max(0, Math.min(3 - spent, Math.floor(v ?? 0)));
-    if (ATTRIBUTES.includes(k as AttributeId)) {
-      attributes[k as AttributeId] += n;
-      spent += n;
-    }
-  }
-  const enabled = Object.keys(w.skills);
-  const wanted = (spec.skills ?? []).filter((s) => enabled.includes(s));
-  const suggested = origin.suggestedSkills.filter((s) => enabled.includes(s));
-  const skills = [...new Set([...wanted, ...suggested])].slice(0, STARTING_SKILL_POINTS);
-  if (enabled.includes('first_aid') && !skills.includes('first_aid')) skills.push('first_aid');
+export function createCharacter(r: Ruleset, w: WorldDefinition | null, spec: CharacterSpec, rng: Rng): { ch: CharacterState; inventory: ItemInstance[] } {
+  const ix = rx(r);
+  const cls = ix.cls.get(spec.classId) ?? r.classes[0]!;
+  const kin = ix.kin.get(spec.kinId) ?? r.kins[0]!;
   const equipment: CharacterState['equipment'] = {};
-  equipment.mainhand = makeItem(w, rng, origin.weapon, 1, 'common');
-  if (origin.offhand) equipment.offhand = makeItem(w, rng, origin.offhand, 1, 'common');
-  for (const a of origin.armor) {
-    const it = makeItem(w, rng, a, 1, 'common');
-    const slot = it ? (a.startsWith('a_head') ? 'head' : a.startsWith('a_chest') ? 'chest' : a.startsWith('a_hands') ? 'hands' : 'feet') : null;
-    if (slot) equipment[slot] = it;
-  }
+  for (const [slotId, baseId] of Object.entries(cls.startingGear)) if (ix.item.get(baseId)) equipment[slotId] = makeItem(r, rng, baseId, 1, r.rarities[0]!.id);
   const ch: CharacterState = {
     id: uid('ch'),
     name: spec.name.trim().slice(0, 24) || 'Wanderer',
-    originId: origin.id,
-    sprite: spec.sprite ?? `spr_origin_${origin.id}`,
+    classId: cls.id,
+    kinId: kin.id,
+    presentation: spec.presentation ?? 'androgynous',
+    pronouns: (spec.pronouns ?? 'they/them').slice(0, 24),
+    sprite: spec.sprite ?? `spr_origin_${cls.id}`,
     colors: spec.colors ?? [],
     level: 1,
     xp: 0,
-    attributes,
-    unspentAttributes: 0,
-    unspentSkillPoints: 0,
-    skills,
+    tree: {},
+    treePoints: r.progression.treePointsStart,
     hotbar: [],
     hp: 1,
-    stamina: 1,
-    focus: 1,
-    physArmor: 0,
-    magArmor: 0,
+    pools: {},
+    barrier: 0,
+    barrierTurns: 0,
     statuses: [],
     equipment,
     cooldowns: {},
     downed: false,
-    archetype: origin.archetype,
+    archetype: cls.aiRole,
   };
-  ch.hotbar = defaultHotbar(ch);
-  restoreFully(ch, w);
-  const inventory = [makeItem(w, rng, 'c_heal', 1, 'common', 3), makeItem(w, rng, 'c_food', 1, 'common', 2)];
-  if (w.systems.traps) inventory.push(makeItem(w, rng, 'tool_trapkit', 1, 'common', 1));
-  if (w.systems.lockpicking) inventory.push(makeItem(w, rng, 'tool_lockpick', 1, 'common', 2));
+  ch.hotbar = defaultHotbar(r, ch);
+  restoreFully(r, ch);
+  const inventory: ItemInstance[] = [];
+  const heal = r.items.find((i) => i.category === 'potion' && i.use?.effects.some((e) => e.kind === 'heal'));
+  if (heal) inventory.push(makeItem(r, rng, heal.id, 1, r.rarities[0]!.id, 3));
+  if (r.systems.traps && ix.item.get('tool_disarm')) inventory.push(makeItem(r, rng, 'tool_disarm', 1, r.rarities[0]!.id, 1));
+  if (r.systems.locks && ix.item.get('tool_unlock')) inventory.push(makeItem(r, rng, 'tool_unlock', 1, r.rarities[0]!.id, 2));
+  void w;
   return { ch, inventory };
 }
 
-export function defaultHotbar(ch: CharacterState): (string | null)[] {
-  const actives = ch.skills.filter((s) => s !== 'keen_eye' && s !== 'treasure_hunter' && s !== 'haggler' && s !== 'silver_tongue');
-  return ['attack', ...actives].slice(0, 10);
+export function defaultHotbar(r: Ruleset, ch: CharacterState): (string | null)[] {
+  const skills = knownSkills(r, ch).filter((id) => !rx(r).skill.get(id)?.utility);
+  return skills.slice(0, 10);
 }
 
-export function statsOf(ch: CharacterState, w: WorldDefinition, loneWolf: boolean) {
-  return computeCharacterStats(ch, { loneWolf, dualEnergy: w.systems.dualEnergy });
+export function statsOf(r: Ruleset, ch: CharacterState, solo: boolean) {
+  return characterStats(r, ch, { solo });
 }
 
-export function restoreFully(ch: CharacterState, w: WorldDefinition, loneWolf = false) {
-  const s = statsOf(ch, w, loneWolf);
+export function restoreFully(r: Ruleset, ch: CharacterState, solo = false) {
+  const s = statsOf(r, ch, solo);
   ch.hp = s.maxHp;
-  ch.stamina = s.maxStamina;
-  ch.focus = s.maxFocus;
-  ch.physArmor = s.maxPhys;
-  ch.magArmor = s.maxMag;
+  for (const [id, p] of Object.entries(s.pools)) ch.pools[id] = p.max;
+  ch.barrier = 0;
+  ch.barrierTurns = 0;
   ch.downed = false;
   ch.statuses = [];
 }
 
 /** Clamp pools after equipment or stat changes. */
-export function clampPools(ch: CharacterState, w: WorldDefinition, loneWolf = false) {
-  const s = statsOf(ch, w, loneWolf);
+export function clampPools(r: Ruleset, ch: CharacterState, solo = false) {
+  const s = statsOf(r, ch, solo);
   ch.hp = Math.min(ch.hp, s.maxHp);
-  ch.stamina = Math.min(ch.stamina, s.maxStamina);
-  ch.focus = Math.min(ch.focus, s.maxFocus);
-  ch.physArmor = Math.min(ch.physArmor, s.maxPhys);
-  ch.magArmor = Math.min(ch.magArmor, s.maxMag);
+  for (const [id, p] of Object.entries(s.pools)) ch.pools[id] = Math.min(ch.pools[id] ?? p.max, p.max);
+}
+
+/** Out-of-combat regeneration over `seconds`. Returns true if anything changed. */
+export function regenerate(r: Ruleset, ch: CharacterState, solo: boolean, seconds: number): boolean {
+  if (ch.downed) return false;
+  const s = statsOf(r, ch, solo);
+  const frac = seconds / Math.max(1, r.recovery.secondsToFull);
+  let changed = false;
+  if (ch.hp < s.maxHp) {
+    ch.hp = Math.min(s.maxHp, ch.hp + s.maxHp * frac);
+    changed = true;
+  }
+  for (const [id, p] of Object.entries(s.pools)) {
+    if ((ch.pools[id] ?? 0) < p.max) {
+      ch.pools[id] = Math.min(p.max, (ch.pools[id] ?? 0) + p.max * frac);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+/** Spend a tree point on a node. Returns an error or null. */
+export function allocateNode(r: Ruleset, ch: CharacterState, nodeId: string): string | null {
+  const err = canAllocate(r, ch, nodeId);
+  if (err) return err;
+  ch.tree[nodeId] = (ch.tree[nodeId] ?? 0) + 1;
+  ch.treePoints--;
+  const node = rx(r).nodes.get(ch.classId)?.get(nodeId);
+  if (node?.kind === 'skill' && node.skillId && !ch.hotbar.includes(node.skillId)) {
+    const i = ch.hotbar.indexOf(null);
+    if (i >= 0) ch.hotbar[i] = node.skillId;
+    else if (ch.hotbar.length < 10) ch.hotbar.push(node.skillId);
+  }
+  return null;
 }
 
 /** Grant experience; returns the number of levels gained. */
-export function grantXp(ch: CharacterState, amount: number, w: WorldDefinition): number {
-  if (ch.level >= w.maxLevel) return 0;
+export function grantXp(r: Ruleset, ch: CharacterState, amount: number): number {
+  if (ch.level >= r.progression.maxLevel) return 0;
   ch.xp += Math.max(0, Math.round(amount));
-  const newLevel = levelForXp(ch.xp, w.maxLevel);
+  const newLevel = levelForXp(r, ch.xp);
   const gained = newLevel - ch.level;
   if (gained > 0) {
     ch.level = newLevel;
-    ch.unspentAttributes += gained * ATTRIBUTE_POINTS_PER_LEVEL;
-    ch.unspentSkillPoints += gained * SKILL_POINTS_PER_LEVEL;
-    // Companions spend their own points.
-    if (ch.npcId) autoSpend(ch, w);
-    restoreFully(ch, w);
+    ch.treePoints += gained * r.progression.treePointsPerLevel;
+    if (ch.npcId) autoSpend(r, ch);
+    restoreFully(r, ch);
   }
   return gained;
 }
 
-export function autoSpend(ch: CharacterState, w: WorldDefinition) {
-  const origin = ORIGIN[ch.originId];
-  const main = (Object.entries(origin?.attributes ?? { vitality: 1 }).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))[0]?.[0] ?? 'vitality') as AttributeId;
-  while (ch.unspentAttributes > 0) {
-    ch.attributes[ch.unspentAttributes % 2 ? 'vitality' : main]++;
-    ch.unspentAttributes--;
+/**
+ * Automatic build policy (companions, the simulator's "typical" builds): favour the class's primary branch,
+ * learn skills when available, rank up skills, take passives, and put spare points into primary attributes.
+ * `style` biases branch choice so the simulator can sample different builds.
+ */
+export function autoSpend(r: Ruleset, ch: CharacterState, rng?: Rng, style: 'typical' | 'random' = 'typical') {
+  const ix = rx(r);
+  const cls = ix.cls.get(ch.classId);
+  if (!cls) return;
+  const nodes = [...(ix.nodes.get(ch.classId)?.values() ?? [])];
+  let guard = 0;
+  while (ch.treePoints > 0 && guard++ < 200) {
+    const options = nodes.filter((n) => !canAllocate(r, ch, n.id));
+    if (!options.length) break;
+    const pick = style === 'random' && rng ? rng.pick(options) : typicalPick(r, ch, options, cls.primaryAttributes, cls.branches.map((b) => b.id));
+    allocateNode(r, ch, pick.id);
   }
-  const enabled = Object.keys(w.skills);
-  const options = [...(origin?.suggestedSkills ?? []), ...enabled].filter((s) => enabled.includes(s) && !ch.skills.includes(s));
-  while (ch.unspentSkillPoints > 0 && options.length) {
-    const s = options.shift()!;
-    ch.skills.push(s);
-    if (ch.hotbar.length < 10) ch.hotbar.push(s);
-    ch.unspentSkillPoints--;
-  }
+  ch.hotbar = defaultHotbar(r, ch);
+}
+
+function typicalPick(r: Ruleset, ch: CharacterState, options: TreeNode[], primaryAttrs: string[], branches: string[]): TreeNode {
+  const score = (n: TreeNode) => {
+    const rank = ch.tree[n.id] ?? 0;
+    const branchBias = branches.indexOf(n.branch) === 0 ? 1.2 : branches.indexOf(n.branch) === 1 ? 1.05 : 0.95;
+    switch (n.kind) {
+      case 'skill': return 10 * branchBias + n.tier;
+      case 'capstone': return 9 * branchBias;
+      case 'rank': return (7 - rank) * branchBias;
+      case 'passive': return (6 - rank * 1.5) * branchBias;
+      case 'attribute': return primaryAttrs.includes(n.attributeId ?? '') ? 3 : 0.5;
+    }
+  };
+  // Prefer progressing toward the next tier in the main branch.
+  const main = branches[0]!;
+  const spent = branchSpent(r, ch, main);
+  const nextReq = r.progression.tierRequirements.find((x) => x > spent);
+  return [...options].sort((a, b) => score(b) + (nextReq && b.branch === main ? 0.5 : 0) - (score(a) + (nextReq && a.branch === main ? 0.5 : 0)))[0]!;
+}
+
+/** Bring a fresh character to a level with an automatic build (companions, simulator). */
+export function levelUpTo(r: Ruleset, ch: CharacterState, level: number, rng?: Rng, style: 'typical' | 'random' = 'typical') {
+  ch.level = Math.max(1, Math.min(r.progression.maxLevel, level));
+  ch.xp = r.progression.xp[ch.level] ?? 0;
+  ch.treePoints = treePointsAt(r, ch.level) - Object.values(ch.tree).reduce((s, v) => s + v, 0);
+  autoSpend(r, ch, rng, style);
+  restoreFully(r, ch);
 }

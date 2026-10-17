@@ -23,11 +23,30 @@ export interface ProcessedImage {
 // ------------------------------------------------------------------------------------ textures
 
 /** Make a texture tile seamlessly by blending it with a half-offset copy of itself near the edges. */
+/** How visible the wrap-around seam is: edge mismatch relative to ordinary neighbouring-pixel differences. */
+export function seamRatio(data: Buffer, w: number, h: number, ch: number): number {
+  const px = (x: number, y: number, k: number) => data[(y * w + x) * ch + k]!;
+  let edge = 0, inner = 0;
+  const mx = w >> 1, my = h >> 1;
+  for (let i = 0; i < Math.min(w, h); i++)
+    for (let k = 0; k < 3; k++) {
+      edge += Math.abs(px(0, i, k) - px(w - 1, i, k)) + Math.abs(px(i, 0, k) - px(i, h - 1, k));
+      inner += Math.abs(px(mx - 1, i, k) - px(mx, i, k)) + Math.abs(px(i, my - 1, k) - px(i, my, k));
+    }
+  return edge / Math.max(1, inner);
+}
+
+/**
+ * Make a texture tile seamlessly. Models that tile natively are kept as they are; small seams get a narrow
+ * edge-only blend, and only clearly visible seams get the wide half-offset blend (which can ghost).
+ */
 export async function makeSeamless(input: Buffer, size = 256): Promise<Buffer> {
   const { data, info } = await sharp(input).resize(size, size, { fit: 'cover' }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const w = info.width, h = info.height, ch = info.channels;
+  const ratio = seamRatio(data, w, h, ch);
+  if (ratio <= 1.5) return sharp(data, { raw: { width: w, height: h, channels: ch as 3 } }).png().toBuffer();
   const out = Buffer.alloc(data.length);
-  const feather = 0.22;
+  const feather = ratio <= 3 ? 0.1 : 0.32;
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       // Weight of the original (1 in the center, 0 at the edges).
@@ -170,21 +189,64 @@ const QualitySchema = z.object({
   problems: z.array(z.string()).max(6),
 });
 
+const CRITERIA: Record<AssetRecord['kind'], string> = {
+  texture: 'a flat, evenly lit, top-down surface texture that could tile; no objects, people, text, borders or perspective.',
+  sprite: 'exactly one full-body character or creature, fully visible (not cut off), clean silhouette, no text, no extra characters, no scenery.',
+  object: 'exactly one object, fully visible, clean silhouette, no text, no scenery.',
+  icon: 'exactly one clearly readable item centered, no text, no hands, no scenery.',
+  portrait: 'a single character portrait, face clearly visible, no text.',
+};
+
+const LEVELS = ['unusable', 'poor', 'mediocre', 'acceptable', 'good', 'excellent'];
+
+/** Score an image 0-10 with the configured checker: a decision model (fast, probabilistic) or a vision LLM. */
 export async function qualityCheck(png: Buffer, kind: AssetRecord['kind'], description: string): Promise<{ score: number; problems: string[] } | null> {
   const g = genai();
   if (g.isProcedural('image.check')) return null;
   const preview = await sharp(png).flatten({ background: '#7f7f7f' }).resize(512, 512, { fit: 'inside' }).png().toBuffer();
-  const criteria: Record<AssetRecord['kind'], string> = {
-    texture: 'a flat, evenly lit, top-down surface texture that could tile; no objects, people, text, borders or perspective.',
-    sprite: 'exactly one full-body character or creature, fully visible (not cut off), clean silhouette, no text, no extra characters, no scenery.',
-    object: 'exactly one object, fully visible, clean silhouette, no text, no scenery.',
-    icon: 'exactly one clearly readable item centered, no text, no hands, no scenery.',
-    portrait: 'a single character portrait, face clearly visible, no text.',
-  };
   try {
+    if (g.isDecision('image.check')) {
+      const isTex = kind === 'texture';
+      const a = await g.decide('image.check', {
+        state: `A generated game asset. It should depict: "${description}". Requirements: ${CRITERIA[kind]}`,
+        images: [preview],
+        questions: {
+          quality: { type: 'score', instructions: 'How usable is this image as a polished game asset?', criteria: LEVELS },
+          match: { type: 'score', instructions: 'How well does the image match the description?', criteria: LEVELS },
+          ...(isTex
+            ? { flat: { type: 'noul' as const, instructions: 'Is this a flat top-down surface texture with no objects, horizon or perspective?' } }
+            : {
+                single: { type: 'noul' as const, instructions: 'Does the image show exactly one subject?' },
+                whole: { type: 'noul' as const, instructions: 'Is the whole subject visible, not cut off by the image edge?' },
+              }),
+          text: { type: 'noul', instructions: 'Does the image contain any text, letters, watermark or signature?' },
+        },
+      });
+      const lvl = (k: string) => {
+        const x = a[k];
+        return x?.type === 'score' ? (x.score / (LEVELS.length - 1)) * 10 : 5;
+      };
+      const yes = (k: string) => {
+        const x = a[k];
+        return x?.type === 'noul' ? x.noul : 0.5;
+      };
+      const problems: string[] = [];
+      let score = Math.min(lvl('quality'), lvl('match') + 1);
+      const penalize = (cond: boolean, why: string) => {
+        if (!cond) return;
+        score -= 3;
+        problems.push(why);
+      };
+      penalize(isTex && yes('flat') < 0.5, 'not a flat top-down texture');
+      penalize(!isTex && yes('single') < 0.5, 'more than one subject');
+      penalize(!isTex && yes('whole') < 0.5, 'subject cut off');
+      penalize(yes('text') > 0.5, 'contains text');
+      if (lvl('match') < 4) problems.push('does not match the description');
+      return { score: Math.max(0, Math.min(10, score)), problems };
+    }
     const r = await g.structured('image.check', {
       system: 'You are a strict art director reviewing generated game assets. Judge only what you see.',
-      prompt: `This image should depict: "${description}".\nRequirements: ${criteria[kind]}\nScore 0-10 for how usable this is as a game asset (10 = perfect, 6 = acceptable, below 5 = must regenerate). List concrete problems.`,
+      prompt: `This image should depict: "${description}".\nRequirements: ${CRITERIA[kind]}\nScore 0-10 for how usable this is as a game asset (10 = perfect, 6 = acceptable, below 5 = must regenerate). List concrete problems.`,
       schema: QualitySchema,
       name: 'image_review',
       images: [preview],
@@ -222,48 +284,116 @@ export function buildPrompt(kind: AssetRecord['kind'], subject: string, style: s
   }
 }
 
+interface Candidate {
+  img: ProcessedImage;
+  score: number;
+  problems: string[];
+}
+
+async function generateCandidate(rec: AssetRecord, style: string, worldSeed: string, attempt: number): Promise<ProcessedImage> {
+  const g = genai();
+  const pc = g.providerConfig(g.purpose(KIND_PURPOSE[rec.kind]).provider);
+  let { prompt, negative } = buildPrompt(rec.kind, rec.prompt, style);
+  if (pc.promptStyle === 'descriptive') {
+    const para = rec.imagePrompt ?? describeFallback(rec, style);
+    prompt = rec.kind === 'texture' ? para
+      : pc.alpha === 'native' ? (pc.alphaPrompt ?? DEFAULT_ALPHA_PROMPT).replace('{prompt}', para)
+      : `${para} The background is a single flat, even light grey with nothing else in it.`;
+  }
+  const raw = await g.image(KIND_PURPOSE[rec.kind], { prompt, negativePrompt: negative, seed: hashOf(worldSeed, rec.key, attempt) % 2147483647, transparent: rec.kind !== 'texture' });
+  if (rec.kind === 'texture') return { png: await makeSeamless(raw, 256), width: 256, height: 256, problems: [] };
+  return cutoutSprite(raw, rec.kind === 'icon' ? 128 : rec.kind === 'object' ? 224 : 256);
+}
+
+/**
+ * Produce many assets in rounds: generate every pending image (image model resident), then score every
+ * candidate (checker resident), then regenerate only the rejects. This keeps GPU model swaps to two per round.
+ */
+export async function produceAssets(
+  recs: AssetRecord[],
+  style: string,
+  outDir: string,
+  worldSeed: string,
+  onDone: (rec: AssetRecord) => void,
+  shouldStop?: () => boolean,
+): Promise<void> {
+  const g = genai();
+  const purposeOf = (r: AssetRecord) => KIND_PURPOSE[r.kind];
+  const limit = (r: AssetRecord) => g.purpose(purposeOf(r)).maxAttempts ?? 3;
+  const active = recs.filter((r) => !g.isProcedural(purposeOf(r)));
+  for (const r of recs) if (g.isProcedural(purposeOf(r))) onDone({ ...r, status: 'skipped' });
+  const best = new Map<string, Candidate>();
+  const attempts = new Map<string, number>();
+  const errors = new Map<string, string>();
+  const finished = new Set<string>();
+  const minScore = g.purpose('image.check').minScore ?? 6;
+  const finish = (rec: AssetRecord) => {
+    if (finished.has(rec.key)) return;
+    finished.add(rec.key);
+    const b = best.get(rec.key);
+    if (!b) return onDone({ ...rec, status: 'failed', error: errors.get(rec.key), attempts: attempts.get(rec.key) });
+    fs.mkdirSync(outDir, { recursive: true });
+    const file = `${rec.key.replace(/[^a-z0-9_.-]/gi, '_')}.png`;
+    fs.writeFileSync(path.join(outDir, file), b.img.png);
+    onDone({ ...rec, status: 'ok', file, score: b.score, attempts: attempts.get(rec.key), width: b.img.width, height: b.img.height, anchorY: b.img.anchorY, error: b.score < minScore ? b.problems.join('; ') || undefined : undefined });
+  };
+  let pending = active;
+  for (let round = 0; pending.length; round++) {
+    // Phase 1: generate every pending asset while the image model is resident.
+    const fresh: { rec: AssetRecord; img: ProcessedImage }[] = [];
+    for (const rec of pending) {
+      if (shouldStop?.()) return;
+      attempts.set(rec.key, (attempts.get(rec.key) ?? 0) + 1);
+      try {
+        fresh.push({ rec, img: await generateCandidate(rec, style, worldSeed, round) });
+      } catch (e) {
+        errors.set(rec.key, (e as Error).message);
+      }
+    }
+    // Phase 2: score every candidate while the checker is resident.
+    for (const { rec, img } of fresh) {
+      if (shouldStop?.()) return;
+      const review = await qualityCheck(img.png, rec.kind, rec.prompt);
+      const problems = [...img.problems, ...(review?.problems ?? [])];
+      const score = review ? Math.min(review.score, img.problems.length ? 5 : 10) : img.problems.length ? 4 : 7;
+      const prev = best.get(rec.key);
+      if (!prev || score > prev.score) best.set(rec.key, { img, score, problems });
+      if (score >= minScore && !img.problems.length) finish(rec);
+    }
+    // Out of attempts: keep the best try.
+    for (const rec of pending) if (!finished.has(rec.key) && (attempts.get(rec.key) ?? 0) >= limit(rec)) finish(rec);
+    pending = pending.filter((r) => !finished.has(r.key));
+  }
+}
+
 /** Generate (or regenerate) one asset; writes the PNG and returns the updated record. */
 export async function produceAsset(rec: AssetRecord, style: string, outDir: string, worldSeed: string): Promise<AssetRecord> {
-  const g = genai();
-  const purpose = KIND_PURPOSE[rec.kind];
-  if (g.isProcedural(purpose)) return { ...rec, status: 'skipped' };
-  const pc = g.purpose(purpose);
-  const check = g.purpose('image.check');
-  const maxAttempts = pc.maxAttempts ?? 3;
-  const minScore = check.minScore ?? 6;
-  const { prompt, negative } = buildPrompt(rec.kind, rec.prompt, style);
-  let best: { img: ProcessedImage; score: number } | null = null;
-  let lastError: string | undefined;
-  let attempts = 0;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    attempts++;
-    try {
-      const raw = await g.image(purpose, {
-        prompt,
-        negativePrompt: negative,
-        seed: hashOf(worldSeed, rec.key, attempt) % 2147483647,
-        transparent: rec.kind !== 'texture',
-      });
-      let img: ProcessedImage;
-      if (rec.kind === 'texture') {
-        const png = await makeSeamless(raw, 256);
-        img = { png, width: 256, height: 256, problems: [] };
-      } else {
-        img = await cutoutSprite(raw, rec.kind === 'icon' ? 128 : rec.kind === 'object' ? 224 : 256);
-      }
-      let score = img.problems.length ? 4 : 7;
-      const review = await qualityCheck(img.png, rec.kind, rec.prompt);
-      if (review) score = Math.min(review.score, img.problems.length ? 5 : 10);
-      if (!best || score > best.score) best = { img, score };
-      if (score >= minScore && !img.problems.length) break;
-      lastError = [...img.problems, ...(review?.problems ?? [])].join('; ');
-    } catch (e) {
-      lastError = (e as Error).message;
-    }
-  }
-  if (!best) return { ...rec, status: 'failed', error: lastError, attempts };
-  fs.mkdirSync(outDir, { recursive: true });
-  const file = `${rec.key.replace(/[^a-z0-9_.-]/gi, '_')}.png`;
-  fs.writeFileSync(path.join(outDir, file), best.img.png);
-  return { ...rec, status: 'ok', file, score: best.score, attempts, width: best.img.width, height: best.img.height, anchorY: best.img.anchorY, error: best.score < minScore ? lastError : undefined };
+  let out: AssetRecord = { ...rec, status: 'failed' };
+  await produceAssets([rec], style, outDir, worldSeed, (r) => (out = r));
+  return out;
 }
+
+// ------------------------------------------------------------------------------------ descriptive prompts
+
+export const DEFAULT_ALPHA_PROMPT = 'This is an RGBA format image with transparency. {prompt} The image has an alpha channel and a transparent background.';
+
+const BRIEF_FRAMING: Record<AssetRecord['kind'], string> = {
+  texture: 'A seamless tileable surface texture seen straight from above (top-down orthographic), filling the whole square frame edge to edge with no objects, horizon, border, shadow or vignette; the pattern continues off every edge so tiles join invisibly.',
+  sprite: 'A game character sprite: one full-body figure standing in a three-quarter view facing the viewer, centred, the entire figure visible from the top of the head to the soles of the feet with a little empty space around it, no ground, no scenery and no other figures.',
+  object: 'A game prop: one object shown whole in a three-quarter isometric view, centred, with empty space around it, no ground, no scenery, no people.',
+  icon: 'A game inventory icon: one item centred and shown whole, slightly angled, filling most of a square frame, no hands, no scenery.',
+  portrait: 'A head-and-shoulders character portrait.',
+};
+
+/** Brief handed to the image.prompt LLM. */
+export function assetBrief(rec: AssetRecord, style: string): string {
+  return `${BRIEF_FRAMING[rec.kind]} Subject: ${rec.prompt}. Art style: ${style}.`;
+}
+
+/** Used when no LLM is available: a plain observer-style paragraph assembled from the brief. */
+function describeFallback(rec: AssetRecord, style: string): string {
+  const medium = rec.kind === 'texture' ? 'seamless top-down texture' : rec.kind === 'icon' ? 'game icon illustration' : 'game asset illustration';
+  return `The image is a ${style} ${medium} of ${rec.prompt}. ${BRIEF_FRAMING[rec.kind]} The lighting is soft and even, coming from the upper left, with gentle shading that gives the forms volume. The overall composition is clean and readable, with a cohesive palette and a clear silhouette.`;
+}
+
+export const IMAGE_PROMPT_SYSTEM = `You write prompts for a text-to-image model that was trained on long descriptive captions. For each brief, describe the finished image as an observer would, in one English paragraph of 120 to 200 words, present tense, third person. Open with one sentence naming the medium, the art style, the subject and the background. Then describe the subject in order — for a figure: build, posture, face, hair, then each garment with its colour and material, then anything held and in which hand; for an object or surface: its shape, materials, colours and wear — using positional phrases (in the upper part of the frame, at the left hip, along the lower edge). Give the lighting its own sentence. End with one sentence about the overall composition, palette and mood. Respect every framing requirement in the brief. Name colours with modifiers (deep navy, muted olive) and materials precisely (weathered oak, brushed iron). No quality boosters, no instructions, no quotation marks, and no text, letters or signage in the image.`;

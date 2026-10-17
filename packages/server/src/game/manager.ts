@@ -1,11 +1,20 @@
 /** Loads, runs, saves and unloads game instances. */
 import crypto from 'node:crypto';
-import type { InstanceState, InstanceSummary, PlayerState, WorldDefinition } from '@gd/shared';
+import { RULESET_VERSION, type DifficultyId, type InstanceState, type InstanceSummary, type PlayerState, type WorldDefinition } from '@gd/shared';
 import { GameInstance } from './instance';
 import { listInstances, loadInstance, loadWorld, saveInstance, getUser } from '../storage';
 import type { CharacterSpec } from './characters';
 
 const UNLOAD_AFTER_MS = 30_000;
+
+/** Why a save can't be played with the current engine (null if it can). */
+export function incompatibility(state: InstanceState, world: WorldDefinition | null): string | null {
+  if (!world) return 'Its world no longer exists.';
+  if (!world.ruleset) return 'Its world was generated before rules were generated per world. Regenerate the world’s rules on the world page, then start a new journey.';
+  if ((state.rulesVersion ?? 0) !== RULESET_VERSION || Object.values(state.players).some((p) => p.party.some((c) => !c.classId || !world.ruleset.classes.some((k) => k.id === c.classId))))
+    return 'This journey was started under an older rules engine (or before the world’s rules were regenerated). Start a new journey.';
+  return null;
+}
 
 class InstanceManager {
   private live = new Map<string, GameInstance>();
@@ -20,7 +29,7 @@ class InstanceManager {
     const state = loadInstance(id);
     if (!state) return null;
     const world = loadWorld(state.worldId);
-    if (!world || world.status !== 'ready') return null;
+    if (!world || world.status !== 'ready' || incompatibility(state, world)) return null;
     const inst = this.wire(new GameInstance(state, world));
     if (state.keepRunning && state.lastActiveAt) inst.catchUp(Date.now() - state.lastActiveAt);
     this.live.set(id, inst);
@@ -59,7 +68,7 @@ class InstanceManager {
     this.unloadTimers.delete(id);
   }
 
-  create(world: WorldDefinition, ownerId: string, ownerName: string, name: string, party: CharacterSpec[]): GameInstance {
+  create(world: WorldDefinition, ownerId: string, ownerName: string, name: string, party: CharacterSpec[], difficulty?: DifficultyId): GameInstance {
     const id = `i_${crypto.randomBytes(5).toString('hex')}`;
     const state: InstanceState = {
       id,
@@ -78,6 +87,8 @@ class InstanceManager {
       events: [],
       rumors: [],
       lastActiveAt: Date.now(),
+      difficulty: difficulty ?? world.input.difficulty ?? 'normal',
+      rulesVersion: RULESET_VERSION,
     };
     const inst = this.wire(new GameInstance(state, world));
     inst.addPlayer(ownerId, ownerName, party);
@@ -111,6 +122,7 @@ class InstanceManager {
   summary(s: InstanceState): InstanceSummary {
     const live = this.live.get(s.id);
     const state = live?.state ?? s;
+    const world = loadWorld(state.worldId);
     return {
       id: state.id,
       worldId: state.worldId,
@@ -125,6 +137,8 @@ class InstanceManager {
       day: Math.floor(state.clock / 1440) + 1,
       players: Object.values(state.players).map((p) => ({ userId: p.userId, name: p.name, level: Math.max(...p.party.map((c) => c.level)), zone: p.zoneId })),
       online: live?.onlineUsers().length ?? 0,
+      difficulty: state.difficulty ?? 'normal',
+      incompatible: incompatibility(state, world) ?? undefined,
     };
   }
 

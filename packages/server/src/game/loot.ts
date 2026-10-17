@@ -1,117 +1,140 @@
-/** Item rolling: loot drops, chest contents, merchant stock and quest rewards. */
+/** Item rolling on the world's ruleset: loot drops, chests, merchant stock, crafting outputs, uniques, inventory. */
 import {
-  AFFIXES, DAMAGE_TYPES, ITEM_BASE, ITEM_BASES, MERCHANT_STOCK, RARITIES, RARITY_INFO, RARITY_ORDER, Rng, affixValue, uid,
-  type DamageType, type ItemBase, type ItemInstance, type MerchantKind, type Rarity, type WorldDefinition,
+  curve, rx, uid,
+  type ItemBaseDef, type ItemInstance, type MerchantKind, type PlayerState, type Rng, type Ruleset, type SlotKind, type UniqueItemDef,
 } from '@gd/shared';
 
-export function systemAllows(w: WorldDefinition, base: ItemBase): boolean {
-  if (!base.requiresSystem) return true;
-  return !!w.systems[base.requiresSystem];
-}
+const slotKind = (r: Ruleset, base: ItemBaseDef): SlotKind | undefined => (base.slotId ? rx(r).slot.get(base.slotId)?.kind : undefined);
 
-export function rollRarity(rng: Rng, lootFind = 0, min: Rarity = 'common'): Rarity {
+export function rollRarity(r: Ruleset, rng: Rng, lootFind = 0, minIndex = 0): string {
   const bonus = 1 + lootFind / 100;
-  const r = rng.pickWeighted([...RARITIES], (x) => RARITY_INFO[x].weight * (x === 'common' ? 1 : bonus * (1 + RARITY_ORDER[x] * 0.1 * (bonus - 1))));
-  return RARITY_ORDER[r] < RARITY_ORDER[min] ? min : r;
+  const idx = rng.pickWeighted(r.rarities.map((_, i) => i), (i) => r.rarities[i]!.weight * (i === 0 ? 1 : bonus * (1 + i * 0.1 * (bonus - 1))));
+  return r.rarities[Math.max(minIndex, idx)]!.id;
 }
 
-export function makeItem(w: WorldDefinition, rng: Rng, baseId: string, level: number, rarity: Rarity, qty = 1): ItemInstance {
-  const base = ITEM_BASE[baseId]!;
-  const item: ItemInstance = { id: uid('it'), baseId, level: Math.max(1, Math.min(w.maxLevel, level)), rarity: base.slot ? rarity : 'common', affixes: [], qty };
-  if (base.weapon?.damageType === 'element') item.element = rng.pick(['fire', 'frost', 'shock', 'poison', 'psychic', 'radiant'] as DamageType[]);
-  if (base.slot) {
-    const [lo, hi] = RARITY_INFO[item.rarity].affixes;
+/** Affix value at an item level (percentage stats grow a little with level; scaled stats grow through the curves). */
+export function affixValue(r: Ruleset, affixId: string, level: number, rarityId: string, roll: number): number {
+  const a = rx(r).affix.get(affixId)!;
+  const budget = rx(r).rarity.get(rarityId)?.budget ?? 1;
+  let v = (a.value + a.perLevel * (level - 1)) * budget * (0.8 + roll * 0.4);
+  if (a.cap !== undefined) v = Math.min(a.cap, v);
+  return a.stat.startsWith('attr:') ? Math.max(1, Math.round(v)) : Math.round(v * 1000) / 1000;
+}
+
+export function makeItem(r: Ruleset, rng: Rng, baseId: string, level: number, rarityId: string, qty = 1): ItemInstance {
+  const ix = rx(r);
+  const base = ix.item.get(baseId)!;
+  const equip = base.category === 'equipment';
+  const rid = equip ? rarityId : r.rarities[0]!.id;
+  const item: ItemInstance = { id: uid('it'), baseId, level: Math.max(1, Math.min(r.progression.maxLevel, level)), rarityId: rid, affixes: [], qty };
+  if (equip) {
+    const kind = slotKind(r, base);
+    const [lo, hi] = ix.rarity.get(rid)?.affixes ?? [0, 0];
     const n = rng.int(lo, hi);
-    const pool = AFFIXES.filter((a) => a.slots === 'any' || a.slots.includes(base.slot!));
+    const pool = r.affixes.filter((a) => kind && a.slotKinds.includes(kind));
     const taken = new Set<string>();
     for (let i = 0; i < n && pool.length; i++) {
-      const a = rng.pickWeighted(pool.filter((p) => !taken.has(p.id)), (p) => p.weight);
-      if (!a) break;
-      taken.add(a.id);
-      item.affixes.push({ stat: a.id, value: affixValue(a.id, item.level, rng.next()) });
+      const choices = pool.filter((p) => !taken.has(p.stat));
+      if (!choices.length) break;
+      const a = rng.pickWeighted(choices, (p) => p.weight);
+      taken.add(a.stat);
+      item.affixes.push({ affixId: a.id, value: affixValue(r, a.id, item.level, rid, rng.next()) });
     }
-  }
-  if (baseId === 'c_skillbook') {
-    const skills = Object.keys(w.skills);
-    item.skillId = rng.pick(skills);
   }
   return item;
 }
 
-/** Make an instance of a world-defined unique item. */
-export function makeUnique(w: WorldDefinition, uniqueId: string, level: number): ItemInstance | null {
-  const u = w.uniqueItems[uniqueId];
-  if (!u) return null;
-  return { id: uid('it'), baseId: u.baseId, level: Math.max(1, level), rarity: u.rarity, affixes: u.affixes ?? [], qty: 1, uniqueId, bound: !!u.questItem, element: u.element };
+/** An instance of a world-defined unique item. */
+export function makeUnique(r: Ruleset, def: UniqueItemDef, level: number): ItemInstance {
+  return { id: uid('it'), baseId: rx(r).item.has(def.baseId) ? def.baseId : 'quest_item', level: Math.max(1, level), rarityId: def.rarityId ?? r.rarities[4]!.id, affixes: [], qty: 1, uniqueId: def.id, uniqueMods: def.mods ?? [], bound: !!def.questItem };
 }
 
-const DROP_POOL = (w: WorldDefinition) => ITEM_BASES.filter((b) => b.dropWeight > 0 && systemAllows(w, b));
+const dropPool = (r: Ruleset) => r.items.filter((b) => b.dropWeight > 0 && b.category !== 'quest' && b.category !== 'key');
 
-export function rollRandomItem(w: WorldDefinition, rng: Rng, level: number, lootFind = 0, opts: { minRarity?: Rarity; category?: string } = {}): ItemInstance {
-  const pool = DROP_POOL(w).filter((b) => !opts.category || b.category === opts.category || (opts.category === 'armor' && b.category === 'shield'));
+export function rollRandomItem(r: Ruleset, rng: Rng, level: number, lootFind = 0, opts: { minRarity?: number; slotKind?: SlotKind } = {}): ItemInstance {
+  let pool = dropPool(r);
+  if (opts.slotKind) pool = pool.filter((b) => b.category === 'equipment' && slotKind(r, b) === opts.slotKind);
+  if (!pool.length) pool = dropPool(r);
   const base = rng.pickWeighted(pool, (b) => b.dropWeight);
-  const rarity = base.slot ? rollRarity(rng, lootFind, opts.minRarity) : 'common';
+  const rarity = base.category === 'equipment' ? rollRarity(r, rng, lootFind, opts.minRarity ?? 0) : r.rarities[0]!.id;
   const qty = base.stackable ? (base.category === 'material' ? rng.int(1, 3) : 1) : 1;
-  return makeItem(w, rng, base.id, level + rng.int(-1, 0), rarity, qty);
+  return makeItem(r, rng, base.id, level + rng.int(-1, 0), rarity, qty);
 }
 
-export function rollLoot(w: WorldDefinition, rng: Rng, level: number, opts: { lootFind?: number; boss?: boolean; elite?: boolean; chest?: boolean }): { items: ItemInstance[]; gold: number } {
+export function rollLoot(r: Ruleset, rng: Rng, level: number, opts: { lootFind?: number; boss?: boolean; elite?: boolean; chest?: boolean; mult?: number }): { items: ItemInstance[]; gold: number } {
   const lf = opts.lootFind ?? 0;
+  const m = opts.mult ?? 1;
   const items: ItemInstance[] = [];
-  const gold = Math.round((rng.chance(opts.chest ? 0.9 : 0.55) ? rng.int(2, 6) + level * rng.int(2, 5) : 0) * (opts.boss ? 6 : opts.elite ? 2 : 1) * (1 + lf / 100));
-  const n = opts.boss ? rng.int(2, 3) : opts.chest ? rng.int(1, 3) : opts.elite ? rng.int(1, 2) : rng.chance(0.32) ? 1 : 0;
-  for (let i = 0; i < n; i++) items.push(rollRandomItem(w, rng, level, lf, { minRarity: opts.boss && i === 0 ? 'rare' : opts.elite && i === 0 ? 'uncommon' : undefined }));
-  if (w.systems.crafting && rng.chance(opts.chest ? 0.5 : 0.25)) {
-    const mats = ITEM_BASES.filter((b) => b.category === 'material');
-    items.push(makeItem(w, rng, rng.pickWeighted(mats, (b) => b.dropWeight).id, level, 'common', rng.int(1, 2)));
-  }
-  return { items: mergeStacks(items), gold };
+  const goldBase = curve(r.economy.goldPerKill, level);
+  const gold = Math.round((rng.chance(opts.chest ? 0.9 : 0.55) ? goldBase * (0.6 + rng.next() * 0.8) * (opts.chest ? 2.5 : 1) : 0) * (opts.boss ? 6 : opts.elite ? 2 : 1) * (1 + lf / 100) * m);
+  const n = opts.boss ? rng.int(2, 3) : opts.chest ? rng.int(1, 3) : opts.elite ? rng.int(1, 2) : rng.chance(0.3 * m) ? 1 : 0;
+  for (let i = 0; i < n; i++) items.push(rollRandomItem(r, rng, level, lf, { minRarity: opts.boss && i === 0 ? 2 : opts.elite && i === 0 ? 1 : 0 }));
+  const mats = r.items.filter((b) => b.category === 'material');
+  if (mats.length && rng.chance(opts.chest ? 0.5 : 0.22)) items.push(makeItem(r, rng, rng.pickWeighted(mats, (b) => b.dropWeight).id, level, r.rarities[0]!.id, rng.int(1, 2)));
+  return { items: mergeStacks(r, items), gold };
 }
 
-export function merchantStock(w: WorldDefinition, rng: Rng, kind: MerchantKind, level: number): ItemInstance[] {
-  const ids = MERCHANT_STOCK[kind].filter((id) => ITEM_BASE[id] && systemAllows(w, ITEM_BASE[id]!));
+/** Merchant stock by shop kind, drawn from the ruleset's items. */
+export function merchantStock(r: Ruleset, rng: Rng, kind: MerchantKind, level: number): ItemInstance[] {
+  const ix = rx(r);
   const out: ItemInstance[] = [];
-  for (const id of ids) {
-    const base = ITEM_BASE[id]!;
-    if (base.slot) {
-      const n = kind === 'general' ? 1 : rng.int(1, 2);
-      for (let i = 0; i < n; i++) out.push(makeItem(w, rng, id, level + rng.int(-1, 1), rng.pick(['common', 'common', 'uncommon', 'uncommon', 'rare'] as Rarity[])));
-    } else out.push(makeItem(w, rng, id, level, 'common', base.stackable ? rng.int(3, 8) : 1));
+  const equip = (k: SlotKind | 'any', n: number) => {
+    const bases = r.items.filter((b) => b.category === 'equipment' && (k === 'any' || slotKind(r, b) === k));
+    for (let i = 0; i < n && bases.length; i++) out.push(makeItem(r, rng, rng.pick(bases).id, level + rng.int(-1, 1), r.rarities[rng.pick([0, 0, 1, 1, 2])]!.id));
+  };
+  const stack = (cat: ItemBaseDef['category'], filter: (b: ItemBaseDef) => boolean = () => true) => {
+    for (const b of r.items.filter((x) => x.category === cat && filter(x))) out.push(makeItem(r, rng, b.id, level, r.rarities[0]!.id, b.stackable ? rng.int(3, 8) : 1));
+  };
+  switch (kind) {
+    case 'weapons': equip('weapon', 5); equip('offhand', 2); break;
+    case 'armor': equip('armor', 7); equip('offhand', 2); break;
+    case 'alchemy': stack('potion'); stack('material', (b) => (b.tier ?? 1) <= 2); break;
+    case 'magic': equip('accessory', 4); equip('weapon', 2); stack('potion', (b) => !!b.use?.effects.some((e) => e.kind === 'restore')); break;
+    case 'materials': stack('material'); break;
+    default:
+      stack('potion', (b) => !!b.use?.effects.some((e) => e.kind === 'heal' || e.kind === 'restore'));
+      stack('tool');
+      equip('any', 3);
   }
+  void ix;
   return out;
 }
 
-/** Quest reward specs: unique id or "base:<baseId>:<rarity>". */
-export function rewardItems(w: WorldDefinition, rng: Rng, specs: string[], level: number): ItemInstance[] {
+export function mergeStacks(r: Ruleset, items: ItemInstance[]): ItemInstance[] {
   const out: ItemInstance[] = [];
-  for (const s of specs) {
-    if (s.startsWith('base:')) {
-      const [, baseId, rarity] = s.split(':');
-      if (baseId && ITEM_BASE[baseId]) out.push(makeItem(w, rng, baseId, level, (rarity as Rarity) ?? 'uncommon', ITEM_BASE[baseId]!.stackable ? 2 : 1));
-    } else {
-      const u = makeUnique(w, s, level);
-      if (u) out.push(u);
-    }
-  }
-  return out;
-}
-
-export function mergeStacks(items: ItemInstance[]): ItemInstance[] {
-  const out: ItemInstance[] = [];
+  const ix = rx(r);
   for (const it of items) {
-    const base = ITEM_BASE[it.baseId];
-    const same = base?.stackable ? out.find((o) => o.baseId === it.baseId && o.level === it.level && !o.uniqueId && !it.uniqueId && o.skillId === it.skillId) : undefined;
+    const base = ix.item.get(it.baseId);
+    const same = base?.stackable ? out.find((o) => o.baseId === it.baseId && o.level === it.level && !o.uniqueId && !it.uniqueId) : undefined;
     if (same) same.qty += it.qty;
     else out.push(it);
   }
   return out;
 }
 
-/** Add items to an inventory, stacking where possible. */
-export function addToInventory(inv: ItemInstance[], items: ItemInstance[]) {
+import { inventoryCapacity } from '@gd/shared';
+export { inventoryCapacity };
+
+/** How many of `items` fit (stacking onto existing stacks is free; quest items always fit). */
+export function fitsInInventory(r: Ruleset, p: Pick<PlayerState, 'inventory' | 'inventoryUpgrades'>, items: ItemInstance[]): boolean {
+  const ix = rx(r);
+  let used = p.inventory.filter((i) => !i.bound).length;
+  const cap = inventoryCapacity(r, p);
   for (const it of items) {
-    const base = ITEM_BASE[it.baseId];
-    const same = base?.stackable && !it.uniqueId ? inv.find((o) => o.baseId === it.baseId && Math.abs(o.level - it.level) <= 0 && !o.uniqueId) : undefined;
+    if (it.bound) continue;
+    const base = ix.item.get(it.baseId);
+    if (base?.stackable && !it.uniqueId && p.inventory.some((o) => o.baseId === it.baseId && o.level === it.level && !o.uniqueId)) continue;
+    used++;
+  }
+  return used <= cap;
+}
+
+/** Add items to an inventory, stacking where possible. */
+export function addToInventory(r: Ruleset, inv: ItemInstance[], items: ItemInstance[]) {
+  const ix = rx(r);
+  for (const it of items) {
+    const base = ix.item.get(it.baseId);
+    const same = base?.stackable && !it.uniqueId ? inv.find((o) => o.baseId === it.baseId && o.level === it.level && !o.uniqueId) : undefined;
     if (same) same.qty += it.qty;
     else inv.push(it);
   }
@@ -129,4 +152,18 @@ export function removeFromInventory(inv: ItemInstance[], itemId: string, qty = 1
   return it;
 }
 
-export { DAMAGE_TYPES };
+/** Quest reward specs: unique id or "base:<baseId>:<rarityIndex>" or "slot:<slotKind>:<rarityIndex>". */
+export function rewardItems(r: Ruleset, uniques: Record<string, UniqueItemDef>, rng: Rng, specs: string[], level: number): ItemInstance[] {
+  const out: ItemInstance[] = [];
+  for (const s of specs) {
+    if (s.startsWith('base:')) {
+      const [, baseId, rar] = s.split(':');
+      const base = baseId ? rx(r).item.get(baseId) : undefined;
+      if (base) out.push(makeItem(r, rng, base.id, level, r.rarities[Math.min(4, Number(rar) || 1)]!.id, base.stackable ? 2 : 1));
+    } else if (s.startsWith('slot:')) {
+      const [, kind, rar] = s.split(':');
+      out.push(rollRandomItem(r, rng, level, 0, { slotKind: kind as SlotKind, minRarity: Math.min(4, Number(rar) || 1) }));
+    } else if (uniques[s]) out.push(makeUnique(r, uniques[s]!, level));
+  }
+  return out;
+}

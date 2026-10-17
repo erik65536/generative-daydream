@@ -1,5 +1,5 @@
 import { it } from 'vitest';
-import { genWorld } from './helpers';
+import { genWorld, hero } from './helpers';
 import { instances } from '../src/game/manager';
 import { Combat } from '../src/game/combat';
 import { MonsterActor } from '../src/game/actors';
@@ -7,7 +7,7 @@ import { MonsterActor } from '../src/game/actors';
 it.skipIf(!process.env.DEBUG_FIGHT)('debug a single fight', async () => {
   Combat.instant = true;
   const w = await genWorld('A misty kingdom of dragons and ruined castles', 'small', 'solo');
-  const inst = instances.create(w, 'ud', 'Sim', 'dbg', [{ name: 'Hero', originId: 'o_warrior' }]);
+  const inst = instances.create(w, 'ud', 'Sim', 'dbg', [hero(w, 'Hero', 'tank')]);
   const events: string[] = [];
   inst.join({
     userId: 'ud',

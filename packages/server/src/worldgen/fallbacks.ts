@@ -1,10 +1,7 @@
 /** Procedural producers matching each LLM step's output shape. */
-import {
-  AFFIXES, ITEM_BASES, ORIGINS, PLAYER_SKILL_IDS, RECIPES, SKILLS, TRAP_INFO, TRAP_KINDS, MONSTER_ARCHETYPES, Rng,
-  type MonsterArchetype, type NpcRole, type TilesetDef, type TileRole,
-} from '@gd/shared';
+import { MONSTER_ARCHETYPES, Rng, type MonsterArchetype, type NpcRole, type TilesetDef, type TileRole } from '@gd/shared';
 import { BANKS, fallbackTileset, syllableName, type Genre, type GenreBank } from './genres';
-import { normColor, normColors, type AffixOut, type AreaContentOut, type AtlasOut, type ConceptOut, type FamiliesOut, type ItemsOut, type NpcOut, type SkillsOut, type StoryOut, type TilesetOut, type TownContentOut } from './schemas';
+import { normColor, normColors, type AreaContentOut, type AtlasOut, type ConceptOut, type FamiliesOut, type NpcOut, type StoryOut, type TilesetOut, type TownContentOut } from './schemas';
 import type { WorldSkeleton, ZoneSlot } from './structure';
 
 const pick = <T>(rng: Rng, a: readonly T[]) => rng.pick(a);
@@ -24,11 +21,9 @@ export function fallbackConcept(genre: Genre, setting: string, rng: Rng): Concep
     tone: b.tone,
     artStyle: b.artStyle,
     playerRole: b.playerRole,
-    intro: `They say every road leads home, but yours has led you here. ${settingLine}. For weeks there have been rumors of ${threat}, of travelers who never arrived and lights where no lights should be. You came for coin, or perhaps for answers you have not admitted to yourself. Now the first ${b.terminology.town ?? 'town'} lies ahead, and someone there is waiting for you.`,
+    intro: `They say every road leads home, but yours has led you here. ${settingLine}. For weeks there have been rumors of ${threat}, of travelers who never arrived and lights where no lights should be. You came for coin, or perhaps for answers you have not admitted to yourself. Now the first ${(b.terminology as { town?: string }).town ?? 'town'} lies ahead, and someone there is waiting for you.`,
     secret: `${villainName}, ${villainTitle}, is not the cause of ${threat} but its first victim — they seek ${mac} to undo what they once began, and the people who hired you want it for themselves.`,
     villain: { name: villainName, title: villainTitle, motive: `To claim ${mac} and remake the world in their image.` },
-    terminology: { ...(b.terminology as ConceptOut['terminology']) },
-    systems: { crafting: true, traps: true, dualEnergy: b.dualEnergy, lockpicking: true },
     factions: b.factions.slice(0, 3).map((f) => ({ name: f, description: `A faction with its own stake in ${mac}.` })),
     worldFacts: [
       `${mac} has been lost for generations.`,
@@ -147,35 +142,6 @@ export function fallbackStory(genre: Genre, sk: WorldSkeleton, atlas: AtlasOut, 
     });
   }
   return { keyNpcs, bosses, keyItems, arcs: outArcs, ending: `With ${concept.villain.name} defeated, the ${b.threat[0]} recedes. The world does not become what it was — but it becomes something, and you helped decide what.` };
-}
-
-export function fallbackSkills(genre: Genre, systems: { traps: boolean; lockpicking: boolean }): SkillsOut {
-  const b = BANKS[genre];
-  const skills = PLAYER_SKILL_IDS.filter((id) => (id !== 'disarm_trap' || systems.traps) && (id !== 'pick_lock' || systems.lockpicking) && (id !== 'keen_eye' || systems.traps)).map((id) => ({
-    id,
-    name: b.skills[id] ?? SKILLS[id]!.defaultName,
-    description: SKILLS[id]!.summary,
-  }));
-  return { skills, origins: ORIGINS.map((o) => ({ id: o.id, name: b.origins[o.id] ?? o.defaultName, description: `A ${b.origins[o.id] ?? o.defaultName} who has seen hard roads.`, appearance: `${b.origins[o.id] ?? o.defaultName}, practical travel gear` })) };
-}
-
-export function fallbackItems(genre: Genre): ItemsOut {
-  const b = BANKS[genre];
-  return {
-    items: ITEM_BASES.filter((x) => x.category !== 'quest' && x.category !== 'key').map((x) => ({
-      baseId: x.id,
-      names: b.items[x.id] ?? [x.defaultName],
-      description: `A dependable ${(b.items[x.id]?.[0] ?? x.defaultName).toLowerCase()}.`,
-    })),
-  };
-}
-
-export function fallbackAffixes(): AffixOut {
-  return {
-    affixes: AFFIXES.map((a) => ({ id: a.id, prefix: a.defaultPrefix, suffix: a.defaultSuffix })),
-    traps: TRAP_KINDS.map((k) => ({ kind: k, name: TRAP_INFO[k].defaultName })),
-    recipes: RECIPES.map((r) => ({ id: r.id, name: r.defaultName })),
-  };
 }
 
 export function fallbackFamilies(genre: Genre, count: number, rng: Rng): FamiliesOut {

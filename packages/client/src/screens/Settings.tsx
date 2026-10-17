@@ -8,13 +8,14 @@ type GenaiInfo = Awaited<ReturnType<typeof api.genai>>;
 const PURPOSE_HELP: Record<string, string> = {
   'world.design': 'Concept, map, main story, monsters. Use your smartest model.',
   'world.content': 'Towns, residents, side quests, tilesets, names. Many calls.',
-  'npc.decision': 'Runtime NPC choice of actions + speech (structured JSON).',
+  'npc.decision': 'Runtime NPC choice of actions + speech (structured JSON), or a decision model that picks actions while the LLM speaks.',
   'npc.dialogue': 'Optional separate speech model (used when combineNpcDecisionAndDialogue is false).',
   narration: 'Short flavor text.',
   'image.texture': 'Ground and wall textures.',
   'image.sprite': 'Characters, monsters and props.',
   'image.icon': 'Item icons (full art mode).',
-  'image.check': 'Vision model that scores generated images and triggers regeneration.',
+  'image.check': 'Scores generated images and triggers regeneration (a vision LLM or a decision model).',
+  'image.prompt': 'Writes long descriptive prompts for image models that want them (Qwen Image, Flux, Krea).',
 };
 
 export function Settings({ me }: { me: Me }) {
@@ -46,6 +47,21 @@ export function Settings({ me }: { me: Me }) {
           {me.isAdmin ? <button className="btn" onClick={() => api.genaiReload().then(load).catch((e) => alert(e.message))}>Reload config</button> : <span className="muted small">Only the administrator can test or reload models.</span>}
           <span className="muted small">{info?.configFile ? `Using ${info.configFile}` : 'No config/genai.json — everything is procedural.'}</span>
         </div>
+        {!!info?.gpu.length && (
+          <div className="panel" style={{ marginTop: 16, padding: '12px 16px' }}>
+            <div className="row" style={{ gap: 14 }}>
+              <b>Shared GPU</b>
+              {info.gpu.map((g) => (
+                <span key={g.group} className="small">
+                  <span className="badge gray">{g.group}</span> {g.resident ? <>loaded: <b>{g.resident}</b></> : <span className="muted">nothing loaded</span>} <span className="dim">· {g.switches} model switches</span>
+                </span>
+              ))}
+              <div className="spacer" />
+              {me.isAdmin && <button className="btn sm" onClick={() => api.genaiRelease().then(load)}>Unload now</button>}
+            </div>
+            <div className="tiny muted" style={{ marginTop: 4 }}>Providers in the same GPU group run one at a time; the engine unloads one model before using another.</div>
+          </div>
+        )}
         <div className="panel" style={{ marginTop: 16 }}>
           <table className="table">
             <thead>
@@ -57,7 +73,7 @@ export function Settings({ me }: { me: Me }) {
                 return (
                   <tr key={p.purpose}>
                     <td><div style={{ fontWeight: 600 }}>{p.purpose}</div><div className="tiny muted">{PURPOSE_HELP[p.purpose]}</div></td>
-                    <td>{p.provider} <span className="badge gray">{p.type}</span></td>
+                    <td>{p.provider} <span className="badge gray">{p.type}</span>{p.gpu && <span className="badge gray" title="GPU group">gpu: {p.gpu}</span>}</td>
                     <td className="small">{p.model ?? '—'}</td>
                     <td>
                       {me.isAdmin && p.type !== 'procedural' && <button className="btn sm" disabled={r?.busy} onClick={() => test(p.purpose)}>{r?.busy ? 'Testing…' : 'Test'}</button>}

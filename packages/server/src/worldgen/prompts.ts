@@ -1,13 +1,10 @@
 /** Prompt text for each world-generation step. */
-import {
-  AFFIXES, ITEM_BASES, LENGTH_PROFILES, MONSTER_ARCHETYPES, ORIGINS, PLAYER_SKILL_IDS, RECIPES, SIZE_PROFILES, SKILLS, TRAP_KINDS, ARCHETYPES,
-  type WorldInput,
-} from '@gd/shared';
+import { LENGTH_PROFILES, MONSTER_ARCHETYPES, ROLE_VISUAL, SIZE_PROFILES, type Ruleset, type WorldInput } from '@gd/shared';
 import type { ConceptOut, AtlasOut } from './schemas';
 import type { WorldSkeleton, ZoneSlot } from './structure';
 
 export const SYSTEM = `You are the lead world designer for "Generative Daydream", an engine for 2D isometric RPGs in the spirit of Baldur's Gate 2 and Diablo 2, with turn-based combat like Divinity: Original Sin 2.
-The engine's mechanics are FIXED (zones, towns, dungeons, health, energy, skills, items, traps, quests). Your job is to give them names, descriptions, characters and story that fit the user's setting perfectly — whether that is high fantasy, a space adventure, a cozy animal tale, a surreal wonderland or an office comedy.
+The world's rules (health, resources, classes, skills, items) are designed in a separate step; your job here is the world itself: places, characters and story that fit the user's setting perfectly — whether that is high fantasy, a space adventure, a cozy animal tale, a surreal wonderland or an office comedy.
 Rules:
 - Honor the user's setting, story ideas and notes above everything else, including any meta instructions they give.
 - Be specific, vivid and original. Prefer concrete details over generic fantasy filler. Give characters distinct voices and wants.
@@ -30,14 +27,21 @@ export function userBrief(input: WorldInput): string {
     .join('\n\n');
 }
 
-export function conceptSummary(c: ConceptOut): string {
-  const t = c.terminology ?? {};
+/** Rules context attached to the concept once the ruleset exists (names the prompts should use). */
+export type ConceptWithRules = ConceptOut & { _rules?: string };
+
+export function rulesContext(r: Ruleset): string {
+  const t = r.terminology;
+  return `Terms: health="${r.health.name}", currency="${t.currency}", town="${t.town}", dungeon="${t.dungeon}", wilderness="${t.wilderness}", quest="${t.quest}", party="${t.party}". Classes: ${r.classes.map((c) => c.name).join(', ')}. Damage kinds: ${[...r.damageTypes.map((x) => x.name), ...r.subtypes.map((x) => x.name)].join(', ')}.`;
+}
+
+export function conceptSummary(c: ConceptWithRules): string {
   return [
     `WORLD: "${c.title}" — ${c.pitch}`,
     `Genre: ${c.genre}. Tone: ${c.tone}. The player is ${c.playerRole}.`,
     `Antagonist: ${c.villain.name}, ${c.villain.title} — ${c.villain.motive}`,
     `Hidden truth (for consistency, never state openly): ${c.secret}`,
-    `Terms: health="${t.health ?? 'Health'}", currency="${t.gold ?? 'Gold'}", town="${t.town ?? 'Town'}", dungeon="${t.dungeon ?? 'Dungeon'}", wilderness="${t.wilderness ?? 'Wilds'}", quest="${t.quest ?? 'Quest'}".`,
+    c._rules ?? '',
     c.factions.length ? `Factions: ${c.factions.map((f) => `${f.name} (${f.description})`).join('; ')}` : '',
     c.worldFacts.length ? `Facts: ${c.worldFacts.join(' ')}` : '',
   ]
@@ -49,8 +53,6 @@ export function conceptPrompt(input: WorldInput): string {
   return `${userBrief(input)}
 
 Design the core concept of this world.
-- "terminology": rename the fixed mechanics so they feel native to the setting (1-3 words each). health/stamina/focus are the character's three bars (stamina powers physical skills, focus powers mental/magical ones); physArmor and magArmor are two protective pools that absorb physical and non-physical damage before health; gold is the currency; town/dungeon/wilderness are the three kinds of places; attributes are might, finesse, intellect, vitality, spirit, wits; schools are the 7 skill families; damageTypes are the 8 damage kinds.
-- "systems": enable crafting / traps / lockpicking only if they fit; set dualEnergy=false if one energy bar suits the setting better.
 - "artStyle": comma-separated keywords for a consistent illustrated look (medium, palette, lighting, mood).
 - "intro": 80-150 words of second-person opening narration that hooks the player without revealing the secret.
 - "secret": the twist the main story slowly reveals.
@@ -100,42 +102,14 @@ Define the cast first, then reference them by "key":
 - "ending": the epilogue narration after the final boss falls.`;
 }
 
-export function skillsPrompt(concept: ConceptOut): string {
-  return `${conceptSummary(concept)}
-
-The engine has these pre-balanced skills (id — school — effect). Choose the ${Math.min(30, PLAYER_SKILL_IDS.length)} or fewer that make sense in this world (at least 16, keep all of them if they fit) and give each a setting-appropriate name and one-sentence flavor description. Do not change what they do.
-${PLAYER_SKILL_IDS.map((id) => `- ${id} — ${SKILLS[id]!.school} — ${SKILLS[id]!.summary}`).join('\n')}
-
-Also rename the six starting origins (id — default — combat style) for this setting and describe how such a character looks (appearance is used to draw them):
-${ORIGINS.map((o) => `- ${o.id} — ${o.defaultName} — ${ARCHETYPES[o.archetype].defaultName.toLowerCase()} style`).join('\n')}`;
-}
-
-export function itemsPrompt(concept: ConceptOut): string {
-  const bases = ITEM_BASES.filter((b) => b.category !== 'quest' && b.category !== 'key');
-  return `${conceptSummary(concept)}
-
-Rename every item base below so it fits this world (stats are fixed by the engine). For gear give 1-3 names from humble to impressive (used as the item gets higher level). Add a one-sentence description.
-${bases.map((b) => `- ${b.id} (${b.category}${b.slot ? `, ${b.slot}` : ''}) default "${b.defaultName}"`).join('\n')}`;
-}
-
-export function affixPrompt(concept: ConceptOut): string {
-  return `${conceptSummary(concept)}
-
-Give setting-appropriate names to these item enchantment effects. "prefix" is an adjective placed before the item name, "suffix" starts with "of" and goes after it (e.g. prefix "Blazing", suffix "of Embers").
-${AFFIXES.map((a) => `- ${a.id} (default "${a.defaultPrefix}" / "${a.defaultSuffix}")`).join('\n')}
-
-Also name the trap kinds: ${TRAP_KINDS.join(', ')}.
-And name the crafting recipes: ${RECIPES.map((r) => `${r.id} ("${r.defaultName}")`).join(', ')}.`;
-}
-
-export function familiesPrompt(input: WorldInput, concept: ConceptOut, count: number): string {
+export function familiesPrompt(input: WorldInput, concept: ConceptOut, count: number, damageKinds: string[]): string {
   return `${conceptSummary(concept)}
 
 ${userBrief(input)}
 
 Create ${count} distinct families of hostile creatures/opponents for this world (in a comedy they can be silly; in a cozy tale they are mischievous rather than gory).
-Each family has 2-5 members, each with a different combat archetype: ${MONSTER_ARCHETYPES.map((a) => `${a} (${ARCHETYPES[a].defaultName.toLowerCase()})`).join(', ')}.
-"element" is the family's damage affinity; "habitat" lists where they live (words like town, forest, cave, swamp, ruins, mountain, snow, desert, station, derelict, lab...); "colors" are 1-4 hex colors for their look; "appearance" is a short visual description used to draw each member.`;
+Each family has 2-5 members, each with a different combat archetype: ${MONSTER_ARCHETYPES.map((a) => `${a} (${ROLE_VISUAL[a].name.toLowerCase()})`).join(', ')}.
+"element" is the family's damage affinity — one of: ${damageKinds.join(', ')}; "habitat" lists where they live (words like town, forest, cave, swamp, ruins, mountain, snow, desert, station, derelict, lab...); "colors" are 1-4 hex colors for their look; "appearance" is a short visual description used to draw each member.`;
 }
 
 export const TILESET_HELP = `A tileset describes how a zone looks. "style" is the base material: grass, dirt, stone, sand, snow, wood, metal, crystal, flesh, void. "ambient" is brightness 0-1 (dungeons ~0.3, indoors ~0.7, outdoors 1). "weather": none, rain, snow, ash, spores, embers, dust, fireflies.

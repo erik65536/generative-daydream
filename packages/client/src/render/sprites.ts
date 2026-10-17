@@ -10,6 +10,8 @@ export interface FigureOpts {
   back: boolean;
   /** Walk phase in radians; NaN when idle. */
   walk: number;
+  /** 0..1 how far into the walking pose (eases starts and stops). */
+  amt?: number;
   t: number;
   weapon?: string;
   archetype?: string;
@@ -140,8 +142,8 @@ function humanoid(ctx: CanvasRenderingContext2D, o: FigureOpts, big = false) {
   const hair = o.kind === 'monster' ? shade(second, 0.8) : ([[40, 30, 25], [90, 60, 30], [160, 110, 60], [200, 180, 140], [60, 60, 70], [140, 50, 30]] as [number, number, number][])[(h >>> 3) % 6]!;
   const k = big ? 1.35 : 1;
   const walking = !Number.isNaN(o.walk);
-  const sw = walking ? Math.sin(o.walk) : 0;
-  const bob = walking ? Math.abs(Math.cos(o.walk)) * 1.6 : Math.sin(o.t * 2 + (h % 7)) * 0.5;
+  const sw = walking ? Math.sin(o.walk) * (o.amt ?? 1) : 0;
+  const bob = walking ? Math.abs(Math.cos(o.walk)) * 1.6 * (o.amt ?? 1) : Math.sin(o.t * 2 + (h % 7)) * 0.5;
   const hooded = o.archetype === 'caster' || o.archetype === 'healer' || o.weapon === 'staff' || o.weapon === 'wand' || (h & 1) === 1 && o.archetype === 'assassin';
   ctx.save();
   ctx.scale(k, k);
@@ -426,21 +428,29 @@ export function loadImage(url: string | undefined): HTMLImageElement | null {
   return null;
 }
 
-export function drawImageSprite(ctx: CanvasRenderingContext2D, img: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; t: number; downed?: boolean; hurt?: number; attack?: number }) {
+export function drawImageSprite(ctx: CanvasRenderingContext2D, img: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; amt?: number; t: number; downed?: boolean; hurt?: number; attack?: number }) {
   const h = opts.height;
   const w = (img.naturalWidth / img.naturalHeight) * h;
   const walking = !Number.isNaN(opts.walk);
-  const bob = walking ? Math.abs(Math.sin(opts.walk)) * 2.5 : Math.sin(opts.t * 2) * 0.6;
-  const squash = walking ? 1 + Math.sin(opts.walk * 2) * 0.02 : 1 + Math.sin(opts.t * 2) * 0.008;
+  const m = walking ? opts.amt ?? 1 : 0;
+  // Idle breathing blended with a walking gait: a rise on each step, a slight compression at foot-fall.
+  const idleBob = Math.sin(opts.t * 2) * 0.6, idleSq = 1 + Math.sin(opts.t * 2) * 0.008;
+  const stepBob = walking ? Math.abs(Math.sin(opts.walk)) * 2.6 : 0;
+  const stepSq = walking ? 1 - Math.pow(Math.cos(opts.walk), 8) * 0.035 : 1;
+  const bob = idleBob * (1 - m) + stepBob * m;
+  const squash = idleSq * (1 - m) + stepSq * m;
   ctx.save();
   if (opts.downed) {
     ctx.rotate(Math.PI / 2);
     ctx.globalAlpha *= 0.85;
   }
   if (opts.hurt && opts.hurt > 0) ctx.translate(Math.sin(opts.hurt * 40) * 2.5, 0);
-  const lean = opts.attack ? Math.sin(opts.attack * Math.PI) * 0.18 : walking ? Math.sin(opts.walk) * 0.03 : 0;
+  // Lean into the direction of travel plus a gentle side-to-side sway per step.
+  const lean = opts.attack ? Math.sin(opts.attack * Math.PI) * 0.18 : walking ? (0.05 + Math.sin(opts.walk) * 0.025) * m : 0;
   ctx.rotate(lean * opts.dir);
   ctx.scale(opts.dir, 1);
-  ctx.drawImage(img, -w / 2, -h * squash - bob, w, h * squash);
+  // Widen slightly as it squashes, so the volume reads as constant.
+  const wq = w * (1 + (1 - squash) * 0.6);
+  ctx.drawImage(img, -wq / 2, -h * squash - bob, wq, h * squash);
   ctx.restore();
 }

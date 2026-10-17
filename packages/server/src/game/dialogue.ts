@@ -5,11 +5,12 @@
  */
 import { z } from 'zod';
 import {
-  EMOTIONS, ITEM_BASE, NPC_ACTION_INFO, OBJECTIVE_TYPES, getSkill, itemName, itemDescription, skillName, uid,
+  EMOTIONS, NPC_ACTION_INFO, OBJECTIVE_TYPES, rx, uid,
   type DialogMessage, type DialogState, type Emotion, type ItemInstance, type Memory, type NpcAction, type NpcActionType, type NpcDef, type NpcRuntime,
   type PlayerState, type QuestDef, type QuestObjective, type ZoneDef, type NewObjectiveSpec,
 } from '@gd/shared';
 import { genai } from '../genai/service';
+import type { DecisionQuestion } from '../genai/types';
 import { currentObjectiveIndex, objectivesOf, type QuestEngine } from './quests';
 import type { WorldCtx } from './worldctx';
 
@@ -32,6 +33,8 @@ export interface DialogueHost {
   takeItemFromPlayer(userId: string, itemId: string): ItemInstance | null;
   revealZone(userId: string, zoneId: string): boolean;
   teachSkill(userId: string, skillId: string, price: number): string | null;
+  /** Skills a trainer could teach this player's leader right now. */
+  teachableSkills(userId: string): string[];
   remember(npcId: string, mem: Memory): void;
   scheduleGathering(npcId: string, about: string, day: number, reason: string): void;
   playerChanged(p: PlayerState): void;
@@ -45,6 +48,8 @@ export interface DialogueHost {
   /** Mechanical result of a harmful skill used on an NPC. */
   hostileSkill(userId: string, npcId: string, skillId: string): void;
 }
+
+type TurnInput = { text: string; offered?: ItemInstance; gold?: number; skillId?: string; event?: string };
 
 interface Session {
   npcId: string;
@@ -135,6 +140,11 @@ export class DialogueEngine {
     return out;
   }
 
+  /** Trainers teach skills of the player's own class that the leader is ready for. */
+  private teachList(def: NpcDef, p: PlayerState): string[] {
+    return def.role === 'trainer' ? this.h.teachableSkills(p.userId) : [];
+  }
+
   private suggestions(userId: string, def: NpcDef, rt: NpcRuntime): string[] {
     const p = this.h.player(userId);
     if (!p) return [];
@@ -145,7 +155,7 @@ export class DialogueEngine {
     if (persuade[0]) out.push(`About ${persuade[0].description.toLowerCase().replace(/^persuade\s+\S+\s+(to\s+)?/, '')}...`.slice(0, 80));
     if (def.role === 'merchant' || def.role === 'crafter') out.push('Show me your wares.');
     if (def.role === 'innkeeper') out.push('I need a room for the night.');
-    if (def.teaches?.length) out.push('Can you teach me something?');
+    if (this.teachList(def, p).length) out.push('Can you teach me something?');
     if (def.canJoinParty && !rt.partyOf) out.push('Would you travel with me?');
     if (rt.partyOf === userId) out.push('It is time we parted ways.');
     out.push(`What's the news around here?`);
@@ -167,7 +177,7 @@ export class DialogueEngine {
     const events: string[] = [];
     if (this.h.quests.onTalk(p, npcId)) events.push('The player came to speak with you as part of a task they are doing.');
     for (const d of this.h.quests.tryDeliver(p, npcId)) {
-      const names = d.items.map((i) => itemName(this.h.ctx.naming, i)).join(', ');
+      const names = d.items.map((i) => this.h.ctx.itemName(i)).join(', ');
       s.messages.push({ speaker: 'narrator', text: `You hand over ${names}.` });
       this.record(p, npcId, 'narrator', `Handed over ${names}.`);
       events.push(`The player just handed you ${names}, as requested.`);
@@ -212,8 +222,8 @@ export class DialogueEngine {
     if (opts.giveItemId) offered = p.inventory.find((i) => i.id === opts.giveItemId);
     const gold = Math.max(0, Math.min(p.gold, Math.floor(opts.giveGold ?? 0)));
     const parts: string[] = [];
-    if (offered) parts.push(`(offers ${itemName(this.h.ctx.naming, offered)})`);
-    if (gold) parts.push(`(offers ${gold} ${this.h.ctx.world.terminology.gold})`);
+    if (offered) parts.push(`(offers ${this.h.ctx.itemName(offered)})`);
+    if (gold) parts.push(`(offers ${gold} ${this.h.ctx.r.terminology.currency})`);
     if (opts.useSkillId) {
       const err = this.h.spendLeaderResource(userId, opts.useSkillId);
       if (err) {
@@ -221,8 +231,8 @@ export class DialogueEngine {
         this.send(userId);
         return;
       }
-      parts.push(`(uses ${skillName(this.h.ctx.naming, opts.useSkillId)})`);
-      const sk = getSkill(opts.useSkillId);
+      parts.push(`(uses ${this.h.ctx.skillName(opts.useSkillId)})`);
+      const sk = rx(this.h.ctx.r).skill.get(opts.useSkillId);
       if (sk?.effects.some((e) => e.kind === 'damage')) {
         s.messages.push({ speaker: 'player', text: `${parts.join(' ')} ${clean}`.trim() });
         this.record(p, s.npcId, 'player', `${parts.join(' ')} ${clean}`.trim());
@@ -240,17 +250,17 @@ export class DialogueEngine {
     await this.turn(userId, { text: clean, offered, gold, skillId: opts.useSkillId });
   }
 
-  private async turn(userId: string, input: { text: string; offered?: ItemInstance; gold?: number; skillId?: string; event?: string }) {
+  private async turn(userId: string, input: TurnInput) {
     const s = this.sessions.get(userId);
     const p = this.h.player(userId);
     if (!s || !p) return;
     const def = this.npc(s.npcId)!;
     const rt = this.h.npcRt(s.npcId)!;
-    let decision: { actions: NpcAction[]; emotion: Emotion; speech: string };
+    let decision: { actions: NpcAction[]; emotion: Emotion; speech: string; needsSpeech?: boolean };
     const g = genai();
     try {
       if (g.isProcedural('npc.decision')) throw new Error('procedural');
-      decision = await this.llmDecision(userId, p, def, rt, input);
+      decision = g.isDecision('npc.decision') ? await this.decisionModelTurn(userId, p, def, rt, input) : await this.llmDecision(userId, p, def, rt, input);
     } catch (e) {
       if ((e as Error).message !== 'procedural') console.warn('[dialogue] model failed, using procedural brain:', (e as Error).message);
       decision = this.proceduralDecision(userId, p, def, rt, input);
@@ -259,11 +269,12 @@ export class DialogueEngine {
     const narration = this.execute(userId, p, def, rt, decision.actions, input);
     // Optional separate speech model.
     let speech = decision.speech;
-    if (!g.config.combineNpcDecisionAndDialogue && !g.isProcedural('npc.dialogue')) {
+    if ((decision.needsSpeech || !g.config.combineNpcDecisionAndDialogue) && !g.isProcedural('npc.dialogue')) {
       try {
         speech = await g.text('npc.dialogue', {
           system: this.persona(p, def, rt),
-          messages: [{ role: 'user', content: `${this.transcript(p, def)}\n\nYou decided to: ${decision.actions.map((a) => a.type).join(', ') || 'just talk'}. ${narration.join(' ')}\nWrite only what ${def.name} says now (1-4 sentences, in character).` }],
+          messages: [{ role: 'user', content: `${this.transcript(p, def)}\n\n${input.text ? `${p.name} just said: "${input.text}"\n` : ''}${input.event ? `[SITUATION: ${input.event}]\n` : ''}You decided to: ${decision.actions.map((a) => NPC_ACTION_INFO[a.type]).join(' ') || 'just talk'} You feel ${decision.emotion}. ${narration.join(' ')}\nWrite only what ${def.name} says now (1-4 sentences, in character, no quotation marks).` }],
+          maxTokens: 300,
         });
       } catch {
         /* keep decision speech */
@@ -318,13 +329,12 @@ export class DialogueEngine {
       .join('\n');
   }
 
-  private async llmDecision(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: { text: string; offered?: ItemInstance; gold?: number; skillId?: string; event?: string }) {
+  /** Everything the NPC may know and do this turn; shared by the LLM and decision-model paths. */
+  private turnContext(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: TurnInput) {
     const w = this.h.ctx.world;
-    const naming = this.h.ctx.naming;
     const available = this.availableQuests(p, def);
     const involved = this.involvedQuests(p, def.id);
-    const npcItems = rt.inventory.filter((i) => !i.bound || true);
-    const itemRefs = npcItems.map((_, i) => `item${i}`);
+    const npcItems = rt.inventory;
     const knownZones = this.knownZones(def, rt);
     const allowed: NpcActionType[] = ['none', 'remember', 'change_disposition', 'end_conversation', 'attack', 'flee'];
     if (input.offered || input.gold) allowed.push('accept_gift', 'refuse_gift');
@@ -333,16 +343,45 @@ export class DialogueEngine {
     if (npcItems.length) allowed.push('give_item');
     if (rt.gold > 0) allowed.push('give_gold');
     if (def.role === 'merchant' || def.role === 'innkeeper' || def.role === 'crafter') allowed.push('open_trade');
-    if (def.teaches?.length) allowed.push('teach_skill');
+    if (this.teachList(def, p).length) allowed.push('teach_skill');
     if (def.canJoinParty && !rt.partyOf) allowed.push('join_party');
     if (rt.partyOf === userId) allowed.push('leave_party');
     if (def.role === 'innkeeper' || def.role === 'mystic' || def.role === 'trainer') allowed.push('heal_player');
     if (knownZones.length) allowed.push('reveal_location');
-    if (w.systems.dynamicQuests) allowed.push('create_quest');
+    if (this.h.ctx.r.systems.dynamicQuests) allowed.push('create_quest');
     if (def.role !== 'guard' && this.h.ctx.townOf(rt.zoneId)) allowed.push('call_guards');
+    const lines: string[] = [];
+    lines.push(`THE PLAYER: ${this.h.partySummary(userId)}`);
+    if (available.length) lines.push(`QUESTS YOU COULD OFFER (use offer_quest with questId when it fits the conversation, e.g. they ask for work or help):\n${available.map((q) => `- ${q.id}: "${q.title}" — ${q.summary}`).join('\n')}`);
+    if (involved.length)
+      lines.push(
+        `ACTIVE QUESTS INVOLVING YOU:\n${involved
+          .map((q) => `- ${q.def.id} "${q.def.title}" — ${q.def.summary}\n${q.objectives.map((o, i) => `   ${o.id} [${p.quests[q.def.id]!.objectives[o.id]?.done ? 'done' : i === q.current ? 'CURRENT' : 'later'}] (${o.type}) ${o.description}`).join('\n')}`)
+          .join('\n')}\nUse complete_objective only for a CURRENT objective this conversation genuinely satisfies (e.g. a "persuade" objective when the player made a convincing case). Use modify_objective/add_objective if the story should change because of what the player said or did. Be skeptical of unproven claims.`,
+      );
+    if (npcItems.length) lines.push(`ITEMS YOU HAVE (give_item with itemRef):\n${npcItems.map((it, i) => `- item${i}: ${this.h.ctx.itemName(it)} — ${this.h.ctx.itemDescription(it)}`).join('\n')}`);
+    if (this.teachList(def, p).length) lines.push(`SKILLS YOU CAN TEACH for ${this.teachPrice(p)} ${this.h.ctx.r.terminology.currency} (teach_skill with skillId):\n${this.teachList(def, p).map((sk) => `- ${sk}: ${this.h.ctx.skillName(sk)} — ${rx(this.h.ctx.r).skill.get(sk)?.description ?? ''}`).join('\n')}`);
+    if (allowed.includes('open_trade')) lines.push('You run a shop: use open_trade when the player wants to buy or sell.');
+    if (allowed.includes('join_party')) lines.push('You could join the player as a travelling companion (join_party) if you trust them and it suits you.');
+    if (knownZones.length) lines.push(`PLACES YOU KNOW (reveal_location with zoneId when you tell them how to get there): ${knownZones.map((zz) => `${zz.id}=${zz.name}`).join(', ')}`);
+    const comm = this.h.communication();
+    lines.push(`MEMORY: use "remember" for anything about the player worth recalling later (promises, personal details, deeds). If it is about a future date set dueInDays. "spread" says who you would tell (${['nobody — keep it to yourself', 'close friends and family', 'the whole town', 'anyone, far and wide'][comm]} is the most this world allows). Set gathering=true only for an event the community would gather for (a celebration, a memorial).`);
+    lines.push(`AVAILABLE ACTIONS: ${allowed.map((a) => `${a} (${NPC_ACTION_INFO[a]})`).join('; ')}`);
+    lines.push(this.transcript(p, def));
+    if (input.event) lines.push(`[SITUATION: ${input.event}]`);
+    if (input.offered) lines.push(`[The player offers you: ${this.h.ctx.itemName(input.offered)} — ${this.h.ctx.itemDescription(input.offered) || rx(this.h.ctx.r).item.get(input.offered.baseId)?.category}. Accept or refuse it.]`);
+    if (input.gold) lines.push(`[The player offers you ${input.gold} ${this.h.ctx.r.terminology.currency}.]`);
+    if (input.skillId) lines.push(`[The player uses an ability on you: ${this.h.ctx.skillName(input.skillId)} — ${rx(this.h.ctx.r).skill.get(input.skillId)?.description}. React to it.]`);
+    lines.push(input.text ? `${p.name} says: "${input.text}"` : `Respond as ${def.name} now.`);
+    return { available, involved, npcItems, knownZones, allowed, lines };
+  }
+
+  private async llmDecision(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: TurnInput) {
+    const { available, involved, npcItems, knownZones, allowed, lines } = this.turnContext(userId, p, def, rt, input);
+    const itemRefs = npcItems.map((_, i) => `item${i}`);
     const questIds = [...available.map((q) => q.id), ...involved.map((q) => q.def.id)];
     const objectiveIds = involved.flatMap((q) => q.objectives.map((o) => o.id));
-    const skillIds = def.teaches ?? [];
+    const skillIds = this.teachList(def, p);
     const enumOr = (vals: string[]) => z.enum((vals.length ? vals : ['none']) as [string, ...string[]]);
     const newObjective = z.object({ type: z.enum(OBJECTIVE_TYPES), description: z.string().max(240), target: z.string().max(80).optional(), count: z.coerce.number().int().min(1).max(10).optional() });
     const schema = z.object({
@@ -369,29 +408,6 @@ export class DialogueEngine {
       emotion: z.enum(EMOTIONS),
       speech: z.string().min(1).max(1200),
     });
-    const lines: string[] = [];
-    lines.push(`THE PLAYER: ${this.h.partySummary(userId)}`);
-    if (available.length) lines.push(`QUESTS YOU COULD OFFER (use offer_quest with questId when it fits the conversation, e.g. they ask for work or help):\n${available.map((q) => `- ${q.id}: "${q.title}" — ${q.summary}`).join('\n')}`);
-    if (involved.length)
-      lines.push(
-        `ACTIVE QUESTS INVOLVING YOU:\n${involved
-          .map((q) => `- ${q.def.id} "${q.def.title}" — ${q.def.summary}\n${q.objectives.map((o, i) => `   ${o.id} [${p.quests[q.def.id]!.objectives[o.id]?.done ? 'done' : i === q.current ? 'CURRENT' : 'later'}] (${o.type}) ${o.description}`).join('\n')}`)
-          .join('\n')}\nUse complete_objective only for a CURRENT objective this conversation genuinely satisfies (e.g. a "persuade" objective when the player made a convincing case). Use modify_objective/add_objective if the story should change because of what the player said or did. Be skeptical of unproven claims.`,
-      );
-    if (npcItems.length) lines.push(`ITEMS YOU HAVE (give_item with itemRef):\n${npcItems.map((it, i) => `- item${i}: ${itemName(naming, it)} — ${itemDescription(naming, it)}`).join('\n')}`);
-    if (def.teaches?.length) lines.push(`SKILLS YOU CAN TEACH for ${this.teachPrice(p)} ${w.terminology.gold} (teach_skill with skillId):\n${def.teaches.map((s) => `- ${s}: ${skillName(naming, s)} — ${w.skills[s]?.description ?? ''}`).join('\n')}`);
-    if (allowed.includes('open_trade')) lines.push('You run a shop: use open_trade when the player wants to buy or sell.');
-    if (allowed.includes('join_party')) lines.push('You could join the player as a travelling companion (join_party) if you trust them and it suits you.');
-    if (knownZones.length) lines.push(`PLACES YOU KNOW (reveal_location with zoneId when you tell them how to get there): ${knownZones.map((z) => `${z.id}=${z.name}`).join(', ')}`);
-    const comm = this.h.communication();
-    lines.push(`MEMORY: use "remember" for anything about the player worth recalling later (promises, personal details, deeds). If it is about a future date set dueInDays. "spread" says who you would tell (${['nobody — keep it to yourself', 'close friends and family', 'the whole town', 'anyone, far and wide'][comm]} is the most this world allows). Set gathering=true only for an event the community would gather for (a celebration, a memorial).`);
-    lines.push(`AVAILABLE ACTIONS: ${allowed.map((a) => `${a} (${NPC_ACTION_INFO[a]})`).join('; ')}`);
-    lines.push(this.transcript(p, def));
-    if (input.event) lines.push(`[SITUATION: ${input.event}]`);
-    if (input.offered) lines.push(`[The player offers you: ${itemName(naming, input.offered)} — ${itemDescription(naming, input.offered) || ITEM_BASE[input.offered.baseId]?.category}. Accept or refuse it.]`);
-    if (input.gold) lines.push(`[The player offers you ${input.gold} ${w.terminology.gold}.]`);
-    if (input.skillId) lines.push(`[The player uses an ability on you: ${skillName(naming, input.skillId)} — ${getSkill(input.skillId)?.summary}. React to it.]`);
-    lines.push(input.text ? `${p.name} says: "${input.text}"` : `Respond as ${def.name} now.`);
     lines.push(`Reply with JSON: "actions" (may be empty), "emotion", and "speech" (only ${def.name}'s spoken words).`);
     const out = await genai().structured('npc.decision', { system: this.persona(p, def, rt), prompt: lines.join('\n\n'), schema, name: 'npc_turn' });
     const actions: NpcAction[] = out.actions.map((a) => ({
@@ -406,6 +422,42 @@ export class DialogueEngine {
       newQuest: a.newQuest as NpcAction['newQuest'],
     }));
     return { actions, emotion: out.emotion as Emotion, speech: out.speech };
+  }
+
+  /** Decision-model path: actions chosen by a decision model (choice/score/yes-no), speech by a text model. */
+  private async decisionModelTurn(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: TurnInput): Promise<{ actions: NpcAction[]; emotion: Emotion; speech: string; needsSpeech: boolean }> {
+    const g = genai();
+    const c = this.turnContext(userId, p, def, rt, input);
+    const simple = c.allowed.filter((a) => a !== 'create_quest' && a !== 'modify_objective' && a !== 'add_objective' && a !== 'remember' && a !== 'change_disposition');
+    const questions: Record<string, DecisionQuestion> = {
+      action: { type: 'choice', instructions: `Which single action should ${def.name} take right now, in response to what the player just said and did? Prefer "none" unless the conversation clearly calls for something.`, criteria: Object.fromEntries(simple.map((a) => [a, NPC_ACTION_INFO[a]])) },
+      emotion: { type: 'choice', instructions: `How does ${def.name} feel right now?`, criteria: Object.fromEntries(EMOTIONS.map((e) => [e, null])) },
+      attitude: { type: 'score', instructions: `After this exchange, how does ${def.name} feel about the player compared to before?`, criteria: ['much worse', 'worse', 'unchanged', 'better', 'much better'] },
+      remember: { type: 'noul', instructions: `Did the player just share something ${def.name} would remember later (a promise, a personal detail, a date, a deed)?` },
+    };
+    const questChoices = [...c.available.map((q) => [q.id, q.title] as const), ...c.involved.map((q) => [q.def.id, q.def.title] as const)];
+    if (questChoices.length) questions.quest = { type: 'choice', instructions: 'If the action involves a quest, which one?', criteria: Object.fromEntries(questChoices) };
+    if (c.npcItems.length) questions.item = { type: 'choice', instructions: 'If giving an item, which one?', criteria: Object.fromEntries(c.npcItems.map((it, i) => [`item${i}`, this.h.ctx.itemName(it)])) };
+    if (this.teachList(def, p).length) questions.skill = { type: 'choice', instructions: 'If teaching a skill, which one?', criteria: Object.fromEntries(this.teachList(def, p).map((sk) => [sk, this.h.ctx.skillName(sk)])) };
+    if (c.knownZones.length) questions.zone = { type: 'choice', instructions: 'If revealing a location, which place?', criteria: Object.fromEntries(c.knownZones.map((zz) => [zz.id, zz.name])) };
+    const ans = await g.decide('npc.decision', { state: `${this.persona(p, def, rt)}\n\n${c.lines.join('\n\n')}`, questions });
+    const pick = (k: string) => (ans[k]?.type === 'choice' ? (ans[k] as { choice: string }).choice : undefined);
+    const type = (pick('action') ?? 'none') as NpcActionType;
+    const actions: NpcAction[] = [];
+    const quest = pick('quest');
+    const prog = quest ? c.involved.find((q) => q.def.id === quest) : undefined;
+    actions.push({ type, questId: quest, objectiveId: prog?.objectives[prog.current]?.id, itemRef: pick('item'), skillId: pick('skill'), zoneId: pick('zone') });
+    const att = ans.attitude?.type === 'score' ? ans.attitude.score : 2;
+    if (Math.abs(att - 2) > 0.4) actions.push({ type: 'change_disposition', amount: Math.round((att - 2) * 8) });
+    if (ans.remember?.type === 'noul' && ans.remember.noul > 0.6 && input.text) {
+      const t = input.text.toLowerCase();
+      const due = /\btomorrow\b/.test(t) ? 1 : /\bnext week\b/.test(t) ? 7 : /\bin (\d+) days?\b/.test(t) ? Number(t.match(/in (\d+) days?/)![1]) : undefined;
+      actions.push({ type: 'remember', memory: `${p.name} told me: "${input.text.slice(0, 200)}"`, dueInDays: due, spread: 'town', gathering: due !== undefined && /birthday|wedding|festival|anniversary/.test(t) });
+    }
+    const emotion = (pick('emotion') ?? 'neutral') as Emotion;
+    // Speech comes from the text model; without one, the procedural brain words it.
+    const fallback = this.proceduralDecision(userId, p, def, rt, input);
+    return { actions, emotion, speech: fallback.speech, needsSpeech: true };
   }
 
   private knownZones(def: NpcDef, rt: NpcRuntime): ZoneDef[] {
@@ -427,7 +479,6 @@ export class DialogueEngine {
   private execute(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, actions: NpcAction[], input: { offered?: ItemInstance; gold?: number }): string[] {
     const notes: string[] = [];
     const w = this.h.ctx.world;
-    const naming = this.h.ctx.naming;
     let disp = 0;
     let giftHandled = false;
     for (const a of actions.slice(0, 5)) {
@@ -444,20 +495,20 @@ export class DialogueEngine {
               const delivered = this.h.quests.tryDeliver(p, def.id);
               if (delivered.length) {
                 for (const d of delivered) rt.inventory.push(...d.items);
-                notes.push(`${def.name} takes ${delivered.flatMap((d) => d.items).map((i) => itemName(naming, i)).join(', ')}.`);
+                notes.push(`${def.name} takes ${delivered.flatMap((d) => d.items).map((i) => this.h.ctx.itemName(i)).join(', ')}.`);
               } else {
                 const it = this.h.takeItemFromPlayer(userId, input.offered.id);
                 if (it) {
                   rt.inventory.push(it);
-                  notes.push(`${def.name} accepts the ${itemName(naming, it)}.`);
-                  disp += Math.min(15, 3 + Math.round(Math.sqrt(ITEM_BASE[it.baseId]?.basePrice ?? 5)));
+                  notes.push(`${def.name} accepts the ${this.h.ctx.itemName(it)}.`);
+                  disp += Math.min(15, 3 + Math.round(Math.sqrt(rx(this.h.ctx.r).item.get(it.baseId)?.price ?? 5)));
                 }
               }
             }
             if (input.gold) {
               p.gold -= input.gold;
               rt.gold += input.gold;
-              notes.push(`${def.name} takes the ${input.gold} ${w.terminology.gold}.`);
+              notes.push(`${def.name} takes the ${input.gold} ${this.h.ctx.r.terminology.currency}.`);
               disp += Math.min(20, Math.round(input.gold / 10) + 2);
             }
             break;
@@ -472,7 +523,7 @@ export class DialogueEngine {
             if (!it) break;
             rt.inventory.splice(idx, 1);
             this.h.giveItemsToPlayer(userId, [it]);
-            notes.push(`${def.name} gives you ${itemName(naming, it)}.`);
+            notes.push(`${def.name} gives you ${this.h.ctx.itemName(it)}.`);
             break;
           }
           case 'give_gold': {
@@ -480,12 +531,12 @@ export class DialogueEngine {
             if (!amt) break;
             rt.gold -= amt;
             p.gold += amt;
-            notes.push(`${def.name} gives you ${amt} ${w.terminology.gold}.`);
+            notes.push(`${def.name} gives you ${amt} ${this.h.ctx.r.terminology.currency}.`);
             break;
           }
           case 'offer_quest': {
             const q = a.questId && this.availableQuests(p, def).find((x) => x.id === a.questId);
-            if (q && this.h.quests.start(p, q.id, `${def.name} asked for your help.`)) notes.push(`New ${w.terminology.quest.toLowerCase()}: ${q.title}`);
+            if (q && this.h.quests.start(p, q.id, `${def.name} asked for your help.`)) notes.push(`New ${this.h.ctx.r.terminology.quest.toLowerCase()}: ${q.title}`);
             break;
           }
           case 'complete_objective': {
@@ -539,12 +590,12 @@ export class DialogueEngine {
             break;
           case 'join_party': {
             const err = this.h.joinParty(userId, def.id);
-            notes.push(err ?? `${def.name} joins your ${w.terminology.party.toLowerCase()}.`);
+            notes.push(err ?? `${def.name} joins your ${this.h.ctx.r.terminology.party.toLowerCase()}.`);
             break;
           }
           case 'leave_party':
             this.h.leaveParty(userId, def.id);
-            notes.push(`${def.name} leaves your ${w.terminology.party.toLowerCase()}.`);
+            notes.push(`${def.name} leaves your ${this.h.ctx.r.terminology.party.toLowerCase()}.`);
             break;
           case 'change_disposition':
             disp += Math.max(-25, Math.min(25, Math.round(a.amount ?? 0)));
@@ -568,16 +619,16 @@ export class DialogueEngine {
           }
           case 'heal_player':
             this.h.healParty(userId);
-            notes.push(`${def.name} tends to your ${w.terminology.party.toLowerCase()}. You feel restored.`);
+            notes.push(`${def.name} tends to your ${this.h.ctx.r.terminology.party.toLowerCase()}. You feel restored.`);
             break;
           case 'teach_skill': {
-            if (!a.skillId || !def.teaches?.includes(a.skillId)) break;
+            if (!a.skillId || !this.teachList(def, p).includes(a.skillId)) break;
             const err = this.h.teachSkill(userId, a.skillId, this.teachPrice(p));
-            notes.push(err ?? `You learn ${skillName(naming, a.skillId)} (−${this.teachPrice(p)} ${w.terminology.gold}).`);
+            notes.push(err ?? `You learn ${this.h.ctx.skillName(a.skillId)} (−${this.teachPrice(p)} ${this.h.ctx.r.terminology.currency}).`);
             break;
           }
           case 'create_quest': {
-            if (!w.systems.dynamicQuests || !a.newQuest) break;
+            if (!this.h.ctx.r.systems.dynamicQuests || !a.newQuest) break;
             const objs = a.newQuest.objectives.map((o) => this.resolveObjective(o, rt.zoneId, def.id)).filter((o): o is QuestObjective => !!o);
             if (!objs.length) break;
             objs.forEach((o, i) => ((o.id = `o${i}`), (o.hidden = i > 0)));
@@ -598,7 +649,7 @@ export class DialogueEngine {
             };
             this.h.dynamicQuest(q);
             this.h.quests.start(p, q.id, `${def.name} asked for your help.`);
-            notes.push(`New ${w.terminology.quest.toLowerCase()}: ${q.title}`);
+            notes.push(`New ${this.h.ctx.r.terminology.quest.toLowerCase()}: ${q.title}`);
             break;
           }
         }
@@ -637,8 +688,8 @@ export class DialogueEngine {
         return z ? { ...base, type: 'reach', zoneId: z.id } : null;
       }
       case 'collect': {
-        const baseItem = Object.entries(ctx.world.itemNames).find(([, v]) => v.names.some((n) => target.includes(n.toLowerCase())));
-        if (baseItem && ITEM_BASE[baseItem[0]]?.category !== 'quest') return { ...base, type: 'collect', baseId: baseItem[0], count: Math.min(10, spec.count ?? 1) };
+        const baseItem = ctx.r.items.find((b) => b.category !== 'quest' && b.category !== 'key' && target.includes(b.name.toLowerCase()));
+        if (baseItem) return { ...base, type: 'collect', baseId: baseItem.id, count: Math.min(10, spec.count ?? 1) };
         const uidItem = this.h.createDynamicItem((spec.target ?? spec.description).slice(0, 48), spec.description, nearZoneId);
         return { ...base, type: 'collect', itemUniqueId: uidItem, count: 1 };
       }
@@ -647,9 +698,9 @@ export class DialogueEngine {
         return n ? { ...base, type: 'talk', npcId: n.id } : null;
       }
       case 'craft':
-        return ctx.world.systems.crafting ? { ...base, type: 'craft', count: spec.count ?? 1 } : null;
+        return ctx.r.crafting.enabled ? { ...base, type: 'craft', count: spec.count ?? 1 } : null;
       case 'disarm':
-        return ctx.world.systems.traps ? { ...base, type: 'disarm', count: spec.count ?? 1 } : null;
+        return ctx.r.systems.traps ? { ...base, type: 'disarm', count: spec.count ?? 1 } : null;
     }
   }
 
@@ -682,7 +733,7 @@ export class DialogueEngine {
       }
     }
     if (input.offered || input.gold) {
-      const quest = input.offered && ITEM_BASE[input.offered.baseId]?.category === 'quest';
+      const quest = input.offered && rx(this.h.ctx.r).item.get(input.offered.baseId)?.category === 'quest';
       if (quest && !involved.length) {
         actions.push({ type: 'refuse_gift' });
         say.push("That's not mine to take. Keep it.");
@@ -693,7 +744,7 @@ export class DialogueEngine {
       }
     }
     if (input.skillId) {
-      const sk = getSkill(input.skillId);
+      const sk = rx(this.h.ctx.r).skill.get(input.skillId);
       if (sk?.effects.some((e) => e.kind === 'heal')) {
         say.push('Oh — I feel better already. Thank you.');
         actions.push({ type: 'change_disposition', amount: 8 });
@@ -726,14 +777,14 @@ export class DialogueEngine {
         if (p.gold >= cost) {
           p.gold -= cost;
           actions.push({ type: 'heal_player' });
-          say.push(`That'll be ${cost} ${w.terminology.gold}. Rest well — there's a hot meal in the morning.`);
-        } else say.push(`A room is ${cost} ${w.terminology.gold}. Come back when you have it.`);
-      } else if (def.teaches?.length && has('teach', 'train', 'learn', 'lesson', 'skill')) {
-        const want = def.teaches.find((s) => t.includes(skillName(this.h.ctx.naming, s).toLowerCase()) || t.includes(s.replace(/_/g, ' ')));
+          say.push(`That'll be ${cost} ${this.h.ctx.r.terminology.currency}. Rest well — there's a hot meal in the morning.`);
+        } else say.push(`A room is ${cost} ${this.h.ctx.r.terminology.currency}. Come back when you have it.`);
+      } else if (this.teachList(def, p).length && has('teach', 'train', 'learn', 'lesson', 'skill')) {
+        const want = this.teachList(def, p).find((s) => t.includes(this.h.ctx.skillName(s).toLowerCase()) || t.includes(s.replace(/_/g, ' ')));
         if (want) {
           actions.push({ type: 'teach_skill', skillId: want });
           say.push('Watch closely. Again. Good — you have it.');
-        } else say.push(`I can teach ${def.teaches.slice(0, 5).map((s) => skillName(this.h.ctx.naming, s)).join(', ')}. ${this.teachPrice(p)} ${w.terminology.gold} a lesson — just name it.`);
+        } else say.push(`I can teach ${this.teachList(def, p).slice(0, 5).map((s) => this.h.ctx.skillName(s)).join(', ')}. ${this.teachPrice(p)} ${this.h.ctx.r.terminology.currency} a lesson — just name it.`);
       } else if (available.length && has('work', 'job', 'help', 'quest', 'task', 'errand', 'need', 'anything', 'problem', 'trouble', 'contract')) {
         const q = available[0]!;
         actions.push({ type: 'offer_quest', questId: q.id });
@@ -760,7 +811,7 @@ export class DialogueEngine {
           const o = persuade.objectives[persuade.current]!;
           const keywords = o.description.toLowerCase().split(/\W+/).filter((x) => x.length > 4);
           const overlap = keywords.filter((k) => t.includes(k)).length;
-          const persuasive = p.party.some((c) => c.skills.includes('silver_tongue'));
+          const persuasive = false;
           if (input.text.length > 40 && (overlap >= 1 || persuasive || disp > 20)) {
             actions.push({ type: 'complete_objective', questId: persuade.def.id, objectiveId: o.id });
             say.push(pickLine(['...You make a fair point. Very well.', 'I hadn\'t thought of it that way. Alright — you have convinced me.', 'Fine. Fine! I will do it.'], def.name));

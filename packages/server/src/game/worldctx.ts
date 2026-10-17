@@ -1,7 +1,7 @@
 /** Read-only helpers over a WorldDefinition (decoded maps, lookups, naming). */
 import {
-  GROUND, OBJ, base64ToBytes, type BossDef, type FeatureDef, type MonsterFamily, type MonsterMember, type NamingContext, type NpcDef, type QuestDef,
-  type TilesetDef, type UniqueItemDef, type WorldDefinition, type ZoneDef,
+  GROUND, OBJ, base64ToBytes, itemDisplayName, rx, type BossDef, type FeatureDef, type ItemInstance, type MonsterFamily, type MonsterMember, type NpcDef, type QuestDef,
+  type Ruleset, type TilesetDef, type UniqueItemDef, type WorldDefinition, type ZoneDef,
 } from '@gd/shared';
 
 export interface ZoneMap {
@@ -26,7 +26,9 @@ export class WorldCtx {
   readonly bosses = new Map<string, BossDef>();
   readonly quests = new Map<string, QuestDef>();
   private maps = new Map<string, ZoneMap>();
-  readonly naming: NamingContext;
+  readonly r: Ruleset;
+  /** World uniques plus items created during play. */
+  uniqueItems: Record<string, UniqueItemDef>;
 
   constructor(public readonly world: WorldDefinition) {
     for (const z of world.zones) this.zones.set(z.id, z);
@@ -34,14 +36,29 @@ export class WorldCtx {
     for (const f of world.families) this.families.set(f.id, f);
     for (const b of world.bosses) this.bosses.set(b.id, b);
     for (const q of world.quests) this.quests.set(q.id, q);
-    this.naming = {
-      terminology: world.terminology,
-      itemNames: world.itemNames,
-      affixNames: world.affixNames,
-      uniqueItems: world.uniqueItems,
-      skills: world.skills,
-      maxLevel: world.maxLevel,
-    };
+    this.r = world.ruleset;
+    this.uniqueItems = { ...world.uniqueItems };
+  }
+
+  get terms() {
+    return this.r.terminology;
+  }
+
+  itemName(item: ItemInstance): string {
+    return itemDisplayName(this.r, item, { uniqueItems: this.uniqueItems });
+  }
+
+  itemDescription(item: ItemInstance): string {
+    if (item.uniqueId && this.uniqueItems[item.uniqueId]) return this.uniqueItems[item.uniqueId]!.description;
+    return rx(this.r).item.get(item.baseId)?.description ?? '';
+  }
+
+  skillName(skillId: string): string {
+    return rx(this.r).skill.get(skillId)?.name ?? skillId;
+  }
+
+  className(classId: string): string {
+    return rx(this.r).cls.get(classId)?.name ?? classId;
   }
 
   map(zoneId: string): ZoneMap {

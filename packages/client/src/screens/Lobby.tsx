@@ -89,6 +89,7 @@ function WorldCard({ w }: { w: WorldSummary }) {
           <span className="badge gray">{LENGTH_LABEL[w.input.length]}</span>
           <span className="badge gray">{MODE_LABEL[w.input.combatMode]}</span>
           {w.status === 'ready' && <span className="badge gray">{w.zones} places · {w.npcs} people · {w.quests} quests</span>}
+          {w.status === 'ready' && (w.rules ? <span className="badge" title={w.rules.classes.join(', ')}>{w.rules.name}</span> : <span className="badge red" title="Generate this world's rules on its page to play it.">Needs rules</span>)}
         </div>
       </div>
     </div>

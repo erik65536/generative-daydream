@@ -1,9 +1,25 @@
 /** The saved, pre-generated world. Instances (save states) reference a world by id. */
-import type { Terminology, WorldSystems, DamageType, Rarity } from '../rules/core';
 import type { CombatMode, CommunicationLevel, GameLength, WorldSize } from '../rules/progression';
-import type { MonsterArchetype, NpcRole, MerchantKind, TrapKind } from '../rules/actors';
+import type { MonsterArchetype, NpcRole, MerchantKind } from '../rules/actors';
 import type { QuestDef } from '../rules/quests';
-import type { ItemAffix } from '../rules/items';
+import type { DifficultyId, Modifier, Ruleset } from '../ruleset/types';
+
+/** Advanced rule choices from the world creation form; anything unset is decided by the generator. */
+export interface RulesChoices {
+  turnModel?: 'ap';
+  deathMode?: 'corpse_run';
+  revive?: 'heal' | 'special' | 'after_combat';
+  crit?: boolean;
+  dodge?: boolean;
+  control?: boolean;
+  surfaces?: boolean;
+  traps?: boolean;
+  locks?: boolean;
+  crafting?: boolean;
+  upgrades?: boolean;
+  enchanting?: boolean;
+  classes?: number;
+}
 
 export interface WorldInput {
   setting: string;
@@ -16,6 +32,9 @@ export interface WorldInput {
   seed?: string;
   /** 'none' skips image generation entirely (procedural art is always available). */
   art: 'none' | 'essential' | 'full';
+  rules?: RulesChoices;
+  /** Default difficulty for new journeys. */
+  difficulty?: DifficultyId;
 }
 
 export interface WorldConcept {
@@ -88,7 +107,8 @@ export interface FeatureDef {
   keyUniqueId?: string;
   items?: string[];
   /** trap */
-  trapKind?: TrapKind;
+  /** Ruleset trap id. */
+  trapKind?: string;
   trapLevel?: number;
   /** shrine */
   shrineEffect?: 'heal' | 'empower' | 'restore';
@@ -160,7 +180,8 @@ export interface MonsterFamily {
   id: string;
   name: string;
   description: string;
-  element: DamageType;
+  /** Ruleset damage subtype (or type) the family deals and resists. */
+  element: string;
   /** Preferred habitat words, used to place families in matching zones. */
   habitat: string;
   members: MonsterMember[];
@@ -230,11 +251,11 @@ export interface UniqueItemDef {
   baseId: string;
   name: string;
   description: string;
-  rarity: Rarity;
-  affixes?: ItemAffix[];
+  rarityId: string;
+  /** Compiled modifiers (priced like a legendary). */
+  mods: Modifier[];
   /** Quest items are bound (can't be sold) and weigh nothing. */
   questItem?: boolean;
-  element?: DamageType;
 }
 
 export interface LoreNote {
@@ -258,7 +279,10 @@ export interface AssetRecord {
   key: string;
   kind: 'texture' | 'sprite' | 'object' | 'icon' | 'portrait';
   file?: string;
+  /** Short brief of what to depict. */
   prompt: string;
+  /** Full prompt in the image model's preferred style (written by the image.prompt LLM). */
+  imagePrompt?: string;
   status: 'pending' | 'ok' | 'failed' | 'skipped';
   score?: number;
   attempts?: number;
@@ -289,17 +313,13 @@ export interface WorldDefinition {
   seed: string;
   input: WorldInput;
   concept: WorldConcept;
-  terminology: Terminology;
-  systems: WorldSystems;
+  /** The world's generated rules (pure data). */
+  ruleset: Ruleset;
+  /** The intent the ruleset was compiled from (kept so rules can be rebalanced or recompiled). */
+  rulesIntent?: unknown;
   maxLevel: number;
+  /** Look of each class (id = ruleset class id), used for art. */
   origins: OriginFlavor[];
-  /** Enabled player skills -> flavor. */
-  skills: Record<string, { name: string; description: string }>;
-  /** Item base id -> names by tier (index chosen by item level) and description. */
-  itemNames: Record<string, { names: string[]; description: string }>;
-  affixNames: Record<string, { prefix: string; suffix: string }>;
-  recipeNames: Record<string, string>;
-  trapNames: Record<string, string>;
   uniqueItems: Record<string, UniqueItemDef>;
   families: MonsterFamily[];
   bosses: BossDef[];

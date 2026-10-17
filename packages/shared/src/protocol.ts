@@ -1,10 +1,9 @@
 /** WebSocket protocol between the browser and the authoritative game server. */
-import type { ActiveStatus, CharacterState, JournalEntry, LootPile, PlayerState, Surface, DamageEvent } from './world/instance';
+import type { ActiveStatus, CharacterState, ItemInstance, JournalEntry, LootPile, PlayerState, Surface, DamageEvent, Presentation } from './world/instance';
 import type { ClientWorld, FeatureDef, ZoneDef } from './world/types';
 import type { QuestDef, Emotion } from './rules/quests';
-import type { ItemInstance } from './rules/items';
 import type { MonsterArchetype, NpcRole } from './rules/actors';
-import type { DamageType } from './rules/core';
+import type { DifficultyId } from './ruleset/types';
 
 export interface Motion {
   /** Tile path, starting from the position at `t0`. */
@@ -35,10 +34,7 @@ export interface EntityView {
   level: number;
   hp: number;
   maxHp: number;
-  physArmor: number;
-  maxPhys: number;
-  magArmor: number;
-  maxMag: number;
+  barrier: number;
   statuses: ActiveStatus[];
   hostile: boolean;
   ownerUserId?: string;
@@ -55,7 +51,8 @@ export interface EntityView {
   inCombat?: string;
   /** NPC bark currently shown. */
   bark?: { text: string; until: number };
-  element?: DamageType;
+  /** Family damage subtype/type id (boss glow, projectiles). */
+  element?: string;
 }
 
 export interface FeatureState {
@@ -109,7 +106,7 @@ export interface FxEvent {
   text?: string;
   color?: string;
   radius?: number;
-  element?: DamageType;
+  element?: string;
 }
 
 export interface DialogMessage {
@@ -139,6 +136,8 @@ export interface TradeState {
   stock: (ItemInstance & { price: number })[];
   sellMult: number;
   npcGold: number;
+  /** Bag upgrade offered by this merchant (if any left to buy). */
+  bagUpgrade?: { cost: number; slots: number };
 }
 
 export interface LootView {
@@ -172,6 +171,7 @@ export interface PlayerView extends PlayerState {
   waypoints: { zoneId: string; name: string }[];
   /** Day/minute of the instance clock. */
   isOwner: boolean;
+  difficulty: DifficultyId;
 }
 
 export type ServerMessage =
@@ -201,7 +201,8 @@ export type ClientMessage =
   | { t: 'join'; instanceId: string }
   | { t: 'ping'; clientTime: number }
   | { t: 'move'; x: number; y: number; charId?: string }
-  | { t: 'interact'; targetId: string; charId?: string }
+  /** `inspect` opens the loot window instead of taking everything. */
+  | { t: 'interact'; targetId: string; charId?: string; inspect?: boolean }
   | { t: 'talk'; npcId: string; text: string; giveItemId?: string; giveGold?: number; useSkillId?: string }
   | { t: 'end_dialog' }
   | { t: 'use_skill'; charId: string; skillId: string; targetId?: string; x?: number; y?: number }
@@ -217,8 +218,12 @@ export type ClientMessage =
   | { t: 'craft'; recipeId: string; charId?: string }
   | { t: 'take_loot'; sourceId: string; itemId?: string; all?: boolean }
   | { t: 'close_loot' }
-  | { t: 'allocate'; charId: string; attribute: string }
-  | { t: 'learn_skill'; charId: string; skillId: string }
+  /** Spend a tree point on a node. */
+  | { t: 'allocate'; charId: string; nodeId: string }
+  | { t: 'upgrade_item'; itemId: string; charId?: string }
+  | { t: 'enchant_item'; itemId: string; affixIndex: number; charId?: string }
+  | { t: 'buy_inventory_upgrade'; npcId: string }
+  | { t: 'set_difficulty'; difficulty: DifficultyId }
   | { t: 'set_hotbar'; charId: string; hotbar: (string | null)[] }
   | { t: 'set_leader'; charId: string }
   | { t: 'rest' }
@@ -228,5 +233,16 @@ export type ClientMessage =
   | { t: 'abandon_quest'; questId: string }
   | { t: 'dismiss_companion'; charId: string }
   | { t: 'chat'; text: string };
+
+/** Character creation choices. */
+export interface CharacterSpec {
+  name: string;
+  classId: string;
+  kinId: string;
+  presentation: Presentation;
+  pronouns: string;
+  sprite?: string;
+  colors?: string[];
+}
 
 export type { CharacterState };

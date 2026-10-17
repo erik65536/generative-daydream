@@ -1,10 +1,7 @@
 /** World generation job: runs every step (LLM or procedural), assembles, generates art, saves. */
 import crypto from 'node:crypto';
 import { z } from 'zod';
-import {
-  AFFIXES, ITEM_BASES, ORIGINS, PLAYER_SKILL_IDS, RECIPES, Rng, SIZE_PROFILES,
-  type WorldDefinition, type WorldInput,
-} from '@gd/shared';
+import { LENGTH_PROFILES, Rng, SIZE_PROFILES, type Ruleset, type WorldDefinition, type WorldInput } from '@gd/shared';
 import { genai } from '../genai/service';
 import type { Purpose } from '../genai/types';
 import { saveWorld } from '../storage';
@@ -15,6 +12,11 @@ import * as P from './prompts';
 import * as F from './fallbacks';
 import { assembleWorld, type Draft } from './assemble';
 import { generateArt, linkAssets } from './art';
+import { compileRuleset } from '../rules/compile';
+import { designRules, reviewRules, type StepRunner } from '../rules/generate';
+import { balanceRuleset } from '../rules/balance';
+import { bindWorld } from '../rules/bind';
+import type { RulesetIntent } from '../rules/intent';
 
 export interface GenLogEntry {
   t: number;
@@ -62,17 +64,17 @@ function placeholderWorld(id: string, input: WorldInput, owner: { id: string; na
   return {
     id, formatVersion: 1, ownerId: owner.id, ownerName: owner.name, public: true, createdAt: Date.now(), updatedAt: Date.now(), status: 'generating', seed: '', input,
     concept: { title: 'A world is being dreamed…', pitch: input.setting.slice(0, 200), genre: '', tone: '', artStyle: '', intro: '', secret: '', playerRole: '', palette: { primary: '#c8a24a', secondary: '#3a4a6a', accent: '#e0603a', ui: '#1a1a22' } },
-    terminology: {} as WorldDefinition['terminology'], systems: {} as WorldDefinition['systems'], maxLevel: 1, origins: [], skills: {}, itemNames: {}, affixNames: {}, recipeNames: {}, trapNames: {}, uniqueItems: {}, families: [], bosses: [], tilesets: {}, zones: [], npcs: [], quests: [], arcs: [], finalQuestId: '', ending: '', lore: [], assets: {}, startZoneId: '', worldFacts: [], factions: [],
+    ruleset: undefined as unknown as Ruleset, maxLevel: 1, origins: [], uniqueItems: {}, families: [], bosses: [], tilesets: {}, zones: [], npcs: [], quests: [], arcs: [], finalQuestId: '', ending: '', lore: [], assets: {}, startZoneId: '', worldFacts: [], factions: [],
   };
 }
 
 /** Run one structured step, falling back to procedural content on any failure. */
-async function step<T extends z.ZodType>(job: WorldGenJob, purpose: Purpose, label: string, opts: { prompt: string; schema: T; name: string; maxTokens?: number }, fallback: () => z.infer<T>): Promise<z.infer<T>> {
+async function step<T extends z.ZodType>(job: WorldGenJob, purpose: Purpose, label: string, opts: { prompt: string; schema: T; name: string; maxTokens?: number; system?: string }, fallback: () => z.infer<T>): Promise<z.infer<T>> {
   const g = genai();
   if (g.isProcedural(purpose)) return fallback();
   const t0 = Date.now();
   try {
-    const out = await g.structured(purpose, { system: P.SYSTEM, prompt: opts.prompt, schema: opts.schema, name: opts.name, maxTokens: opts.maxTokens });
+    const out = await g.structured(purpose, { system: opts.system ?? P.SYSTEM, prompt: opts.prompt, schema: opts.schema, name: opts.name, maxTokens: opts.maxTokens });
     job.push(`${label}: done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
     return out;
   } catch (e) {
@@ -102,7 +104,17 @@ export async function runGeneration(job: WorldGenJob) {
   job.push(`"${concept.title}" — ${concept.pitch}`, 'preview');
   if (job.cancelled) throw new Error('cancelled');
 
-  setStep('Charting regions and places', 0.1);
+  // ---------------------------------------------------------------- rules
+  setStep('Designing the rules: resources, classes, skills and gear', 0.07);
+  const runner = makeRunner(job);
+  const rulesWorld = P.conceptSummary(concept) + '\n\n' + P.userBrief(input);
+  const rulesIntent = await designRules(runner, rulesWorld, input, genre, (i, n) => (job.progress = 0.08 + 0.06 * (i / n)));
+  let ruleset = compileRuleset(rulesIntent, { genre, maxLevel: sk.maxLevel, overrides: input.rules, id: `rules_${job.worldId}` });
+  (concept as P.ConceptWithRules)._rules = P.rulesContext(ruleset);
+  job.push(`Rules "${ruleset.name}": ${ruleset.classes.map((c) => c.name).join(', ')} · ${ruleset.health.name}${ruleset.pools.length ? `, ${ruleset.pools.map((x) => x.name).join(', ')}` : ''}`, 'preview');
+  if (job.cancelled) throw new Error('cancelled');
+
+  setStep('Charting regions and places', 0.15);
   const slotIds = sk.slots.map((s) => s.slotId);
   const biomeFor = (s: ZoneSlot) => rng.fork(s.slotId).pick(bank.styles[s.kind]);
   const atlasFallback = () => F.fallbackAtlas(genre, sk, rng.fork('atlas'), biomeFor);
@@ -123,14 +135,10 @@ export async function runGeneration(job: WorldGenJob) {
   job.preview.zones = atlas.zones.map((z) => z.name);
   job.push(`Places: ${atlas.zones.map((z) => z.name).join(', ')}`, 'preview');
 
-  setStep('Breeding monsters and naming skills, gear and enchantments', 0.18);
+  setStep('Breeding monsters', 0.2);
   const famCount = SIZE_PROFILES[input.size].monsterFamilies;
-  const [families, skills, items, affixes] = await Promise.all([
-    step(job, 'world.design', 'Monster families', { prompt: P.familiesPrompt(input, concept, famCount), schema: S.FamiliesSchema, name: 'monster_families', maxTokens: 5000 }, () => F.fallbackFamilies(genre, famCount, rng.fork('fam'))),
-    step(job, 'world.content', 'Skills & origins', { prompt: P.skillsPrompt(concept), schema: S.skillsSchema(PLAYER_SKILL_IDS, ORIGINS.map((o) => o.id)), name: 'skills', maxTokens: 5000 }, () => F.fallbackSkills(genre, { traps: concept.systems?.traps !== false, lockpicking: concept.systems?.lockpicking !== false })),
-    step(job, 'world.content', 'Item names', { prompt: P.itemsPrompt(concept), schema: S.itemsSchema(ITEM_BASES.map((b) => b.id)), name: 'items', maxTokens: 5000 }, () => F.fallbackItems(genre)),
-    step(job, 'world.content', 'Enchantments, traps & recipes', { prompt: P.affixPrompt(concept), schema: S.affixSchema(AFFIXES.map((a) => a.id), RECIPES.map((r) => r.id)), name: 'affixes', maxTokens: 3000 }, () => F.fallbackAffixes()),
-  ]);
+  const damageKinds = [...ruleset.subtypes.map((x) => x.name), ...ruleset.damageTypes.map((x) => x.name)];
+  const families = await step(job, 'world.design', 'Monster families', { prompt: P.familiesPrompt(input, concept, famCount, damageKinds), schema: S.FamiliesSchema, name: 'monster_families', maxTokens: 5000 }, () => F.fallbackFamilies(genre, famCount, rng.fork('fam')));
   if (families.families.length < 2) families.families.push(...F.fallbackFamilies(genre, 2, rng.fork('fam2')).families);
   job.push(`Creatures: ${families.families.map((f) => f.name).join(', ')}`, 'preview');
 
@@ -209,10 +217,13 @@ export async function runGeneration(job: WorldGenJob) {
   }));
 
   setStep('Shaping the land and placing everything', 0.78);
-  const draft: Draft = { id: job.worldId, input, seed, genre, skeleton: sk, concept, atlas, story, skills, items, affixes, families, towns, areas, log: [] };
+  const draft: Draft = { id: job.worldId, input, seed, genre, skeleton: sk, concept, atlas, story, ruleset, rulesIntent, families, towns, areas, log: [] };
   const world = assembleWorld(draft, job.owner);
-  world.generationLog = job.log.map((l) => l.msg);
   job.push(`Assembled ${world.zones.length} zones (${world.zones.filter((z) => z.kind === 'interior').length} interiors), ${world.npcs.length} NPCs, ${world.quests.length} quests (${world.quests.filter((q) => q.main).length} main), ${world.bosses.length} bosses, ${world.zones.reduce((s, z) => s + z.spawns.length, 0)} monsters.`);
+
+  // ---------------------------------------------------------------- balance
+  ruleset = await balanceWorldRules(job, world, rulesIntent, genre, runner, rulesWorld, 0.8, 0.86);
+  world.generationLog = job.log.map((l) => l.msg);
   world.status = 'ready';
   saveWorld(world);
 
@@ -231,10 +242,98 @@ export async function runGeneration(job: WorldGenJob) {
     linkAssets(world);
     saveWorld(world);
   }
+  await genai().releaseGpu();
   job.progress = 1;
   job.step = 'Ready';
   job.status = 'done';
   job.push('The world is ready.', 'step');
+}
+
+function makeRunner(job: WorldGenJob): StepRunner {
+  return (purpose, label, opts, fallback) => step(job, purpose, label, opts, fallback);
+}
+
+/** Simulated fights take a few ms each; the budget scales with the world's length. */
+function balanceBudget(input: WorldInput): number {
+  if (process.env.GD_BALANCE === 'quick') return 20_000;
+  return { short: 6, medium: 9, long: 12, epic: 15 }[input.length] * 60_000;
+}
+
+/**
+ * Balance the world's ruleset by simulation, let the AI review flavour/structure, and rebalance if it changed
+ * anything. Leaves `world.ruleset` / `world.rulesIntent` final; returns the final ruleset.
+ */
+async function balanceWorldRules(job: WorldGenJob, world: WorldDefinition, intent: RulesetIntent, genre: import('./genres').Genre, runner: StepRunner, worldText: string, from: number, to: number): Promise<Ruleset> {
+  const quick = process.env.GD_BALANCE === 'quick';
+  const families = world.families.map((f) => ({ roles: f.members.map((m) => m.archetype), subtypeId: f.element }));
+  const budget = balanceBudget(world.input);
+  const run = (r: Ruleset, share: number, label: string) => {
+    job.step = label;
+    return balanceRuleset(r, {
+      mode: world.input.combatMode, seed: world.seed, families, quick, budgetMs: budget * share,
+      onProgress: (m, f) => {
+        job.progress = from + (to - from) * (share === 1 || label.startsWith('Re') ? f : f * 0.75);
+        if (f === 1 || /Fitting|Tuning|Evening|Searching|Calibrating/.test(m)) job.push(m);
+      },
+    });
+  };
+  job.push(`Balancing the rules by simulation (up to ${Math.round(budget / 60000)} min)…`, 'step');
+  let r = world.ruleset;
+  let rep = run(r, 0.7, 'Balancing the rules');
+  job.push(`Balance: ${rep.notes.join(' ')}${rep.outliers.length ? ` Outliers fixed: ${rep.outliers.length}.` : ''}`);
+  await yieldLoop();
+  if (!genai().isProcedural('world.design')) {
+    const revised = await reviewRules(runner, worldText, intent, r);
+    if (revised) {
+      job.push('The designer revised some rules after seeing the simulation; rebalancing.');
+      r = compileRuleset(revised, { genre, maxLevel: r.progression.maxLevel, overrides: world.input.rules, id: r.id });
+      bindWorld(world, r, revised.classes);
+      world.rulesIntent = revised;
+      rep = run(r, 0.45, 'Rebalancing after review');
+      job.push(`Balance: ${rep.notes.join(' ')}`);
+    }
+  }
+  world.ruleset = r;
+  return r;
+}
+
+const yieldLoop = () => new Promise((res) => setImmediate(res));
+
+/**
+ * Regenerate (new AI-designed rules) or rebalance (same intent, current engine) an existing world's rules.
+ * Lore, maps and art stay; saves made under different classes become incompatible.
+ */
+export function startRulesJob(world: WorldDefinition, mode: 'regenerate' | 'rebalance', owner: { id: string; name: string }): WorldGenJob {
+  const job = new WorldGenJob(world.id, world.input, owner);
+  jobs.set(world.id, job);
+  job.step = mode === 'regenerate' ? 'Designing new rules' : 'Rebalancing the rules';
+  void (async () => {
+    const genre = detectGenre(`${world.input.setting} ${world.input.story ?? ''} ${world.input.notes ?? ''}`);
+    const maxLevel = LENGTH_PROFILES[world.input.length].maxLevel;
+    const runner = makeRunner(job);
+    const conceptText = [`WORLD: "${world.concept.title}" — ${world.concept.pitch}`, `Genre: ${world.concept.genre}. Tone: ${world.concept.tone}. The player is ${world.concept.playerRole}.`].join('\n') + '\n\n' + P.userBrief(world.input);
+    let intent: RulesetIntent;
+    if (mode === 'rebalance' && world.rulesIntent) intent = world.rulesIntent as RulesetIntent;
+    else {
+      job.push('Designing new rules for this world…', 'step');
+      intent = await designRules(runner, conceptText, world.input, genre, (i, n) => (job.progress = 0.05 + 0.3 * (i / n)));
+    }
+    const r = compileRuleset(intent, { genre, maxLevel, overrides: world.input.rules, id: `rules_${world.id}` });
+    bindWorld(world, r, intent.classes);
+    world.rulesIntent = intent;
+    job.progress = 0.4;
+    await balanceWorldRules(job, world, intent, genre, runner, conceptText, 0.4, 0.98);
+    saveWorld(world);
+    job.status = 'done';
+    job.progress = 1;
+    job.step = 'Ready';
+    job.push('The rules are ready.', 'step');
+  })().catch((e) => {
+    job.status = 'failed';
+    job.error = (e as Error).message;
+    console.error('[rules job]', e);
+  });
+  return job;
 }
 
 /** Regenerate missing or failed art for an existing world (e.g. after configuring an image model). */
@@ -255,6 +354,7 @@ export function startArtJob(world: WorldDefinition, level: 'essential' | 'full',
     }, () => job.cancelled);
     linkAssets(world);
     saveWorld(world);
+    await genai().releaseGpu();
     job.status = 'done';
     job.progress = 1;
     job.step = 'Ready';

@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { DifficultyId, RulesChoices } from '@gd/shared';
 import { api, type Me } from '../api';
 import { Backdrop } from '../ui/Backdrop';
 import { TopBar } from './Lobby';
@@ -36,6 +37,33 @@ const PRESETS: { name: string; setting: string; story?: string; notes?: string }
   },
 ];
 
+type Tri = boolean | undefined;
+
+/** Auto (the generator decides from the setting) / On / Off. */
+function TriToggle({ label, hint, value, onChange }: { label: string; hint: string; value: Tri; onChange: (v: Tri) => void }) {
+  return (
+    <div className="tri">
+      <div className="grow">
+        <div className="t">{label}</div>
+        <div className="tiny dim">{hint}</div>
+      </div>
+      <div className="seg">
+        {([[undefined, 'Auto'], [true, 'On'], [false, 'Off']] as const).map(([v, t]) => (
+          <button key={t} className={`btn sm ${value === v ? 'primary' : 'ghost'}`} onClick={() => onChange(v)}>{t}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const DIFFS: [DifficultyId, string, string][] = [
+  ['story', 'Story', 'For the tale.'],
+  ['easy', 'Easy', 'Relaxed.'],
+  ['normal', 'Normal', 'The intended balance.'],
+  ['hard', 'Hard', 'Tactics matter.'],
+  ['brutal', 'Brutal', 'Merciless.'],
+];
+
 export function CreateWorld({ me }: { me: Me }) {
   const [setting, setSetting] = useState('');
   const [story, setStory] = useState('');
@@ -46,6 +74,14 @@ export function CreateWorld({ me }: { me: Me }) {
   const [combatMode, setCombatMode] = useState<'solo' | 'party_manual' | 'party_npc'>('party_npc');
   const [art, setArt] = useState<'none' | 'essential' | 'full'>('essential');
   const [seed, setSeed] = useState('');
+  const [difficulty, setDifficulty] = useState<DifficultyId>('normal');
+  const [advanced, setAdvanced] = useState(false);
+  const [rules, setRules] = useState<RulesChoices>({});
+  const setRule = <K extends keyof RulesChoices>(k: K, v: RulesChoices[K]) => setRules((r) => {
+    const next = { ...r, [k]: v };
+    if (v === undefined) delete next[k];
+    return next;
+  });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -53,7 +89,7 @@ export function CreateWorld({ me }: { me: Me }) {
     setBusy(true);
     setError('');
     try {
-      const { worldId } = await api.createWorld({ setting, story: story || undefined, notes: notes || undefined, size, length, communication, combatMode, art, seed: seed || undefined });
+      const { worldId } = await api.createWorld({ setting, story: story || undefined, notes: notes || undefined, size, length, communication, combatMode, art, seed: seed || undefined, difficulty, rules: Object.keys(rules).length ? rules : undefined });
       navigate(`#/world/${worldId}`);
     } catch (e) {
       setError((e as Error).message);
@@ -180,6 +216,78 @@ export function CreateWorld({ me }: { me: Me }) {
               <input className="input" value={seed} onChange={(e) => setSeed(e.target.value)} placeholder="random" />
             </div>
           </div>
+          <div className="field">
+            <label>Default difficulty</label>
+            <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
+              {DIFFS.map(([v, t, d]) => (
+                <div key={v} className={`choice ${difficulty === v ? 'on' : ''}`} onClick={() => setDifficulty(v)}>
+                  <div className="t">{t}</div>
+                  <div className="d">{d}</div>
+                </div>
+              ))}
+            </div>
+            <div className="hint">Each journey picks its own difficulty when it starts and can change it later. Rules are balanced by simulating thousands of fights for every difficulty.</div>
+          </div>
+
+          <div className="field">
+            <button className="btn ghost sm" style={{ alignSelf: 'flex-start' }} onClick={() => setAdvanced((v) => !v)}>{advanced ? '▾' : '▸'} Advanced rules</button>
+            {advanced && (
+              <div className="col advanced" style={{ gap: 14 }}>
+                <div className="hint">Every world gets its own ruleset — classes, skills, resources, damage types, items — designed from your setting. Leave a choice on Auto to let the setting decide.</div>
+                <div className="row" style={{ gap: 16, alignItems: 'flex-start' }}>
+                  <div className="field grow">
+                    <label>Turns</label>
+                    <div className="choice-grid">
+                      <div className="choice on"><div className="t">Action points</div><div className="d">Move and act freely within a budget each turn.</div></div>
+                      <div className="choice disabled"><div className="t">Rounds <span className="badge gray">later</span></div><div className="d">One move and one action per round.</div></div>
+                    </div>
+                  </div>
+                  <div className="field grow">
+                    <label>When the party falls</label>
+                    <div className="choice-grid">
+                      <div className="choice on"><div className="t">Corpse run</div><div className="d">Wake in town; your pack waits on your body. Equipment stays.</div></div>
+                    </div>
+                  </div>
+                </div>
+                <div className="field">
+                  <label>Reviving downed allies</label>
+                  <div className="choice-grid">
+                    {([
+                      [undefined, 'Auto', 'Chosen to fit the world.'],
+                      ['heal', 'Any healing', 'Healing a downed ally brings them back.'],
+                      ['special', 'Special only', 'Only revive skills and items work in a fight.'],
+                      ['after_combat', 'After the fight', 'Downed allies stay down until the battle ends.'],
+                    ] as const).map(([v, t, d]) => (
+                      <div key={t} className={`choice ${rules.revive === v ? 'on' : ''}`} onClick={() => setRule('revive', v)}>
+                        <div className="t">{t}</div>
+                        <div className="d">{d}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                <div className="tri-grid">
+                  <TriToggle label="Critical hits" hint="Lucky hits for extra damage." value={rules.crit} onChange={(v) => setRule('crit', v)} />
+                  <TriToggle label="Dodging" hint="Attacks can miss." value={rules.dodge} onChange={(v) => setRule('dodge', v)} />
+                  <TriToggle label="Crowd control" hint="Root, silence, disarm and slow." value={rules.control} onChange={(v) => setRule('control', v)} />
+                  <TriToggle label="Surfaces" hint="Lingering ground effects that combine." value={rules.surfaces} onChange={(v) => setRule('surfaces', v)} />
+                  <TriToggle label="Traps" hint="Hidden traps to spot and disarm." value={rules.traps} onChange={(v) => setRule('traps', v)} />
+                  <TriToggle label="Locks" hint="Locked chests and doors." value={rules.locks} onChange={(v) => setRule('locks', v)} />
+                  <TriToggle label="Crafting" hint="Recipes from materials." value={rules.crafting} onChange={(v) => setRule('crafting', v)} />
+                  <TriToggle label="Item upgrades" hint="Improve gear with materials." value={rules.upgrades} onChange={(v) => setRule('upgrades', v)} />
+                  <TriToggle label="Enchanting" hint="Reroll an item's bonuses." value={rules.enchanting} onChange={(v) => setRule('enchanting', v)} />
+                </div>
+                <div className="field">
+                  <label>Classes</label>
+                  <div className="seg" style={{ alignSelf: 'flex-start' }}>
+                    {([undefined, 3, 4, 5, 6] as const).map((n) => (
+                      <button key={String(n)} className={`btn sm ${rules.classes === n ? 'primary' : 'ghost'}`} onClick={() => setRule('classes', n)}>{n ?? 'Auto'}</button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
           {error && <div className="error-text">{error}</div>}
           <div className="row">
             <div className="spacer" />

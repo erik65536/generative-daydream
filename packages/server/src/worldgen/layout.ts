@@ -431,15 +431,16 @@ interface Room {
   cy: number;
 }
 
-export function generateDungeon(rng: Rng, opts: { size: number; caves: boolean }): LayoutResult & { rooms: Room[]; gate?: { gate: Vec2; lever: Vec2 } } {
+export function generateDungeon(rng: Rng, opts: { size: number; caves: boolean }): LayoutResult & { rooms: Room[]; gate?: { gates: Vec2[]; lever: Vec2 } } {
   const W = opts.size, H = opts.size;
   const m = new MapBuilder(W, H, rng, GROUND.wall);
   const rooms: Room[] = [];
   // BSP split.
   const split = (x: number, y: number, w: number, h: number, depth: number) => {
-    if (depth > 4 || (w < 18 && h < 18)) {
-      const rw = rng.int(Math.min(6, w - 4), Math.max(6, Math.min(w - 4, 13)));
-      const rh = rng.int(Math.min(6, h - 4), Math.max(6, Math.min(h - 4, 11)));
+    if (depth > 3 || (w < 22 && h < 22)) {
+      // Rooms big enough for a party to manoeuvre in during turn-based fights.
+      const rw = rng.int(Math.min(8, w - 4), Math.max(8, Math.min(w - 4, 16)));
+      const rh = rng.int(Math.min(7, h - 4), Math.max(7, Math.min(h - 4, 14)));
       const rx = x + rng.int(2, Math.max(2, w - rw - 2)), ry = y + rng.int(2, Math.max(2, h - rh - 2));
       rooms.push({ x: rx, y: ry, w: rw, h: rh, cx: Math.floor(rx + rw / 2), cy: Math.floor(ry + rh / 2) });
       return;
@@ -465,12 +466,20 @@ export function generateDungeon(rng: Rng, opts: { size: number; caves: boolean }
       m.setG(x, y, GROUND.floor);
     });
   }
-  // Connect rooms in BSP order with corridors (L-shaped), plus a few loops.
+  // Connect rooms in BSP order with corridors (L-shaped, 2-3 tiles wide so parties can pass and fight), plus loops.
   const corridor = (a: Room, b: Room) => {
     let x = a.cx, y = a.cy;
+    const width = opts.caves ? rng.int(2, 4) : rng.chance(0.35) ? 3 : 2;
     const horizontalFirst = rng.chance(0.5);
-    const stepX = () => { while (x !== b.cx) { x += Math.sign(b.cx - x); dig(x, y); } };
-    const stepY = () => { while (y !== b.cy) { y += Math.sign(b.cy - y); dig(x, y); } };
+    const brush = (cx: number, cy: number) => {
+      const r0 = -Math.floor((width - 1) / 2);
+      for (let dy = r0; dy < r0 + width; dy++) for (let dx = r0; dx < r0 + width; dx++) dig(cx + dx, cy + dy);
+      // Caves: ragged edges.
+      if (opts.caves && rng.chance(0.25)) dig(cx + rng.int(-2, 2), cy + rng.int(-2, 2));
+    };
+    brush(x, y);
+    const stepX = () => { while (x !== b.cx) { x += Math.sign(b.cx - x); brush(x, y); } };
+    const stepY = () => { while (y !== b.cy) { y += Math.sign(b.cy - y); brush(x, y); } };
     if (horizontalFirst) { stepX(); stepY(); } else { stepY(); stepX(); }
   };
   const corridorTiles: Vec2[] = [];
@@ -541,17 +550,34 @@ export function generateDungeon(rng: Rng, opts: { size: number; caves: boolean }
     if (m.free(x, y) && (rng.chance(0.55) || i === bossIdx)) chestSpots.push({ x, y, depth: roomDist[i]! / maxD });
   });
   const trapSpots = rng.shuffle(corridorTiles.filter((t) => Math.hypot(t.x - entry.x, t.y - entry.y) > 6)).slice(0, 10);
-  // Optional gate+lever puzzle guarding the boss room.
-  let gate: { gate: Vec2; lever: Vec2 } | undefined;
+  // Optional gate+lever puzzle guarding the boss room. Corridors are wide, so the gate is a line of gate tiles
+  // across the corridor, and it only counts if it really cuts the boss room off (no loop around it).
+  let gate: { gates: Vec2[]; lever: Vec2 } | undefined;
   if (rooms.length > 4 && rng.chance(0.6)) {
-    const path = findPath(entry, { x: boss.cx, y: boss.cy }, { width: W, height: H, passable: (x, y) => m.walkableGround(x, y) });
-    const gateTile = path?.find((p) => m.g(p.x, p.y) === GROUND.path && Math.hypot(p.x - boss.cx, p.y - boss.cy) < Math.max(boss.w, boss.h));
-    if (gateTile) {
-      const leverRoom = rooms.filter((_, i) => i !== bossIdx && i !== 0).sort((a, b) => dist(b) - dist(a))[0];
-      if (leverRoom) {
-        const lp = m.randomFree(rng, (x, y) => x >= leverRoom.x && y >= leverRoom.y && x < leverRoom.x + leverRoom.w && y < leverRoom.y + leverRoom.h);
-        if (lp) gate = { gate: gateTile, lever: lp };
-      }
+    const path = findPath(entry, { x: boss.cx, y: boss.cy }, { width: W, height: H, passable: (x, y) => m.walkableGround(x, y) }) ?? [];
+    const inRoom = (r: Room, x: number, y: number) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h;
+    const leverRoom = rooms.filter((_, i) => i !== bossIdx && i !== 0).sort((a, b) => dist(b) - dist(a))[0];
+    for (let i = path.length - 1; i > 0 && !gate && leverRoom; i--) {
+      const p = path[i]!, q = path[i - 1]!;
+      if (m.g(p.x, p.y) !== GROUND.path || inRoom(boss, p.x, p.y)) continue;
+      if (Math.hypot(p.x - boss.cx, p.y - boss.cy) > Math.max(boss.w, boss.h) + 6) continue;
+      // Perpendicular to the direction of travel (corridors are axis-aligned).
+      const along = { x: Math.sign(p.x - q.x), y: Math.sign(p.y - q.y) };
+      if (along.x && along.y) continue;
+      const perp = { x: along.y, y: along.x };
+      const cut: Vec2[] = [p];
+      for (const s of [1, -1])
+        for (let k = 1; k <= 4; k++) {
+          const t = { x: p.x + perp.x * k * s, y: p.y + perp.y * k * s };
+          if (!m.walkableGround(t.x, t.y)) break;
+          cut.push(t);
+        }
+      if (cut.length > 4 || cut.some((t) => m.g(t.x, t.y) !== GROUND.path)) continue;
+      const blocked = new Set(cut.map((t) => t.y * W + t.x));
+      const open = (x: number, y: number) => m.walkableGround(x, y) && !blocked.has(y * W + x);
+      if (findPath(entry, { x: boss.cx, y: boss.cy }, { width: W, height: H, passable: open })) continue;
+      const lp = m.randomFree(rng, (x, y) => inRoom(leverRoom, x, y));
+      if (lp && findPath(entry, lp, { width: W, height: H, passable: open })) gate = { gates: cut, lever: lp };
     }
   }
   const decorSpots: Vec2[] = [];

@@ -1,5 +1,5 @@
 /** Particles, projectiles, floating combat text and weather. All positions are in tile space + height. */
-import { DAMAGE_INFO, type DamageType } from '@gd/shared';
+import { kindColor } from '../rules';
 
 export interface Particle {
   x: number;
@@ -100,9 +100,9 @@ export class FxSystem {
     this.particles.push({ x, y, z: 1.9 + near * 0.35, vx: 0, vy: 0, vz: 0.7, life: big ? 1.6 : 1.25, max: big ? 1.6 : 1.25, size: big ? 22 : 15, color, kind: 'text', text, font: big ? '700 22px Cinzel, serif' : '700 15px Inter, sans-serif' });
   }
 
-  damage(x: number, y: number, amount: number, type: DamageType | 'heal' | 'armor_phys' | 'armor_mag', crit?: boolean) {
-    const color = type === 'heal' ? '#7dff9a' : type === 'armor_phys' ? '#d8d8e0' : type === 'armor_mag' ? '#7fb8ff' : DAMAGE_INFO[type as DamageType]?.color ?? '#ffffff';
-    this.text(x, y, `${type === 'heal' || type.startsWith('armor') ? '+' : ''}${amount}${crit ? '!' : ''}`, color, !!crit);
+  damage(x: number, y: number, amount: number, type: string, crit?: boolean) {
+    const color = kindColor(type, '#ffffff');
+    this.text(x, y, `${type === 'heal' || type === 'barrier' ? '+' : ''}${amount}${crit ? '!' : ''}`, color, !!crit);
   }
 
   projectile(x0: number, y0: number, x1: number, y1: number, color: string, kind: Projectile['kind'], onHit?: () => void) {

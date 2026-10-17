@@ -1,69 +1,118 @@
 import { describe, expect, it } from 'vitest';
-import { genWorld } from './helpers';
-import { instances } from '../src/game/manager';
-import { Combat } from '../src/game/combat';
-import { CharActor, MonsterActor } from '../src/game/actors';
-import { grantXp } from '../src/game/characters';
-import type { WorldDefinition } from '@gd/shared';
+import { Rng, codexSections, rx, type Ruleset } from '@gd/shared';
+import { compileRuleset } from '../src/rules/compile';
+import { defaultIntent } from '../src/rules/defaults';
+import { balanceRuleset } from '../src/rules/balance';
+import { buildPack, fitPack, fittedPack } from '../src/rules/encounters';
+import { makeParty, runFight } from '../src/rules/sim';
+import { THEMES } from '../src/rules/defaults';
 
-const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
-
-async function fight(w: WorldDefinition, seed: number, origins: string[], level: number, zoneKind: 'wilderness' | 'dungeon') {
-  const inst = instances.create(w, `u${seed}`, 'Sim', `sim ${seed}`, origins.map((o, i) => ({ name: `Hero${i}`, originId: o })));
-  inst.join({ userId: `u${seed}`, send: () => {} });
-  const p = inst.state.players[`u${seed}`]!;
-  for (const ch of p.party) {
-    if (level > 1) grantXp(ch, [0, 0, 160, 466, 964, 1700][level] ?? 0, w);
-    ch.npcId = 'sim'; // let the AI drive the heroes too
-    ch.attributes[ch.originId === 'o_mage' || ch.originId === 'o_occultist' ? 'intellect' : ch.originId === 'o_cleric' ? 'spirit' : ch.originId === 'o_ranger' || ch.originId === 'o_rogue' ? 'finesse' : 'might'] += ch.unspentAttributes;
-    ch.unspentAttributes = 0;
+/** Every reference inside a compiled ruleset points at something that exists. */
+function referenceErrors(r: Ruleset): string[] {
+  const ix = rx(r);
+  const errs: string[] = [];
+  for (const s of r.skills) {
+    if (s.cost && !ix.pool.has(s.cost.poolId)) errs.push(`${s.id}: pool ${s.cost.poolId}`);
+    for (const e of s.effects) {
+      if (e.kind === 'status' && e.statusId !== '$family' && !ix.status.has(e.statusId)) errs.push(`${s.id}: status ${e.statusId}`);
+      if (e.kind === 'damage' && e.subtypeId && e.subtypeId !== '$family' && !ix.subtype.has(e.subtypeId)) errs.push(`${s.id}: subtype ${e.subtypeId}`);
+      if (e.kind === 'damage' && e.typeId && !ix.type.has(e.typeId)) errs.push(`${s.id}: type ${e.typeId}`);
+      if (e.kind === 'surface' && !ix.surface.has(e.surfaceId)) errs.push(`${s.id}: surface ${e.surfaceId}`);
+    }
   }
-  const zone = w.zones.filter((z) => z.kind === zoneKind && z.levelRange[0] <= level + 1)[seed % 2] ?? w.zones.find((z) => z.kind === zoneKind)!;
-  inst.transfer(p, zone.id);
-  const live = inst._live(zone.id);
-  const monsters = [...live.actors.values()].filter((a): a is MonsterActor => a instanceof MonsterActor && a.alive() && !a.boss);
-  const target = monsters[seed % monsters.length]!;
-  const heroes = inst._charActors(`u${seed}`);
-  heroes.forEach((h, i) => {
-    h.x = Math.round(target.x) + 4 + (i % 2);
-    h.y = Math.round(target.y) + (i > 1 ? 1 : 0);
-  });
-  const combat = inst.startCombat(live as never, target, heroes[0]!, false)!;
-  const pack = combat.participants().filter((a) => a instanceof MonsterActor).length;
-  for (let i = 0; i < 3000 && !combat.ended; i++) await wait(1);
-  const enemiesLeft = combat.participants().filter((a) => a instanceof MonsterActor && a.alive()).length;
-  const win = combat.ended && enemiesLeft === 0;
-  const hpFrac = win ? heroes.reduce((s, h: CharActor) => s + (h.alive() ? h.hp / h.stats().maxHp : 0), 0) / heroes.length : 0;
-  const res = { win, rounds: combat.round, pack, hpFrac, level: target.level };
-  inst.leave({ userId: `u${seed}`, send: () => {} } as never);
-  instances.drop(inst.state.id);
-  return res;
+  for (const c of r.classes) {
+    for (const id of c.startingSkills) if (!ix.skill.has(id)) errs.push(`${c.id}: starting skill ${id}`);
+    for (const n of c.nodes) if (n.skillId && !ix.skill.has(n.skillId)) errs.push(`${c.id}: node ${n.id} skill ${n.skillId}`);
+    for (const [slot, base] of Object.entries(c.startingGear)) if (!ix.slot.has(slot) || !ix.item.has(base)) errs.push(`${c.id}: gear ${slot}=${base}`);
+    for (const b of [0, 1, 2]) if (!c.nodes.some((n) => n.branch === c.branches[b]!.id && n.tier === 0)) errs.push(`${c.id}: branch ${b} has no tier-0 node`);
+  }
+  for (const i of r.items) if (i.slotId && !ix.slot.has(i.slotId)) errs.push(`${i.id}: slot ${i.slotId}`);
+  for (const role of Object.keys(r.monsters) as (keyof Ruleset['monsters'])[]) for (const s of r.monsters[role].skills) if (!ix.skill.has(s)) errs.push(`monster ${role}: ${s}`);
+  if (r.slots.filter((s) => s.kind === 'weapon').length !== 1) errs.push('exactly one weapon slot');
+  return errs;
 }
 
-describe('combat balance', () => {
-  it('solo heroes usually win early fights, but not trivially', async () => {
-    Combat.instant = true;
-    const w = await genWorld('A misty kingdom of dragons and ruined castles', 'small', 'solo');
-    const results = [];
-    const origins = ['o_warrior', 'o_ranger', 'o_mage', 'o_cleric', 'o_rogue', 'o_occultist'];
-    for (let i = 0; i < 18; i++) results.push(await fight(w, i, [origins[i % origins.length]!], 1, 'wilderness'));
-    const wins = results.filter((r) => r.win).length;
-    const avgRounds = results.reduce((s, r) => s + r.rounds, 0) / results.length;
-    const avgHp = results.filter((r) => r.win).reduce((s, r) => s + r.hpFrac, 0) / Math.max(1, wins);
-    console.log(`[balance] solo L1: ${wins}/${results.length} wins, avg rounds ${avgRounds.toFixed(1)}, avg hp left ${(avgHp * 100).toFixed(0)}%, packs ${results.map((r) => r.pack).join(',')}`);
-    console.log(`[balance] by origin: ${origins.map((o, i) => `${o}:${results.filter((_, j) => j % 6 === i && results[j]!.win).length}/3`).join(' ')}`);
-    // The AI plays both sides and never drinks potions, so this is a floor, not the target experience.
-    expect(wins / results.length).toBeGreaterThanOrEqual(0.4);
-    expect(avgRounds).toBeGreaterThan(2);
-  }, 120000);
+describe('generated rulesets', () => {
+  it('every genre default compiles into a consistent ruleset', () => {
+    for (const genre of Object.keys(THEMES) as (keyof typeof THEMES)[]) {
+      const r = compileRuleset(defaultIntent(genre), { genre, maxLevel: 8 });
+      expect(referenceErrors(r), genre).toEqual([]);
+      expect(r.classes.length).toBeGreaterThanOrEqual(3);
+      expect(r.attributes.length).toBeGreaterThanOrEqual(3);
+      // No skip-turn or taunt effects exist in the vocabulary.
+      expect(r.statuses.every((s) => !s.control || ['root', 'silence', 'disarm', 'slow'].includes(s.control))).toBe(true);
+    }
+  });
 
-  it('a party of four handles a dungeon pack', async () => {
-    Combat.instant = true;
-    const w = await genWorld('A misty kingdom of dragons and ruined castles', 'small', 'party_manual');
-    const results = [];
-    for (let i = 0; i < 8; i++) results.push(await fight(w, 100 + i, ['o_warrior', 'o_ranger', 'o_mage', 'o_cleric'], 3, 'dungeon'));
-    const wins = results.filter((r) => r.win).length;
-    console.log(`[balance] party L3 dungeon: ${wins}/${results.length} wins, avg rounds ${(results.reduce((s, r) => s + r.rounds, 0) / results.length).toFixed(1)}, packs ${results.map((r) => r.pack).join(',')}`);
-    expect(wins / results.length).toBeGreaterThanOrEqual(0.6);
-  }, 120000);
+  it('writes a complete codex for every genre', () => {
+    for (const genre of Object.keys(THEMES) as (keyof typeof THEMES)[]) {
+      const r = compileRuleset(defaultIntent(genre), { genre, maxLevel: 8 });
+      const text = JSON.stringify(codexSections(r));
+      expect(text, genre).not.toMatch(/undefined|NaN|\[object/);
+      expect(codexSections(r).map((s) => s.id)).toContain('classes');
+    }
+  });
+
+  it('the simulator runs real fights deterministically', () => {
+    const r = compileRuleset(defaultIntent('fantasy'), { genre: 'fantasy', maxLevel: 8 });
+    const fight = () => {
+      const rng = new Rng('det');
+      const party = makeParty(r, { classes: r.classes.slice(0, 4).map((c) => c.id), level: 3, rng });
+      return runFight(r, { party, pack: buildPack(r, rng, { mode: 'party_manual', level: 3, kind: 'normal' }), potions: 0, difficulty: 'normal', seed: 'x' });
+    };
+    const a = fight(), b = fight();
+    expect(a).toEqual(b);
+    expect(a.rounds).toBeGreaterThan(1);
+  });
+
+  it('balances a party world toward its targets and makes difficulty matter', () => {
+    const r = compileRuleset(defaultIntent('scifi'), { genre: 'scifi', maxLevel: 8 });
+    const rep = balanceRuleset(r, { mode: 'party_manual', seed: 'test', quick: true, budgetMs: 45_000 });
+    const normal = rep.scenarios.filter((s) => s.difficulty === 'normal' && s.id.includes(':normal:'));
+    expect(normal.length).toBeGreaterThan(0);
+    // Normal fights are winnable but cost something.
+    for (const s of normal) {
+      expect(s.winRate, s.label).toBeGreaterThanOrEqual(0.8);
+      expect(s.hpLost, s.label).toBeGreaterThan(0.05);
+    }
+    expect(rep.scenarios.filter((s) => s.ok).length / rep.scenarios.length).toBeGreaterThanOrEqual(0.5);
+    // Brutal hits harder than story at every tuned level.
+    for (const k of r.difficulty.brutal.enemyDmg) {
+      const story = r.difficulty.story.enemyDmg.find((x) => x.level === k.level);
+      if (story) expect(k.value).toBeGreaterThan(story.value);
+    }
+  }, 120_000);
+
+  it('balances a solo world', () => {
+    const r = compileRuleset(defaultIntent('fantasy'), { genre: 'fantasy', maxLevel: 8 });
+    const rep = balanceRuleset(r, { mode: 'solo', seed: 'solo', quick: true, budgetMs: 40_000 });
+    for (const s of rep.scenarios.filter((x) => x.id.startsWith('normal:normal'))) expect(s.winRate, s.label).toBeGreaterThanOrEqual(0.75);
+  }, 120_000);
+
+  it('fits packs to a smaller party than the world was built for', () => {
+    const r = compileRuleset(defaultIntent('fantasy'), { genre: 'fantasy', maxLevel: 8 });
+    const members = [0, 1, 2].map((i) => ({ id: `m${i}`, role: 'brute' as const }));
+    const solo = fitPack(r, members, { mode: 'party_npc', partySize: 1, difficulty: 'story', rand: () => 0.99 });
+    expect(solo.absent.length).toBeGreaterThan(0);
+    expect(solo.scale).toBeLessThanOrEqual(1);
+    const full = fitPack(r, members, { mode: 'party_npc', partySize: 3, difficulty: 'story', rand: () => 0.99 });
+    expect(full).toEqual({ absent: [], scale: 1 });
+    // A boss always stays.
+    const boss = fitPack(r, [{ id: 'b', role: 'brute', boss: true }, ...members], { mode: 'party_manual', partySize: 1, difficulty: 'normal', rand: () => 0.99 });
+    expect(boss.absent).not.toContain('b');
+  });
+
+  it('a lone hero can win fights in a companions world', () => {
+    const r = compileRuleset(defaultIntent('fantasy'), { genre: 'fantasy', maxLevel: 8 });
+    balanceRuleset(r, { mode: 'party_npc', seed: 'npc', quick: true, budgetMs: 30_000 });
+    let wins = 0;
+    const n = 12;
+    for (let i = 0; i < n; i++) {
+      const rng = new Rng(`lone:${i}`);
+      const party = makeParty(r, { classes: [r.classes[i % r.classes.length]!.id], level: 3, rng });
+      const pack = fittedPack(r, buildPack(r, rng, { mode: 'party_npc', level: 3, kind: 'normal' }), { mode: 'party_npc', partySize: 1, difficulty: 'normal', rng });
+      if (runFight(r, { party, pack, potions: 0, difficulty: 'normal', seed: `l${i}` }).win) wins++;
+    }
+    expect(wins / n).toBeGreaterThanOrEqual(0.6);
+  }, 120_000);
 });

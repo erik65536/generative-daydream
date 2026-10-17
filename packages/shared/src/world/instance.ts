@@ -1,38 +1,61 @@
 /** Save-state of a world being played. Many instances can exist per world. */
-import type { AttributeId, StatusId, SurfaceType, DamageType } from '../rules/core';
-import type { EquipSlot, ItemInstance } from '../rules/items';
 import type { QuestDef, QuestProgress, Emotion } from '../rules/quests';
 import type { MonsterArchetype } from '../rules/actors';
+import type { DifficultyId, Modifier } from '../ruleset/types';
+
+/** A concrete item. Mechanics derive from the ruleset base + level + rarity + affixes (+ upgrade). */
+export interface ItemInstance {
+  id: string;
+  baseId: string;
+  level: number;
+  rarityId: string;
+  affixes: { affixId: string; value: number }[];
+  qty: number;
+  /** Upgrade level (crafting system). */
+  upgrade?: number;
+  /** World-defined unique item. */
+  uniqueId?: string;
+  /** Modifiers of a unique item. */
+  uniqueMods?: Modifier[];
+  /** Quest items can't be sold or dropped. */
+  bound?: boolean;
+}
 
 export interface ActiveStatus {
-  id: StatusId;
+  id: string;
   turns: number;
   /** Skill power of the applier (for damage-over-time). */
   power: number;
   sourceId?: string;
 }
 
+export type Presentation = 'feminine' | 'masculine' | 'androgynous';
+
 export interface CharacterState {
   id: string;
   name: string;
-  originId: string;
-  /** Asset key or origin key for the sprite. */
+  classId: string;
+  kinId: string;
+  presentation: Presentation;
+  pronouns: string;
+  /** Asset key for the sprite. */
   sprite: string;
   colors: string[];
   level: number;
   xp: number;
-  attributes: Record<AttributeId, number>;
-  unspentAttributes: number;
-  unspentSkillPoints: number;
-  skills: string[];
+  /** Upgrade tree: node id -> rank. */
+  tree: Record<string, number>;
+  /** Unspent tree points. */
+  treePoints: number;
   hotbar: (string | null)[];
   hp: number;
-  stamina: number;
-  focus: number;
-  physArmor: number;
-  magArmor: number;
+  pools: Record<string, number>;
+  /** Temporary health. */
+  barrier: number;
+  barrierTurns: number;
   statuses: ActiveStatus[];
-  equipment: Partial<Record<EquipSlot, ItemInstance>>;
+  /** Slot id -> item. */
+  equipment: Record<string, ItemInstance | undefined>;
   cooldowns: Record<string, number>;
   /** Real-time (ms timestamp) cooldowns for out-of-combat skills. */
   realCooldowns?: Record<string, number>;
@@ -41,8 +64,10 @@ export interface CharacterState {
   npcId?: string;
   /** NPC companions are AI driven in combat unless the player opts to command them. */
   aiControlled?: boolean;
+  /** Combat role used when AI driven. */
   archetype?: MonsterArchetype;
-  pronouns?: string;
+  /** Legacy (pre-ruleset) characters. */
+  originId?: string;
 }
 
 export interface JournalEntry {
@@ -79,6 +104,8 @@ export interface PlayerState {
   /** Summaries of older conversation turns per NPC. */
   conversationSummaries: Record<string, string>;
   lastTownZoneId: string;
+  /** Inventory upgrades bought (each adds the ruleset's slotsPerUpgrade). */
+  inventoryUpgrades: number;
   revealedTraps: string[];
   /** Arcs whose revelation has been shown. */
   revealedArcs: number[];
@@ -133,9 +160,19 @@ export interface MonsterRuntime {
   x: number;
   y: number;
   diedAt?: number;
-  /** Day on which it respawns (non-boss). */
+  /** Legacy: day on which it respawns (non-boss). */
   respawnDay?: number;
+  /** Game-clock minute after which it may respawn (non-boss); packs return together once all are due. */
+  respawnAt?: number;
   looted?: boolean;
+  /** Pack fitting (decided when the pack spawns): left out for a smaller party. */
+  absent?: boolean;
+  /** Threat multiplier that fits the pack to the party (1 = as designed). */
+  scale?: number;
+  /** Promoted to elite by the difficulty. */
+  elite?: boolean;
+  /** An extra member added by the difficulty: the spawn it copies. */
+  extraOf?: string;
 }
 
 export interface FeatureRuntime {
@@ -153,7 +190,7 @@ export interface FeatureRuntime {
 export interface Surface {
   x: number;
   y: number;
-  type: SurfaceType;
+  type: string;
   turns: number;
   power: number;
 }
@@ -168,6 +205,8 @@ export interface LootPile {
   ownerUserId?: string;
   label: string;
   createdAt: number;
+  /** The party's remains after a defeat (bag contents to recover). */
+  corpse?: boolean;
 }
 
 export interface ZoneRuntime {
@@ -215,6 +254,9 @@ export interface InstanceState {
   lastActiveAt: number;
   /** Unique items created during play. */
   dynamicItems?: Record<string, import('./types').UniqueItemDef>;
+  difficulty: DifficultyId;
+  /** Engine/ruleset version the save was created with. */
+  rulesVersion?: number;
 }
 
 export interface InstanceSummary {
@@ -231,12 +273,16 @@ export interface InstanceSummary {
   day: number;
   players: { userId: string; name: string; level: number; zone: string }[];
   online?: number;
+  difficulty: DifficultyId;
+  /** Set when the save can't be played with the current engine/rules. */
+  incompatible?: string;
 }
 
 export interface DamageEvent {
   targetId: string;
   amount: number;
-  type: DamageType | 'heal' | 'armor_phys' | 'armor_mag';
+  /** Damage subtype/type id, or 'heal' / 'barrier'. */
+  type: string;
   crit?: boolean;
   miss?: boolean;
 }
