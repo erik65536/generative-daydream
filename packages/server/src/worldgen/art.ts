@@ -36,6 +36,8 @@ const TEXTURE_ROLES: TileRole[] = ['floor', 'floorAlt', 'path', 'wall', 'water']
 const OBJ_ROLE: Record<number, TileRole> = { [OBJ.tree]: 'tree', [OBJ.rock]: 'rock', [OBJ.plant]: 'plant', [OBJ.light]: 'light', [OBJ.furniture]: 'furniture', [OBJ.rubble]: 'rubble', [OBJ.pillar]: 'pillar' };
 const FEATURE_ROLE: Record<string, TileRole> = { chest: 'chest', shrine: 'shrine', sign: 'sign', lever: 'lever', bed: 'bed' };
 const POSES = ['walk_a', 'walk_b', 'attack'] as const;
+/** Humanoids walk with a pose-guided eight-frame cycle; other bodies keep two painted strides. */
+const HUMANOID_POSES = ['walk', 'attack'] as const;
 
 /** What a job reports while painting (a WorldGenJob fits). */
 export interface ArtProgress {
@@ -215,12 +217,12 @@ function collectAssets(w: WorldDefinition, level: 'essential' | 'full'): { rec: 
     }
     if (use.craft) add(`obj_${ts.id}_craft`, 'object', ts.extras?.craft ? `${ts.extras.craft.name}: ${ts.extras.craft.prompt} (found in ${ts.name})` : `a workbench where people make and mend things in ${ts.name}`);
   }
-  const sprite = (key: string, prompt: string) => {
+  const sprite = (key: string, prompt: string, humanoid = false) => {
     add(key, 'sprite', prompt);
-    if (poses) variants(key, 'sprite', prompt, POSES);
+    if (poses) variants(key, 'sprite', prompt, humanoid ? HUMANOID_POSES : POSES);
   };
-  for (const o of w.origins) for (const pres of PRESENTATIONS) sprite(`spr_origin_${o.id}_${pres}`, `The player's hero, ${PRESENTATION_SUBJECT[pres]}, a ${o.name}: ${o.appearance}. ${PRESENTATION_LOOK[pres]}`);
-  for (const n of w.npcs) sprite(`spr_npc_${n.id}`, `${n.appearance}, ${n.title}`);
+  for (const o of w.origins) for (const pres of PRESENTATIONS) sprite(`spr_origin_${o.id}_${pres}`, `The player's hero, ${PRESENTATION_SUBJECT[pres]}, a ${o.name}: ${o.appearance}. ${PRESENTATION_LOOK[pres]}`, true);
+  for (const n of w.npcs) sprite(`spr_npc_${n.id}`, `${n.appearance}, ${n.title}`, true);
   for (const f of w.families) for (const m of f.members) sprite(`spr_mon_${f.id}_${m.archetype}`, `${m.appearance || m.name}, ${m.name}, hostile creature`);
   for (const b of w.bosses) sprite(`spr_boss_${b.id}`, `${b.appearance}, ${b.name} ${b.title}, imposing boss`);
   if (level === 'full') for (const b of w.ruleset.items) if (b.category !== 'quest' && b.category !== 'key') add(`icon_${b.id}`, 'icon', `${b.name}${b.description ? `, ${b.description}` : ''}`);

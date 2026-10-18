@@ -235,6 +235,7 @@ export type ClientMessage =
   | { t: 'hard_save'; name: string }
   | { t: 'set_options'; open?: boolean; commandCompanions?: boolean }
   | { t: 'abandon_quest'; questId: string }
+  | { t: 'pin_quest'; questId: string }
   | { t: 'dismiss_companion'; charId: string }
   | { t: 'chat'; text: string };
 

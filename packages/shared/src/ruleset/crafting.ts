@@ -1,6 +1,24 @@
 /** Costs shared by the server (which charges them) and the client (which shows them). */
 import { rx } from './stats';
-import type { ItemBaseDef, Ruleset } from './types';
+import type { ItemBaseDef, RecipeDef, Ruleset } from './types';
+
+/** How close (tiles) the party leader must stand to a workbench to use it. */
+export const STATION_REACH = 3;
+
+/**
+ * Field recipes (remedies and simple tools) can be made anywhere out of combat; everything else — gear,
+ * improving and enchanting — needs a workbench.
+ */
+export function fieldRecipe(r: Ruleset, rec: RecipeDef): boolean {
+  if (!('itemId' in rec.output)) return false;
+  const cat = rx(r).item.get(rec.output.itemId)?.category;
+  return cat === 'potion' || cat === 'tool';
+}
+
+/** Whether a point stands within reach of one of these features' workbenches. */
+export function nearStation(features: { kind: string; x: number; y: number }[], at: { x: number; y: number } | undefined): boolean {
+  return !!at && features.some((f) => f.kind === 'craft_station' && Math.hypot(f.x - at.x, f.y - at.y) <= STATION_REACH + 0.5);
+}
 
 export interface CraftCost {
   gold: number;

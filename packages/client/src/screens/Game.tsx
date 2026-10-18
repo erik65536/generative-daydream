@@ -8,6 +8,8 @@ import { CharacterWindow, CodexWindow, CraftWindow, DialogWindow, HelpWindow, In
 import { hideTip } from '../ui/common';
 import { navigate } from '../App';
 import { applyWorldTheme } from '../ui/theme';
+import { PadInput } from '../input/gamepad';
+import { PadLegend, PadPrompt, PadWheel } from '../ui/pad';
 
 export function GameScreen({ me, instanceId }: { me: Me; instanceId: string }) {
   const [gc, setGc] = useState<GameClient | null>(null);
@@ -84,7 +86,7 @@ function handleClick(r: Renderer, info: HoverInfo, button: number, ev?: MouseEve
 function GameView({ me }: { me: Me }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rendererRef = useRef<Renderer | null>(null);
-  const { status, error, panel, dialog, trade, loot, targeting, world, combat } = useGame((s) => ({ status: s.status, error: s.error, panel: s.panel, dialog: s.dialog, trade: s.trade, loot: s.loot, targeting: s.targeting, world: s.world, combat: s.combat }));
+  const { status, error, panel, dialog, trade, loot, targeting, world, combat, inputMode } = useGame((s) => ({ status: s.status, error: s.error, panel: s.panel, dialog: s.dialog, trade: s.trade, loot: s.loot, targeting: s.targeting, world: s.world, combat: s.combat, inputMode: s.inputMode }));
   const [note, setNote] = useState<{ x: number; y: number; text: string; ok: boolean } | null>(null);
   const c = client();
 
@@ -92,6 +94,7 @@ function GameView({ me }: { me: Me }) {
     const r = new Renderer(canvasRef.current!, c);
     rendererRef.current = r;
     r.onClick = (info, button, ev) => handleClick(r, info, button, ev);
+    const pad = new PadInput(r, c, (info, button) => handleClick(r, info, button));
     const noteTimer = setInterval(() => {
       const n = r.cursorNote;
       r.cursorNote = null;
@@ -99,6 +102,7 @@ function GameView({ me }: { me: Me }) {
     }, 80);
     return () => {
       clearInterval(noteTimer);
+      pad.destroy();
       r.destroy();
     };
   }, []);
@@ -109,6 +113,7 @@ function GameView({ me }: { me: Me }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const st = c.state;
+      if (e.isTrusted && st.inputMode === 'pad') c.update({ inputMode: 'mouse' });
       if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
       const k = e.key.toLowerCase();
       const toggle = (p: NonNullable<typeof st.panel>) => c.update({ panel: st.panel === p ? null : p });
@@ -164,7 +169,7 @@ function GameView({ me }: { me: Me }) {
   const close = () => c.update({ panel: null });
   return (
     <div
-      className={`game ${targeting ? 'targeting' : ''}`}
+      className={`game ${targeting ? 'targeting' : ''} ${inputMode === 'pad' ? 'pad' : ''}`}
       onContextMenu={(e) => {
         // The game uses right-click; keep the browser menu only for text fields.
         const tag = (e.target as HTMLElement).tagName;
@@ -184,7 +189,7 @@ function GameView({ me }: { me: Me }) {
         <Toasts />
         {targeting && (
           <div className="badge" style={{ position: 'absolute', bottom: 132, left: '50%', transform: 'translateX(-50%)', padding: '6px 14px', fontSize: 12 }}>
-            {targeting.skillId ? `Choose a target for ${c.skillName(targeting.skillId)}` : 'Choose where to use it'} — right-click to cancel
+            {targeting.skillId ? `Choose a target for ${c.skillName(targeting.skillId)}` : 'Choose where to use it'} — {inputMode === 'pad' ? 'B to cancel' : 'right-click to cancel'}
           </div>
         )}
         {panel === 'inventory' && <InventoryWindow onClose={close} />}
@@ -201,6 +206,9 @@ function GameView({ me }: { me: Me }) {
         {dialog && !trade && <DialogWindow />}
         {loot && <LootWindow />}
         <Narration />
+        <PadPrompt />
+        <PadLegend />
+        <PadWheel />
         {note && <div className={`cursor-note ${note.ok ? '' : 'bad'}`} style={{ left: note.x, top: note.y }}>{note.text}</div>}
         {combat && !c.isMyTurn() && <div />}
       </div>

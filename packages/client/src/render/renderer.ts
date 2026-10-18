@@ -173,7 +173,41 @@ export class Renderer {
 
   // ---------------------------------------------------------------------------- input
 
+  /** Hover set by a controller (a tile cursor or a focused target). Moving the mouse takes over again. */
+  padHover: HoverInfo | null = null;
+
+  setPadHover(info: HoverInfo | null) {
+    this.padHover = info;
+    if (info) this.hover = info;
+    else this.hover = { tile: null, point: null, screenX: this.hover.screenX, screenY: this.hover.screenY };
+  }
+
+  /** What a controller cursor on this tile points at (a figure standing there, or the tile). */
+  hoverAt(tile: { x: number; y: number }, ids: { entityId?: string; featureId?: string; lootId?: string } = {}): HoverInfo {
+    const s = this.tileToScreen(tile.x, tile.y);
+    return { tile: { x: Math.round(tile.x), y: Math.round(tile.y) }, point: { x: tile.x, y: tile.y }, screenX: s.x, screenY: s.y, ...ids };
+  }
+
+  /** A screen-space direction (stick) as a unit direction in tile coordinates. */
+  screenDirToTile(dx: number, dy: number): { x: number; y: number } {
+    const a = this.screenToTile(this.W / 2, this.H / 2), b = this.screenToTile(this.W / 2 + dx * 100, this.H / 2 + dy * 100);
+    const vx = b.x - a.x, vy = b.y - a.y, len = Math.hypot(vx, vy) || 1;
+    return { x: vx / len, y: vy / len };
+  }
+
+  canStand(x: number, y: number, ignoreId?: string): boolean {
+    return this.passable(Math.round(x), Math.round(y), ignoreId);
+  }
+
+  zoomBy(f: number) {
+    this.zoom = Math.max(0.55, Math.min(1.9, this.zoom * f));
+  }
+
   private onMove = (e: MouseEvent) => {
+    if (this.padHover) {
+      this.padHover = null;
+      this.client.update({ inputMode: 'mouse' });
+    }
     const r = this.canvas.getBoundingClientRect();
     const sx = e.clientX - r.left, sy = e.clientY - r.top;
     this.hover = this.pick(sx, sy);
@@ -1031,8 +1065,10 @@ export class Renderer {
       const img = loadImage(this.client.assetUrl(k));
       return img ? { img, rel: w.assets[k]?.relHeight ?? 1 } : undefined;
     };
-    const out: PoseFrames = { walk_a: frame('walk_a'), walk_b: frame('walk_b'), attack: frame('attack') };
-    return out.walk_a || out.attack ? out : undefined;
+    const strip = frame('walk');
+    const n = w.assets[`${key}@walk`]?.frames;
+    const out: PoseFrames = { walk: strip && n ? { ...strip, frames: n } : undefined, walk_a: frame('walk_a'), walk_b: frame('walk_b'), attack: frame('attack') };
+    return out.walk || out.walk_a || out.attack ? out : undefined;
   }
 
   /** Generated art for a feature (chest closed or open, shrine, sign, lever, bed, crafting station), if painted. */

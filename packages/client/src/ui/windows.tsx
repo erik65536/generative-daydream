@@ -1,7 +1,7 @@
 import { readable } from './theme';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  DIFFICULTIES, bagUpgradeCost, branchSpent, canAllocate, codexSections, enchantCost, inventoryCapacity, inventoryUsed, itemPrice, knownSkills, modifierLabel, nodeLines, perPointLabel,
+  DIFFICULTIES, bagUpgradeCost, fieldRecipe, nearStation, branchSpent, canAllocate, codexSections, enchantCost, inventoryCapacity, inventoryUsed, itemPrice, knownSkills, modifierLabel, nodeLines, perPointLabel,
   rx, skillRank, upgradeCost, xpForLevel,
   type CharacterState, type ItemInstance, type QuestDef, type QuestObjective, type Ruleset, type TreeNode,
 } from '@gd/shared';
@@ -9,6 +9,7 @@ import { client, useGame } from '../net/game';
 import { ItemIcon, ItemTooltip, Portrait, SkillIcon, SkillTooltip, Window, hideTip, tip } from './common';
 import { navigate } from '../App';
 import { MAP_W, WorldMapView } from './worldmap';
+import { trackedQuest } from './tracker';
 
 const iconUrl = (baseId: string) => client().assetUrl(`icon_${baseId}`);
 
@@ -641,7 +642,7 @@ export function QuestWindow({ onClose }: { onClose: () => void }) {
   const objs = (q: { d: QuestDef; p: (typeof quests)[number]['p'] }): QuestObjective[] => q.p.overrides ?? q.d.objectives;
   const row = (q: (typeof quests)[number]) => (
     <div key={q.d.id} className={`quest ${cur?.d.id === q.d.id ? 'on' : ''}`} onClick={() => setSel(q.d.id)}>
-      <div className="qt">{q.d.title}</div>
+      <div className="qt">{trackedQuest(player)?.id === q.d.id && <span className="pin-dot" title="Shown on the HUD" />}{q.d.title}</div>
       <div className="tiny muted">{q.d.main && q.d.arcIndex !== undefined ? world.arcs[q.d.arcIndex]?.title : t.level + ' ' + q.d.level}{q.p.status !== 'active' ? ` · ${q.p.status}` : ''}</div>
     </div>
   );
@@ -697,7 +698,14 @@ export function QuestWindow({ onClose }: { onClose: () => void }) {
                 {cur.p.log.slice(-8).map((l, i) => (
                   <div key={i} className="tiny dim">Day {l.day}: {l.text}</div>
                 ))}
-                {!cur.d.main && cur.p.status === 'active' && <button className="btn sm ghost" style={{ alignSelf: 'flex-start' }} onClick={() => confirm(`Abandon this ${t.quest.toLowerCase()}?`) && c.send({ t: 'abandon_quest', questId: cur.d.id })}>Abandon</button>}
+                {cur.p.status === 'active' && (
+                  <div className="row" style={{ gap: 6 }}>
+                    {trackedQuest(player)?.id === cur.d.id
+                      ? <button className="btn sm" onClick={() => c.send({ t: 'pin_quest', questId: '' })}>Unpin from HUD</button>
+                      : <button className="btn sm primary" onClick={() => c.send({ t: 'pin_quest', questId: cur.d.id })}>Pin to HUD</button>}
+                    {!cur.d.main && <button className="btn sm ghost" onClick={() => confirm(`Abandon this ${t.quest.toLowerCase()}?`) && c.send({ t: 'abandon_quest', questId: cur.d.id })}>Abandon</button>}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -732,9 +740,13 @@ export function MapWindow({ onClose }: { onClose: () => void }) {
 // =================================================================================== crafting
 
 export function CraftWindow({ onClose }: { onClose: () => void }) {
-  const { player, world, selected } = useGame((s) => ({ player: s.player, world: s.world, selected: s.selectedCharId }));
+  const { player, world, selected, zone, entities } = useGame((s) => ({ player: s.player, world: s.world, selected: s.selectedCharId, zone: s.zone, entities: s.entities }));
   const c = client();
   const r = world?.ruleset;
+  void entities;
+  const leader = c.leaderEntity();
+  const atBench = !!zone && nearStation(zone.features, leader);
+  const benchName = (zone && world?.tilesets[zone.tilesetId]?.extras?.craft?.name) || 'workbench';
   const tabs = r ? ([r.crafting.enabled && r.recipes.length ? 'recipes' : null, r.crafting.upgrades.enabled ? 'upgrade' : null, r.crafting.enchanting.enabled ? 'enchant' : null].filter(Boolean) as ('recipes' | 'upgrade' | 'enchant')[]) : [];
   const [tab, setTab] = useState<'recipes' | 'upgrade' | 'enchant'>(tabs[0] ?? 'recipes');
   const [itemId, setItemId] = useState<string | null>(null);
@@ -768,10 +780,14 @@ export function CraftWindow({ onClose }: { onClose: () => void }) {
           <div className="tab gold" style={{ cursor: 'default' }}>{player.gold} {cur}</div>
         </div>
       )}
+      <div className={`bench-note ${atBench ? 'at' : ''}`}>
+        {atBench ? `At the ${benchName.toLowerCase()}: everything can be made here.` : `Away from a workbench, only remedies and tools can be made. Gear, improving and enchanting need a workbench; every ${r.terminology.town.toLowerCase()} has one.`}
+      </div>
       {tab === 'recipes' && (
         <div className="panel-body col" style={{ maxHeight: 520, overflow: 'auto' }}>
           {r.recipes.map((rc) => {
-            const ok = rc.inputs.every((i) => have(i.itemId) >= i.qty) && player.gold >= rc.gold;
+            const field = fieldRecipe(r, rc);
+            const ok = rc.inputs.every((i) => have(i.itemId) >= i.qty) && player.gold >= rc.gold && (field || atBench);
             const out = rc.output;
             const outBase = 'itemId' in out ? ix.item.get(out.itemId) : undefined;
             const rar = 'rarityId' in out ? ix.rarity.get(out.rarityId) : undefined;
@@ -781,7 +797,7 @@ export function CraftWindow({ onClose }: { onClose: () => void }) {
               <div key={rc.id} className={`recipe ${ok ? '' : 'na'}`}>
                 <ItemIcon item={{ baseId: iconBase, rarityId: rar?.id ?? r.rarities[0]?.id }} url={outBase ? iconUrl(outBase.id) : undefined} />
                 <div className="grow">
-                  <div style={{ fontWeight: 600 }}>{rc.name}</div>
+                  <div style={{ fontWeight: 600 }}>{rc.name}{!field && <span className={`badge ${atBench ? 'gray' : 'red'}`} style={{ marginLeft: 6 }}>Workbench</span>}</div>
                   <div className="tiny muted">→ {outName}{'qty' in out && out.qty > 1 ? ` ×${out.qty}` : ''}{!outBase ? ` (${r.terminology.level.toLowerCase()} ${lvl})` : ''}</div>
                   <div className="tiny">
                     {rc.inputs.map((i) => (
@@ -828,7 +844,7 @@ export function CraftWindow({ onClose }: { onClose: () => void }) {
                           <div>Improve to +{lv + 1}</div>
                           {costRow(cost)}
                         </div>
-                        <button className="btn sm primary" disabled={!affordable(cost)} onClick={() => c.send({ t: 'upgrade_item', itemId: chosen.item.id, charId: chosen.owner?.id })}>Improve</button>
+                        <button className="btn sm primary" disabled={!affordable(cost) || !atBench} onClick={() => c.send({ t: 'upgrade_item', itemId: chosen.item.id, charId: chosen.owner?.id })}>Improve</button>
                       </div>
                     ) : (
                       <div className="muted small">Fully improved.</div>
@@ -849,14 +865,14 @@ export function CraftWindow({ onClose }: { onClose: () => void }) {
                       return (
                         <div key={i} className="offer-row">
                           <div className="grow small">{def ? modifierLabel(r, { stat: def.stat, value: a.value }, chosen.item.level) : a.affixId}</div>
-                          <button className="btn sm" disabled={!affordable(cost)} onClick={() => c.send({ t: 'enchant_item', itemId: chosen.item.id, affixIndex: i, charId: chosen.owner?.id })}>Reroll</button>
+                          <button className="btn sm" disabled={!affordable(cost) || !atBench} onClick={() => c.send({ t: 'enchant_item', itemId: chosen.item.id, affixIndex: i, charId: chosen.owner?.id })}>Reroll</button>
                         </div>
                       );
                     })}
                     {chosen.item.affixes.length < maxAff && (
                       <div className="offer-row">
                         <div className="grow small muted">Empty bonus</div>
-                        <button className="btn sm primary" disabled={!affordable(cost)} onClick={() => c.send({ t: 'enchant_item', itemId: chosen.item.id, affixIndex: -1, charId: chosen.owner?.id })}>Add</button>
+                        <button className="btn sm primary" disabled={!affordable(cost) || !atBench} onClick={() => c.send({ t: 'enchant_item', itemId: chosen.item.id, affixIndex: -1, charId: chosen.owner?.id })}>Add</button>
                       </div>
                     )}
                   </div>

@@ -2,6 +2,8 @@ import { readable } from './theme';
 import { useEffect, useRef, useState } from 'react';
 import { GROUND, OBJ, rx, skillAp, skillRank, xpForLevel, type EntityView } from '@gd/shared';
 import { client, tryClient, useGame } from '../net/game';
+import { QuestTracker } from './tracker';
+import { Glyph } from './pad';
 import { statusName, weaponVisual } from '../rules';
 import { Bar, Portrait, SkillIcon, SkillTooltip, tip } from './common';
 import { Icon } from './svgicons';
@@ -183,6 +185,7 @@ export function TopRight({ open }: { open: (p: 'inventory' | 'character' | 'skil
         </div>
       </div>
       <Minimap onOpen={() => open('map')} />
+      <QuestTracker onOpen={() => open('quests')} />
     </div>
   );
 }
@@ -258,7 +261,7 @@ export function ActionBar() {
           </div>
           {myTurn ? (
             <>
-              <button className="btn primary" onClick={() => c.send({ t: 'end_turn' })}>End turn <span className="tiny" style={{ opacity: 0.7 }}>Space</span></button>
+              <button className="btn primary" onClick={() => c.send({ t: 'end_turn' })}>End turn <span className="tiny key-hint" style={{ opacity: 0.7 }}>Space</span><span className="pad-hint"><Glyph b="Y" /></span></button>
               <button className="btn sm ghost" onClick={() => c.send({ t: 'flee' })} {...tip('Leave combat if no enemy is near.')}>Flee</button>
             </>
           ) : (

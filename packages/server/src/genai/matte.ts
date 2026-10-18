@@ -5,6 +5,8 @@
 import sharp from 'sharp';
 
 export interface ProcessedImage {
+  /** Animation strips: how many equal frames side by side. */
+  frames?: number;
   png: Buffer;
   width: number;
   height: number;
@@ -326,17 +328,17 @@ export async function inspectionImages(png: Buffer, size = 448): Promise<[Buffer
 }
 
 /** Reference image for pose variants: the approved sprite on plain light grey, framed like a fresh generation. */
-export async function referenceFrame(png: Buffer, outW: number, outH: number): Promise<{ png: Buffer; figureRatio: number }> {
+export async function referenceFrame(png: Buffer, outW: number, outH: number, background = '#d6d6d6'): Promise<{ png: Buffer; figureRatio: number; sprite: Buffer }> {
   const m = await sharp(png).metadata();
   const ratio = 0.8;
   const H = Math.round((m.height ?? 256) / ratio);
   const W = Math.round((H * outW) / outH);
   const left = Math.max(0, Math.round((W - (m.width ?? 128)) / 2));
   const top = Math.round(H * 0.92 - (m.height ?? 256));
-  const out = await sharp({ create: { width: Math.max(W, (m.width ?? 128) + 8), height: H, channels: 4, background: '#d6d6d6' } })
+  const out = await sharp({ create: { width: Math.max(W, (m.width ?? 128) + 8), height: H, channels: 4, background } })
     .composite([{ input: png, left, top: Math.max(0, top) }])
-    .flatten({ background: '#d6d6d6' })
+    .flatten({ background })
     .png()
     .toBuffer();
-  return { png: out, figureRatio: ratio };
+  return { png: out, figureRatio: ratio, sprite: png };
 }

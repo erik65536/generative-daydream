@@ -468,31 +468,51 @@ export function onImageSettled(url: string, cb: () => void) {
 
 /** Painted pose frames of a generated character (each with its height relative to the standing pose). */
 export interface PoseFrames {
+  /** A walk-cycle strip: `frames` equal frames side by side, one full stride pair. */
+  walk?: { img: HTMLImageElement; rel: number; frames: number };
   walk_a?: { img: HTMLImageElement; rel: number };
   walk_b?: { img: HTMLImageElement; rel: number };
   attack?: { img: HTMLImageElement; rel: number };
 }
+
+/** Painted walk-cycle speed relative to the gait phase. */
+const STRIP_PACE = 0.7;
 
 export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; amt?: number; t: number; downed?: boolean; hurt?: number; attack?: number; frames?: PoseFrames }) {
   const walking = !Number.isNaN(opts.walk);
   const m = walking ? opts.amt ?? 1 : 0;
   // Pick the painted frame: a four-beat walk (stride, pass, other stride, pass) and the attack pose.
   let img = base, rel = 1;
+  /** Source rectangle within `img` (a strip frame), or the whole image. */
+  let src: [number, number, number, number] | null = null;
   const f = opts.frames;
   const striking = !!opts.attack && opts.attack > 0.08 && opts.attack < 0.92;
+  const cycle = walking && m > 0.3 && f?.walk && f.walk.img.complete && f.walk.img.naturalWidth > 0;
   if (f?.attack && striking) ({ img, rel } = f.attack);
-  else if (walking && m > 0.3 && f?.walk_a && f.walk_b) {
+  else if (cycle) {
+    // One period of the walk phase is a full cycle (two steps): pick the frame for this moment of it.
+    const n = f!.walk!.frames;
+    // The gait phase runs at the procedural bob's pace; a painted cycle covers about 1.3 tiles, so feet don't skate.
+    const t = opts.walk * STRIP_PACE;
+    const phase = (((t % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2);
+    const i = Math.floor(phase * n) % n;
+    img = f!.walk!.img;
+    rel = f!.walk!.rel;
+    const fw = img.naturalWidth / n;
+    src = [i * fw, 0, fw, img.naturalHeight];
+  } else if (walking && m > 0.3 && f?.walk_a && f.walk_b) {
     const s = Math.sin(opts.walk);
     if (s > 0.38) ({ img, rel } = f.walk_a);
     else if (s < -0.38) ({ img, rel } = f.walk_b);
   }
   const framed = img !== base;
   const h = opts.height * rel;
-  const w = (img.naturalWidth / img.naturalHeight) * h;
+  const w = ((src ? src[2] : img.naturalWidth) / img.naturalHeight) * h;
   // Idle breathing blended with a walking gait: a rise on each step, a slight compression at foot-fall.
   const idleBob = Math.sin(opts.t * 2) * 0.6, idleSq = 1 + Math.sin(opts.t * 2) * 0.008;
-  const stepBob = walking ? Math.abs(Math.sin(opts.walk)) * 2.6 : 0;
-  const stepSq = walking ? 1 - Math.pow(Math.cos(opts.walk), 8) * 0.035 : 1;
+  // A painted walk cycle carries its own rise and fall: the procedural bounce is only for still poses.
+  const stepBob = walking ? Math.abs(Math.sin(opts.walk)) * (src ? 0.4 : 2.6) : 0;
+  const stepSq = walking && !src ? 1 - Math.pow(Math.cos(opts.walk), 8) * 0.035 : 1;
   const bob = idleBob * (1 - m) + stepBob * m;
   const squash = idleSq * (1 - m) + stepSq * m;
   ctx.save();
@@ -510,6 +530,7 @@ export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageEl
   ctx.scale(-opts.dir, 1);
   // Widen slightly as it squashes, so the volume reads as constant.
   const wq = w * (1 + (1 - squash) * 0.6);
-  ctx.drawImage(img, -wq / 2, -h * squash - bob, wq, h * squash);
+  if (src) ctx.drawImage(img, src[0], src[1], src[2], src[3], -wq / 2, -h * squash - bob, wq, h * squash);
+  else ctx.drawImage(img, -wq / 2, -h * squash - bob, wq, h * squash);
   ctx.restore();
 }

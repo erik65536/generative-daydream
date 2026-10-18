@@ -13,6 +13,7 @@ import { genai } from './service';
 import type { Purpose } from './types';
 import { inspectionImages, inspectionView, processSprite, referenceFrame, type ProcessedImage } from './matte';
 import { profileFor, type AssetKind, type PromptProfile } from './promptprofiles';
+import { paintWalkStrip, stripFrame } from './poses';
 
 export type { ProcessedImage };
 export { processSprite as cutoutSprite };
@@ -111,6 +112,7 @@ async function tiledPreview(png: Buffer): Promise<Buffer> {
 
 /** What changes in each variant, painted from the base image as a reference. */
 export const VARIANTS: Record<string, { kinds: AssetKind[]; change: string }> = {
+  walk: { kinds: ['sprite'], change: 'walking toward the left (an eight-frame walk cycle guided by pose skeletons)' },
   walk_a: { kinds: ['sprite'], change: 'walking, caught mid-stride with the left leg reaching far forward and the right leg pushing off far behind, the arms swinging in opposition' },
   walk_b: { kinds: ['sprite'], change: 'walking, caught mid-stride with the right leg reaching far forward and the left leg pushing off far behind, the arms swinging in opposition' },
   attack: { kinds: ['sprite'], change: 'in the middle of a powerful attack, lunging forward and striking with whatever weapon, claws or power they carry, the body twisted into the blow' },
@@ -370,13 +372,16 @@ interface Candidate {
   problems: string[];
 }
 
-async function generateCandidate(rec: AssetRecord, style: string, worldSeed: string, attempt: number, reference?: { png: Buffer; figureRatio: number }): Promise<ProcessedImage> {
+async function generateCandidate(rec: AssetRecord, style: string, worldSeed: string, attempt: number, reference?: { png: Buffer; figureRatio: number; sprite?: Buffer }): Promise<ProcessedImage> {
   const g = genai();
+  const seed = hashOf(worldSeed, rec.key, attempt + (rec.roll ?? 0) * 1000) % 2147483647;
+  // Humanoid walk cycles: a pose-guided sheet of frames painted from the approved character.
+  if (rec.variant === 'walk' && reference?.sprite) return paintWalkStrip(reference.sprite, rec.prompt, seed);
   const { prompt, negative } = buildPrompt(rec, style);
   const raw = await g.image(KIND_PURPOSE[rec.kind], {
     prompt,
     negativePrompt: negative,
-    seed: hashOf(worldSeed, rec.key, attempt + (rec.roll ?? 0) * 1000) % 2147483647,
+    seed,
     transparent: rec.kind !== 'texture',
     references: reference ? [reference.png] : undefined,
   });
@@ -410,7 +415,7 @@ export async function produceAssets(
   const attempts = new Map<string, number>();
   const errors = new Map<string, string>();
   const finished = new Set<string>();
-  const refs = new Map<string, { png: Buffer; figureRatio: number } | null>();
+  const refs = new Map<string, { png: Buffer; figureRatio: number; sprite?: Buffer } | null>();
   const minScore = g.purpose('image.check').minScore ?? 6;
   const fileFor = (key: string) => `${key.replace(/[^a-z0-9_.-]/gi, '_')}.png`;
   const finish = (rec: AssetRecord) => {
@@ -425,7 +430,7 @@ export async function produceAssets(
     fs.writeFileSync(path.join(outDir, file), b.img.png);
     const ref = rec.ref ? refs.get(rec.ref) : undefined;
     const relHeight = ref && b.img.figureRatio ? Math.max(0.5, Math.min(1.4, b.img.figureRatio / ref.figureRatio)) : undefined;
-    onDone({ ...rec, status: 'ok', file, score: b.score, attempts: attempts.get(rec.key), width: b.img.width, height: b.img.height, anchorY: b.img.anchorY, relHeight, error: b.score < minScore ? b.problems.join('; ') || undefined : undefined });
+    onDone({ ...rec, status: 'ok', file, score: b.score, attempts: attempts.get(rec.key), width: b.img.width, height: b.img.height, anchorY: b.img.anchorY, relHeight, frames: b.img.frames, error: b.score < minScore ? b.problems.join('; ') || undefined : undefined });
   };
   /** Reference image for a variant: its base asset's approved file (null when the base is not usable). */
   const referenceFor = async (rec: AssetRecord) => {
@@ -469,9 +474,11 @@ export async function produceAssets(
       const { rec } = entry;
       let img = entry.img;
       const ref = rec.ref ? refs.get(rec.ref) : undefined;
-      const review = await qualityCheck(img.png, rec.kind, rec.variant ? `${rec.prompt}, ${VARIANTS[rec.variant]?.change ?? rec.variant}` : rec.prompt, ref ? fs.readFileSync(path.join(outDir, fileFor(rec.ref!))) : undefined);
+      // A walk strip is judged by its passing frame against the character it was painted from.
+      const judged = img.frames ? await stripFrame(img.png, img.frames, 2) : img.png;
+      const review = await qualityCheck(judged, rec.kind, rec.variant ? `${rec.prompt}, ${VARIANTS[rec.variant]?.change ?? rec.variant}` : rec.prompt, ref ? fs.readFileSync(path.join(outDir, fileFor(rec.ref!))) : undefined);
       // The game draws characters facing left (mirrored to go right): a frame painted facing right is mirrored.
-      const facing = rec.kind === 'sprite' ? await facingCheck(img.png) : null;
+      const facing = rec.kind === 'sprite' && !img.frames ? await facingCheck(img.png) : null;
       if (facing?.facing === 'right') img = { ...img, png: await sharp(img.png).flop().png().toBuffer() };
       // A head turned against the body reads as walking backwards whichever way it is drawn: paint it again.
       const notes = [...(img.notes ?? []), ...(facing?.split ? ['head and body turned opposite ways'] : [])];

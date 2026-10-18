@@ -392,6 +392,24 @@ export class ComfyUIProvider implements ImageProvider {
     return node;
   }
 
+  /**
+   * The edit workflow with `n` reference images: the template wires one ({{ref_1}} into a LoadImage that feeds
+   * the encoder's images.image_1); more are added the same way (images.image_2, …).
+   */
+  private withReferences(n: number): unknown {
+    const wf = JSON.parse(JSON.stringify(this.editTemplate)) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
+    const loadId = Object.keys(wf).find((k) => wf[k]!.class_type === 'LoadImage' && wf[k]!.inputs.image === '{{ref_1}}');
+    const encId = Object.keys(wf).find((k) => Array.isArray(wf[k]!.inputs['images.image_1']));
+    if (!loadId || !encId) return wf;
+    for (let i = 2; i <= n; i++) {
+      const id = `${loadId}_${i}`;
+      if (wf[id]) continue;
+      wf[id] = { class_type: 'LoadImage', inputs: { image: `{{ref_${i}}}` } };
+      wf[encId]!.inputs[`images.image_${i}`] = [id, 0];
+    }
+    return wf;
+  }
+
   async generate(req: ImageRequest, model?: string): Promise<Buffer> {
     const base = trimSlash(this.cfg.baseUrl ?? 'http://127.0.0.1:8188');
     const refs: Record<string, string> = {};
@@ -399,7 +417,7 @@ export class ComfyUIProvider implements ImageProvider {
       if (!this.editTemplate) throw new GenAIError('This image provider has no editWorkflow for reference images.', false);
       for (let i = 0; i < req.references.length; i++) refs[`ref_${i + 1}`] = await this.upload(base, req.references[i]!);
     }
-    const workflow = this.fill(req.references?.length ? this.editTemplate : this.template, {
+    const workflow = this.fill(req.references?.length ? this.withReferences(req.references.length) : this.template, {
       ...refs,
       prompt: req.prompt,
       negative: req.negativePrompt ?? '',

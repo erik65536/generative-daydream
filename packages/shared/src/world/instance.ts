@@ -95,6 +95,8 @@ export interface PlayerState {
   x: number;
   y: number;
   quests: Record<string, QuestProgress>;
+  /** Quest shown on the HUD: unset follows the main story, '' shows none. */
+  pinnedQuestId?: string;
   /** zoneId -> base64 bitset of explored tiles. */
   explored: Record<string, string>;
   visitedZones: string[];

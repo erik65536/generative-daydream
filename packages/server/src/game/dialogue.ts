@@ -184,6 +184,9 @@ export class DialogueEngine {
     if (!p || !def || !rt) return;
     const s: Session = { npcId, messages: [], thinking: false, ended: false };
     this.sessions.set(userId, s);
+    // Older saves kept every "hello again"; drop them so history holds what was actually said.
+    const stock = new Set(Object.values(DialogueEngine.greetings(p.name)).flat());
+    if (p.conversations[npcId]) p.conversations[npcId] = p.conversations[npcId]!.filter((t) => !(t.speaker === 'npc' && stock.has(t.text)));
     // Recent history so the conversation feels continuous.
     for (const t of (p.conversations[npcId] ?? []).slice(-6)) s.messages.push({ speaker: t.speaker, text: t.text, emotion: t.emotion });
     const events: string[] = [];
@@ -207,19 +210,30 @@ export class DialogueEngine {
       await this.turn(userId, { text: '', event: events.join(' ') || 'The player approaches you for the first time.' });
       return;
     }
-    const line = firstMeeting ? def.greeting : this.returnGreeting(def, rt, p);
-    s.messages.push({ speaker: 'npc', text: line, emotion: 'neutral' });
-    this.record(p, npcId, 'npc', line, 'neutral');
+    if (firstMeeting) {
+      s.messages.push({ speaker: 'npc', text: def.greeting, emotion: 'neutral' });
+      this.record(p, npcId, 'npc', def.greeting, 'neutral');
+    } else {
+      // A "hello again" is shown, not kept: otherwise every visit adds one more to the history (and the model's transcript).
+      const last = s.messages[s.messages.length - 1];
+      const line = this.returnGreeting(def, rt, p);
+      if (last?.text !== line) s.messages.push({ speaker: 'npc', text: line, emotion: 'neutral' });
+    }
     this.send(userId);
+  }
+
+  private static greetings(name: string) {
+    return {
+      warm: [`${name}! Always good to see you.`, `There you are, ${name}. What do you need, friend?`],
+      cold: ['You again.', 'What do you want now?', `Make it quick, ${name}.`],
+      plain: [`Back again, ${name}?`, 'Yes?', `Hello again, ${name}.`, 'What can I do for you?'],
+    };
   }
 
   private returnGreeting(def: NpcDef, rt: NpcRuntime, p: PlayerState): string {
     const disp = this.disposition(rt, p.userId);
-    const name = p.name;
-    const pool =
-      disp > 40 ? [`${name}! Always good to see you.`, `There you are, ${name}. What do you need, friend?`]
-      : disp < -30 ? ['You again.', 'What do you want now?', `Make it quick, ${name}.`]
-      : [`Back again, ${name}?`, 'Yes?', `Hello again, ${name}.`, 'What can I do for you?'];
+    const g = DialogueEngine.greetings(p.name);
+    const pool = disp > 40 ? g.warm : disp < -30 ? g.cold : g.plain;
     return pool[(this.h.day() + def.name.length) % pool.length]!;
   }
 

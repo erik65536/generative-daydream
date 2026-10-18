@@ -327,6 +327,8 @@ export interface AssetRecord {
   variant?: string;
   /** Variant height relative to its base (a lunge is shorter than a standing pose). */
   relHeight?: number;
+  /** Animation strips (the walk cycle): number of equal frames side by side. */
+  frames?: number;
   /** Art pipeline version that painted it (older art is repainted when the pipeline improves). */
   gen?: number;
   /** Re-roll count: each owner-requested repaint uses fresh seeds. */

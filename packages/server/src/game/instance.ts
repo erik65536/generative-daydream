@@ -1,7 +1,7 @@
 /** One running save-state of a world: authoritative simulation for every connected player. */
 import {
   BitSet, DIFFICULTIES, GAME_MINUTES_PER_DAY, MAX_PARTY_SIZE, REAL_MS_PER_GAME_MINUTE, RESPAWN_GAME_MINUTES, ROLE_VISUAL, RULESET_VERSION, Rng,
-  bagUpgradeCost, canAllocate, characterStats, curve, enchantCost, findPath, upgradeCost, hashFloat, itemPrice, knownSkills, refMit, rx, sampleMotion, skillAp, skillRange, smoothPath, standPoint, tilesInRadius, uid,
+  bagUpgradeCost, canAllocate, fieldRecipe, nearStation, characterStats, curve, enchantCost, findPath, upgradeCost, hashFloat, itemPrice, knownSkills, refMit, rx, sampleMotion, skillAp, skillRange, smoothPath, standPoint, tilesInRadius, uid,
   type CharacterSpec, type ClientMessage, type DialogState, type DifficultyId, type EntityView, type FeatureDef, type FeatureState, type FxEvent, type InstanceState, type ItemInstance,
   type JournalEntry, type LootPile, type Memory, type NpcRuntime, type PlayerState, type PlayerView, type QuestDef, type Ruleset, type ServerMessage, type Surface,
   type TradeState, type MonsterRuntime, type SpawnDef, type Vec2, type WorldDefinition, type ZoneRuntime, type CharacterState, type MonsterArchetype, type SlotKind,
@@ -1326,6 +1326,10 @@ export class GameInstance implements CombatHost {
           return this.markPlayer(userId);
         }
         case 'abandon_quest': return this.quests.abandon(p, msg.questId);
+        case 'pin_quest':
+          if (msg.questId && p.quests[msg.questId]?.status !== 'active') return;
+          p.pinnedQuestId = msg.questId;
+          return this.markPlayer(p.userId);
         case 'dismiss_companion': {
           const ch = p.party.find((c) => c.id === msg.charId);
           if (ch?.npcId) this.leaveParty(userId, ch.npcId);
@@ -1904,9 +1908,17 @@ export class GameInstance implements CombatHost {
   }
 
   /** Crafting: raise an item's upgrade level (better base damage/defense). */
+  /** The party leader stands at a workbench (crafting gear, improving and enchanting happen there). */
+  private atStation(p: PlayerState): boolean {
+    const a = this.leader(p);
+    const z = this.zones.get(p.zoneId);
+    return !!a && !!z && nearStation(this.ctx.zones.get(z.id)?.features ?? [], { x: a.x, y: a.y });
+  }
+
   private cmdUpgrade(p: PlayerState, itemId: string, charId?: string) {
     const up = this.r.crafting.upgrades;
     if (!up.enabled) return this.sendError(p.userId, 'Items cannot be upgraded in this daydream.');
+    if (!this.atStation(p)) return this.sendError(p.userId, 'Improving gear needs a workbench.');
     if (this.charActors(p).some((a) => a.combatId)) return this.sendError(p.userId, 'Not during combat.');
     const { item } = this.findOwnedItem(p, itemId, charId);
     if (!item || rx(this.r).item.get(item.baseId)?.category !== 'equipment') return;
@@ -1927,6 +1939,7 @@ export class GameInstance implements CombatHost {
   private cmdEnchant(p: PlayerState, itemId: string, affixIndex: number, charId?: string) {
     const en = this.r.crafting.enchanting;
     if (!en.enabled) return this.sendError(p.userId, 'Enchanting is not possible in this daydream.');
+    if (!this.atStation(p)) return this.sendError(p.userId, 'Enchanting needs a workbench.');
     if (this.charActors(p).some((a) => a.combatId)) return this.sendError(p.userId, 'Not during combat.');
     const { item } = this.findOwnedItem(p, itemId, charId);
     if (!item) return;
@@ -2169,6 +2182,8 @@ export class GameInstance implements CombatHost {
     if (!this.r.crafting.enabled) return;
     const rec = this.r.recipes.find((x) => x.id === recipeId);
     if (!rec) return;
+    if (this.charActors(p).some((a) => a.combatId)) return this.sendError(p.userId, 'Not during combat.');
+    if (!fieldRecipe(this.r, rec) && !this.atStation(p)) return this.sendError(p.userId, 'That needs a workbench.');
     if (p.gold < rec.gold) return this.sendError(p.userId, `Needs ${rec.gold} ${this.r.terminology.currency}.`);
     const level = Math.max(...p.party.map((c) => c.level));
     const out = 'itemId' in rec.output ? makeItem(this.r, this.rng, rec.output.itemId, level, this.r.rarities[0]!.id, rec.output.qty) : rollRandomItem(this.r, this.rng, level, 0, { slotKind: rec.output.slotKind, minRarity: Math.max(0, this.r.rarities.findIndex((x) => x.id === (rec.output as { rarityId: string }).rarityId)) });

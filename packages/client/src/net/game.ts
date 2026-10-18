@@ -14,6 +14,8 @@ export interface ZoneData extends ZoneView {
   variationBytes: Uint8Array;
 }
 
+export interface WheelItem { id: string; label: string; sub?: string; icon?: string; disabled?: boolean }
+export interface Wheel { kind: 'skills' | 'panels'; items: WheelItem[]; sel: number }
 export type Panel = 'inventory' | 'character' | 'skills' | 'quests' | 'map' | 'craft' | 'menu' | 'help' | 'codex' | null;
 
 export interface Targeting {
@@ -63,6 +65,12 @@ export interface GameState {
   journalFlash?: JournalEntry;
   panel: Panel;
   targeting: Targeting | null;
+  /** Last input device used: the HUD shows controller prompts in 'pad' mode. */
+  inputMode: 'mouse' | 'pad';
+  /** A controller's radial menu, while its trigger is held. */
+  wheel: Wheel | null;
+  /** What the controller's A button would do now ("Talk", "Open"), and to what. */
+  padPrompt: { verb: string; name: string; x: number; y: number } | null;
   selectedCharId?: string;
   /** Monotonic version so React can re-render on mutation. */
   version: number;
@@ -76,7 +84,7 @@ let toastId = 1;
 export class GameClient {
   state: GameState = {
     status: 'connecting', isOwner: false, open: false, entities: new Map(), features: new Map(), surfaces: [], lootPiles: [], combat: null, dialog: null, trade: null, loot: null,
-    toasts: [], log: [], narrations: [], chat: [], panel: null, targeting: null, version: 0, zoneVersion: 0,
+    toasts: [], log: [], narrations: [], chat: [], panel: null, targeting: null, inputMode: 'mouse', wheel: null, padPrompt: null, version: 0, zoneVersion: 0,
   };
   private ws: WebSocket | null = null;
   private listeners = new Set<() => void>();

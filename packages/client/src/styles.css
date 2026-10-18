@@ -699,3 +699,54 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .wmap-card .wc-sub { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 2px 0 6px; }
 .wmap-card .wc-desc { font-size: 12px; line-height: 1.45; color: var(--text); }
 .wmap-card .wc-act { margin-top: 6px; font-size: 11px; color: #9fd8f0; }
+
+/* The selection ring sits inside the cell, so scrolling grids never clip it. */
+.item.sel { outline: 2px solid var(--gold); outline-offset: -2px; }
+.bench-note { margin: 8px 14px 0; padding: 7px 10px; border-radius: 6px; font-size: 12px; color: var(--muted); background: rgba(255,255,255,.03); border: 1px solid var(--hair); }
+.bench-note.at { color: var(--good); }
+
+/* Quest tracker under the minimap. */
+.tracker { margin-top: 10px; width: 230px; margin-left: auto; padding: 8px 10px; border-radius: 6px; background: linear-gradient(90deg, rgba(8, 7, 9, 0), rgba(8, 7, 9, 0.55) 30%); text-align: right; cursor: pointer; pointer-events: auto; }
+.tracker:hover { background: linear-gradient(90deg, rgba(8, 7, 9, 0), rgba(8, 7, 9, 0.75) 30%); }
+.tracker .tr-head { display: flex; justify-content: flex-end; align-items: center; gap: 6px; }
+.tracker .tr-kind { font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--gold); text-shadow: var(--float-text); }
+.tracker .tr-x { background: none; border: 0; color: var(--muted); font-size: 10px; cursor: pointer; opacity: 0; padding: 0 2px; }
+.tracker:hover .tr-x { opacity: 1; }
+.tracker .tr-title { font-family: var(--font-display); font-size: 14px; color: var(--text); text-shadow: var(--float-text); margin: 1px 0 4px; }
+.tracker .tr-step { font-size: 12px; line-height: 1.4; color: #e8e2d6; text-shadow: var(--float-text); }
+.tracker .tr-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--quest); margin-right: 6px; vertical-align: 1px; box-shadow: 0 0 6px var(--quest); }
+.tracker .tr-where { font-size: 11px; color: var(--muted); margin-top: 3px; text-shadow: var(--float-text); }
+.pin-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--quest); margin-right: 6px; vertical-align: 2px; }
+
+/* ---------------------------------------------------------------- controller */
+.glyph-btn { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px; font: 700 10px/1 var(--sans); color: #0b0b0d; background: #d8d8d8; margin: 0 2px; vertical-align: middle; box-shadow: 0 1px 2px rgba(0,0,0,.6); }
+.glyph-btn.g-A { background: #6fbf4a; } .glyph-btn.g-B { background: #e05a4a; } .glyph-btn.g-X { background: #4a8fe0; } .glyph-btn.g-Y { background: #e0c04a; }
+.glyph-btn.g-LB, .glyph-btn.g-RB, .glyph-btn.g-LT, .glyph-btn.g-RT { border-radius: 4px; background: #c9c3b6; min-width: 22px; }
+.pad-hint { display: none; }
+.game.pad .pad-hint { display: inline; }
+.game.pad .key-hint { display: none; }
+.game.pad .view { cursor: none; }
+.pad-focus { outline: 2px solid var(--gold) !important; outline-offset: 1px; box-shadow: 0 0 0 4px color-mix(in srgb, var(--gold) 25%, transparent) !important; border-radius: 6px; }
+.item.pad-focus { outline-offset: -2px; }
+.pad-prompt { position: absolute; transform: translate(-50%, calc(-100% - 78px)); pointer-events: none; white-space: nowrap; padding: 4px 9px 4px 5px; border-radius: 14px; background: rgba(10, 9, 11, 0.78); border: 1px solid var(--hair-strong); font-size: 12px; color: var(--text); backdrop-filter: blur(4px); }
+.pad-prompt .pp-verb { font-weight: 600; margin-right: 6px; }
+.pad-prompt .pp-name { color: var(--muted); }
+.pad-legend { position: absolute; left: 50%; bottom: 74px; transform: translateX(-50%); display: flex; gap: 16px; font-size: 11px; color: var(--muted); text-shadow: var(--float-text); pointer-events: none; white-space: nowrap; }
+.pad-wheel { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle, rgba(0,0,0,.45), rgba(0,0,0,.15) 60%, transparent); pointer-events: none; z-index: 40; }
+.pw-ring { position: relative; border-radius: 50%; }
+.pw-item { position: absolute; width: 58px; height: 58px; margin: -29px 0 0 -29px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: rgba(12, 11, 14, 0.85); border: 1px solid var(--hair-strong); transition: transform .08s, border-color .08s; }
+.pw-item canvas { border-radius: 50%; }
+.pw-item.on { transform: scale(1.18); border-color: var(--gold); box-shadow: 0 0 0 3px color-mix(in srgb, var(--gold) 30%, transparent); }
+.pw-item.off { opacity: 0.4; }
+.pw-center { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); text-align: center; width: 180px; }
+.pw-label { font-family: var(--font-display); font-size: 17px; color: var(--gold-2); text-shadow: var(--float-text); }
+.pw-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.pw-hint { font-size: 10px; color: var(--muted); margin-top: 10px; }
+/* Narrow screens stand the menu bar up under the minimap: the tracker sits beside it. */
+@media (max-width: 1100px) {
+  .tracker { margin-right: 46px; width: 210px; }
+}
+.pad-prompt { transform: translate(-50%, 16px); }
+.pad-legend { bottom: auto; top: 76px; }
+.pad-wheel { background: radial-gradient(circle, rgba(4, 4, 6, 0.82) 0, rgba(4, 4, 6, 0.6) 230px, rgba(0, 0, 0, 0.25) 420px); }
+.pw-center { padding: 10px 12px; border-radius: 10px; background: rgba(8, 7, 10, 0.7); }
