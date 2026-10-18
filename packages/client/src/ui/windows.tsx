@@ -10,6 +10,7 @@ import { ItemIcon, ItemTooltip, Portrait, SkillIcon, SkillTooltip, Window, hideT
 import { navigate } from '../App';
 import { MAP_W, WorldMapView } from './worldmap';
 import { trackedQuest } from './tracker';
+import { readAloud, setReadAloud, voiceIn, voiceOut } from '../voice';
 
 const iconUrl = (baseId: string) => client().assetUrl(`icon_${baseId}`);
 
@@ -65,15 +66,23 @@ const EMOTION_TINT: Record<string, string> = {
   suspicious: '#e0a85a', surprised: '#ffd27a', neutral: '#a69c8c',
 };
 
-/** Reveals the newest NPC line progressively, like a spoken reply (click to show it all). */
-function Typed({ text, animate }: { text: string; animate: boolean }) {
+/**
+ * Reveals the newest NPC line progressively, like a spoken reply (click to show it all). When lines are read
+ * aloud, it keeps pace with the voice, as subtitles do.
+ */
+function Typed({ text, animate, cps }: { text: string; animate: boolean; cps?: number }) {
   const [n, setN] = useState(animate ? 0 : text.length);
   useEffect(() => {
     if (!animate) return setN(text.length);
     setN(0);
-    const id = setInterval(() => setN((v) => (v >= text.length ? (clearInterval(id), v) : v + Math.max(1, Math.round(text.length / 90)))), 16);
+    const step = cps ? Math.max(1, cps / 60) : Math.max(1, Math.round(text.length / 90));
+    let acc = 0;
+    const id = setInterval(() => {
+      acc += step;
+      setN((v) => (v >= text.length ? (clearInterval(id), v) : Math.min(text.length, Math.floor(acc))));
+    }, 16);
     return () => clearInterval(id);
-  }, [text, animate]);
+  }, [text, animate, cps]);
   return <span onClick={() => setN(text.length)}>{text.slice(0, n)}{n < text.length && <span className="caret" />}</span>;
 }
 
@@ -88,6 +97,24 @@ export function DialogWindow() {
   const msgsRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const seen = useRef(0);
+  const spoken = useRef(-1);
+  const [aloud, setAloud] = useState(readAloud());
+  const [listening, setListening] = useState(false);
+  // Read each new line aloud (when wanted) in this person's own voice; stop when the conversation closes.
+  const lastIdx = dialog ? dialog.messages.map((m) => m.speaker).lastIndexOf('npc') : -1;
+  useEffect(() => {
+    if (!dialog || !aloud || lastIdx < 0 || lastIdx <= spoken.current || lastIdx < seen.current - 1) return;
+    spoken.current = lastIdx;
+    const who = c.state.world?.npcs.find((n) => n.id === dialog.npcId);
+    void voiceOut.speak(dialog.messages[lastIdx]!.text, { id: dialog.npcId, pronouns: who?.pronouns });
+  }, [lastIdx, aloud, dialog?.npcId]);
+  useEffect(() => () => {
+    voiceOut.stop();
+    voiceIn.stop();
+  }, []);
+  useEffect(() => {
+    spoken.current = dialog ? dialog.messages.map((m) => m.speaker).lastIndexOf('npc') : -1;
+  }, [dialog?.npcId]);
   useEffect(() => {
     msgsRef.current?.scrollTo({ top: msgsRef.current.scrollHeight, behavior: 'smooth' });
   }, [dialog?.messages.length, dialog?.thinking]);
@@ -130,6 +157,11 @@ export function DialogWindow() {
         <div className="display gold dlg-name">{dialog.npcName}</div>
         <div className="serif muted dlg-title">{dialog.npcTitle}</div>
         <div className="spacer" />
+        {voiceOut.available() && (
+          <button className={`btn sm ghost voice-toggle ${aloud ? 'on' : ''}`} title={aloud ? 'Stop reading lines aloud' : 'Read lines aloud'} onClick={() => { setReadAloud(!aloud); setAloud(!aloud); }}>
+            {aloud ? '🔊 Voices on' : '🔈 Voices off'}
+          </button>
+        )}
         {dialog.canTrade && <button className="btn sm" disabled={dialog.thinking} onClick={() => c.send({ t: 'request_trade' })}>Trade</button>}
         <button className="btn sm ghost" onClick={close} title="Leave (Esc) — or just walk away">Leave</button>
       </div>
@@ -143,7 +175,7 @@ export function DialogWindow() {
                   {m.emotion && m.emotion !== 'neutral' && <span className="emo" style={{ color: EMOTION_TINT[m.emotion] ?? 'var(--muted)' }}>{m.emotion}</span>}
                 </span>
               )}
-              {m.speaker === 'npc' ? <Typed text={m.text} animate={i === lastNpc && i >= animateFrom} /> : m.text}
+              {m.speaker === 'npc' ? <Typed text={m.text} animate={i === lastNpc && i >= animateFrom} cps={aloud && voiceOut.available() ? voiceOut.pace : undefined} /> : m.text}
             </div>
           ))}
           {dialog.thinking && (
@@ -198,6 +230,23 @@ export function DialogWindow() {
                 if (e.key === 'Escape') close();
               }}
             />
+            {voiceIn.available() && (
+              <button
+                className={`btn sm ghost mic ${listening ? 'on' : ''}`}
+                title={listening ? 'Listening… (click to stop)' : 'Speak instead of typing'}
+                disabled={dialog.thinking || dialog.ended}
+                onClick={async () => {
+                  if (listening) return voiceIn.stop();
+                  voiceOut.stop();
+                  setListening(true);
+                  const said = await voiceIn.listen((t) => setText(t));
+                  setListening(false);
+                  if (said) send(said);
+                }}
+              >
+                {listening ? '● Listening' : '🎙'}
+              </button>
+            )}
             <button className="btn primary sm" disabled={dialog.thinking || dialog.ended} onClick={() => send()}>Say</button>
           </div>
         </div>

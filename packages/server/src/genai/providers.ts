@@ -1,5 +1,6 @@
 /** Concrete GenAI provider adapters. */
 import crypto from 'node:crypto';
+import { chargeUsage } from './spend';
 import { Agent, fetch as undiciFetch } from 'undici';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -148,6 +149,7 @@ export class OpenAIResponsesProvider implements TextProvider {
     });
     const u = data.usage;
     if (u) {
+      chargeUsage(this.cfg, { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens, output: u.output_tokens });
       openaiUsage.calls++;
       openaiUsage.input += u.input_tokens ?? 0;
       openaiUsage.cached += u.input_tokens_details?.cached_tokens ?? 0;
@@ -486,6 +488,7 @@ export class OpenAIDecisionProvider implements DecisionProvider {
     if (!Array.isArray(data?.answers)) throw new GenAIError(`Decision model returned no answers: ${JSON.stringify(data).slice(0, 300)}`);
     openaiUsage.decisionCalls++;
     openaiUsage.decisionInput += data.usage?.input_tokens ?? 0;
+    chargeUsage(this.cfg, { input: data.usage?.input_tokens, output: data.usage?.output_tokens });
     const out: Record<string, DecisionAnswer> = {};
     for (const a of data.answers as { type: string; name: string; probability?: number; choice?: string; score?: number; confidence?: number; probabilities?: { value: string; label?: string; probability: number }[] }[]) {
       const probs = Object.fromEntries((a.probabilities ?? []).map((p) => [p.value, p.probability]));

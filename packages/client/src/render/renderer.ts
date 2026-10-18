@@ -1067,8 +1067,10 @@ export class Renderer {
     };
     const strip = frame('walk');
     const n = w.assets[`${key}@walk`]?.frames;
-    const out: PoseFrames = { walk: strip && n ? { ...strip, frames: n } : undefined, walk_a: frame('walk_a'), walk_b: frame('walk_b'), attack: frame('attack') };
-    return out.walk || out.walk_a || out.attack ? out : undefined;
+    const strike = frame('strike');
+    const sn = w.assets[`${key}@strike`]?.frames;
+    const out: PoseFrames = { walk: strip && n ? { ...strip, frames: n } : undefined, strike: strike && sn ? { ...strike, frames: sn } : undefined, walk_a: frame('walk_a'), walk_b: frame('walk_b'), attack: frame('attack') };
+    return out.walk || out.strike || out.walk_a || out.attack ? out : undefined;
   }
 
   /** Generated art for a feature (chest closed or open, shrine, sign, lever, bed, crafting station), if painted. */

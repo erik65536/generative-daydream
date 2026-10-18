@@ -13,6 +13,7 @@ import { imagePromptSystem, writerProfile } from './genai/images';
 import { resumeWorldGeneration, startWorldGeneration } from './worldgen/pipeline';
 import { activeJob, ACTIVE, enqueue, JobConflict, latestJob, logSince, logTail, queuePosition, requestCancel, type JobKind } from './jobs/queue';
 import { startWorker } from './jobs/worker';
+import { dailyLimitFor, installSpendLedger } from './spending';
 import { applyEdit, EditSchema, studioView, TaskSchema } from './worldgen/studio';
 import { incompatibility, instances } from './game/manager';
 
@@ -33,7 +34,13 @@ function cookie(req: Request | http.IncomingMessage, name: string): string | und
 
 type AuthedRequest = Request & { user: store.User };
 
-const meOf = (u: store.User) => ({ id: u.id, username: u.username, isAdmin: u.isAdmin, mustChangePassword: u.mustChangePassword });
+/** Today's AI spending against a user's daily budget (limit null: unlimited). */
+const aiOf = (u: store.User) => {
+  const limit = dailyLimitFor(u.id);
+  return { spentToday: Math.round(store.spentToday(u.id).usd * 10000) / 10000, limit: Number.isFinite(limit) ? limit : null };
+};
+
+const meOf = (u: store.User) => ({ id: u.id, username: u.username, isAdmin: u.isAdmin, mustChangePassword: u.mustChangePassword, ai: aiOf(u) });
 
 /** Signed-in users only. Until a one-time password is replaced, only the password change is open. */
 function signedIn(allowPending: boolean) {
@@ -111,10 +118,18 @@ app.post('/api/auth/password', authPending, (req, res) => {
 
 // ------------------------------------------------------------------------------ user administration
 
-const userRow = (u: store.User) => ({ ...meOf(u), createdAt: u.createdAt });
+const userRow = (u: store.User, week?: Record<string, { usd: number; calls: number }>) => ({ ...meOf(u), createdAt: u.createdAt, dailyLimitUsd: u.dailyLimitUsd, spentWeek: Math.round((week?.[u.id]?.usd ?? 0) * 10000) / 10000 });
 
 app.get('/api/admin/users', auth, adminOnly, (_req, res) => {
-  res.json(store.listUsers().map(userRow));
+  const week = store.spendSince(store.spendDay(Date.now() - 6 * 86400_000));
+  res.json(store.listUsers().map((u) => userRow(u, week)));
+});
+
+/** The whole server's AI spending today, its ceiling and the default per-user budget. */
+app.get('/api/admin/spending', auth, adminOnly, (_req, res) => {
+  const s = genai().config.spending ?? {};
+  const week = store.spendSince(store.spendDay(Date.now() - 6 * 86400_000));
+  res.json({ today: Math.round(store.spentTodayTotal() * 10000) / 10000, dailyTotalUsd: s.dailyTotalUsd ?? null, dailyPerUserUsd: s.dailyPerUserUsd ?? null, adminsUnlimited: s.adminsUnlimited !== false, systemWeek: week.system?.usd ?? 0 });
 });
 
 /** Invite a user: the server makes a one-time password, shown to the administrator once. */
@@ -138,10 +153,12 @@ app.post('/api/admin/users/:id/reset', auth, adminOnly, (req, res) => {
 });
 
 app.patch('/api/admin/users/:id', auth, adminOnly, (req, res) => {
-  const body = z.object({ isAdmin: z.boolean() }).safeParse(req.body);
+  const body = z.object({ isAdmin: z.boolean().optional(), dailyLimitUsd: z.number().min(0).max(1000).nullable().optional() }).safeParse(req.body);
   if (!body.success) return void res.status(400).json({ error: 'Nothing to change.' });
   try {
-    store.setAdmin(String(req.params.id), body.data.isAdmin);
+    if (body.data.isAdmin !== undefined) store.setAdmin(String(req.params.id), body.data.isAdmin);
+    // A number sets this user's own daily AI budget; null returns them to the server default.
+    if (body.data.dailyLimitUsd !== undefined) store.setDailyLimit(String(req.params.id), body.data.dailyLimitUsd);
     res.json(userRow(store.getUser(String(req.params.id))!));
   } catch (e) {
     res.status(400).json({ error: (e as Error).message });
@@ -558,6 +575,7 @@ server.listen(PORT, () => {
     startWorker();
     console.log('Job worker: in this process');
   } else console.log('Job worker: separate process (npm run worker)');
+  installSpendLedger();
   const first = store.ensureAdmin();
   if (first) console.log(`
 No accounts yet: created administrator "admin" with one-time password ${first}

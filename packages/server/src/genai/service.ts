@@ -1,5 +1,6 @@
 /** Routes each GenAI purpose to its configured provider, with validation, retries and logging. */
 import fs from 'node:fs';
+import { checkBudget } from './spend';
 import path from 'node:path';
 import { z } from 'zod';
 import { CONFIG_DIR, DATA_DIR } from '../paths';
@@ -134,6 +135,8 @@ export class GenAI {
       this.gpuMembersRegistered = true;
       for (const [n, c] of Object.entries(this.config.providers)) if (c.gpu) this.gpu.group(c.gpu).members.set(n, c);
     }
+    // A paid model is refused once today's budget (the user's, or the server's) is spent.
+    checkBudget(cfg);
     const priority = priorityOf(purpose);
     const onWait = callContext()?.onWait;
     const once = () => (cfg.gpu ? this.gpu.group(cfg.gpu).run(providerName, m, cfg, () => this.limiter(providerName).run(fn), PRIORITY_RANK[priority], onWait) : this.limiter(providerName).run(fn));

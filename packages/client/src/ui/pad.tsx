@@ -1,6 +1,7 @@
 /** Controller HUD: the radial wheel, the prompt above what A would act on, and button glyphs. */
-import { useGame } from '../net/game';
-import { SkillIcon } from './common';
+import { skillRank } from '@gd/shared';
+import { client, useGame } from '../net/game';
+import { SkillIcon, SkillTooltip } from './common';
 import { Icon } from './svgicons';
 
 /** An Xbox face button or trigger, drawn the way players know it. */
@@ -47,34 +48,22 @@ export function PadWheel() {
           <div className="pw-hint">Release <Glyph b={w.kind === 'skills' ? 'RT' : 'LT'} /> to choose · <Glyph b="B" /> cancel</div>
         </div>
       </div>
+      {w.kind === 'skills' && cur && <WheelSkillCard id={cur.id} />}
     </div>
   );
 }
 
-/** A compact legend of what the buttons do right now, at the bottom of the screen. */
-export function PadLegend() {
-  const { pad, combat, myTurn, modal, targeting } = useGame((s) => ({ pad: s.inputMode === 'pad', combat: !!s.combat, myTurn: !!s.combat && s.player?.party.some((p) => p.id === s.combat!.activeId), modal: !!(s.panel || s.dialog || s.trade || s.loot || s.narrations.length || s.wheel), targeting: !!s.targeting }));
-  if (!pad || modal) return null;
+/** The chosen skill's full description beside the wheel (what hovering it on the skill bar shows). */
+function WheelSkillCard({ id }: { id: string }) {
+  const c = client();
+  const st = c.state;
+  const chId = st.combat ? st.combat.activeId : st.selectedCharId ?? st.player?.leaderId;
+  const ch = st.player?.party.find((p) => p.id === chId) ?? st.player?.party[0];
+  if (!ch || !st.world) return null;
+  const r = st.world.ruleset;
   return (
-    <div className="pad-legend">
-      {combat ? (
-        myTurn ? (
-          <>
-            <span><Glyph b="LB" /><Glyph b="RB" /> Target</span>
-            <span><Glyph b="RT" /> Skills</span>
-            <span><Glyph b="X" /> Attack nearest</span>
-            {targeting ? <span><Glyph b="B" /> Cancel</span> : <span><Glyph b="Y" /> End turn</span>}
-          </>
-        ) : <span className="dim">Waiting for your turn</span>
-      ) : (
-        <>
-          <span><Glyph b="RT" /> Skills</span>
-          <span><Glyph b="LT" /> Menus</span>
-          <span><Glyph b="LB" /><Glyph b="RB" /> Focus</span>
-          <span><Glyph b="X" /> Attack</span>
-          <span><Glyph b="Y" /> Journal</span>
-        </>
-      )}
+    <div className="pw-card tooltip">
+      <SkillTooltip id={id} r={r} stats={c.charStats(ch)} cooldown={ch.cooldowns[id] ?? 0} rank={skillRank(r, ch, id)} />
     </div>
   );
 }

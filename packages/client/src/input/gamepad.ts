@@ -37,6 +37,7 @@ export class PadInput {
   private lastMove = 0;
   private moving = false;
   private heading = { x: -1, y: 0 };
+  private sentDir = { x: 0, y: 0 };
   private focusIdx = 0;
   private cursor: { x: number; y: number } | null = null;
   private repeatAt = 0;
@@ -133,23 +134,17 @@ export class PadInput {
     if (!lead) return;
     const mag = Math.hypot(s.lx, s.ly);
     if (mag > DEAD) {
+      // Steering: the server keeps the party walking this way; we only tell it when the direction changes
+      // (and now and then, so it knows the stick is still held).
       const d = this.r.screenDirToTile(s.lx, s.ly);
       this.heading = d;
       const now = performance.now();
-      if (now - this.lastMove > 130) {
+      const turned = d.x * this.sentDir.x + d.y * this.sentDir.y < 0.99;
+      if (!this.moving || (turned && now - this.lastMove > 60) || now - this.lastMove > 250) {
         this.lastMove = now;
-        // Aim a little ahead; walk around a blocked spot by trying shorter steps and slight turns.
-        const reach = 1.2 + mag * 1.6;
-        const tries = [[reach, 0], [reach * 0.6, 0], [reach, 0.5], [reach, -0.5], [reach * 0.6, 0.9], [reach * 0.6, -0.9]];
-        for (const [len, turn] of tries) {
-          const a = Math.atan2(d.y, d.x) + turn!;
-          const x = lead.x + Math.cos(a) * len!, y = lead.y + Math.sin(a) * len!;
-          if (this.r.canStand(x, y, lead.id)) {
-            c.send({ t: 'move', x, y, charId: st.selectedCharId ?? st.player!.leaderId });
-            this.moving = true;
-            break;
-          }
-        }
+        this.sentDir = d;
+        c.send({ t: 'steer', dx: d.x, dy: d.y });
+        this.moving = true;
       }
     } else this.stopWalking();
 
@@ -176,8 +171,7 @@ export class PadInput {
   private stopWalking() {
     if (!this.moving) return;
     this.moving = false;
-    const lead = this.c.leaderEntity();
-    if (lead) this.c.send({ t: 'move', x: lead.x, y: lead.y, charId: this.c.state.selectedCharId ?? this.c.state.player!.leaderId });
+    this.c.send({ t: 'steer', dx: 0, dy: 0 });
   }
 
   /** Things to act on near the leader, best first: close, and ahead of where the party is heading. */

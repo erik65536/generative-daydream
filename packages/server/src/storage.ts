@@ -60,6 +60,10 @@ db.exec(`
 // Accounts made or reset by an administrator carry a one-time password the user must replace.
 if (!(db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).some((c) => c.name === 'must_change_password'))
   db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
+// Spending on paid models: a user's own daily budget (null: the server default), and a ledger per user and day.
+if (!(db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).some((c) => c.name === 'daily_limit_usd'))
+  db.exec('ALTER TABLE users ADD COLUMN daily_limit_usd REAL');
+db.exec('CREATE TABLE IF NOT EXISTS spend (user_id TEXT NOT NULL, day TEXT NOT NULL, usd REAL NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day))');
 
 /** The shared database (jobs and GPU leases live here too, so every process sees them). */
 export const globalDb = () => db;
@@ -192,6 +196,8 @@ export interface User {
   isAdmin: boolean;
   /** Signed in with a password an administrator set: must choose a new one before doing anything else. */
   mustChangePassword: boolean;
+  /** Daily budget for paid models in dollars, when an administrator set one (otherwise the server default). */
+  dailyLimitUsd: number | null;
 }
 
 interface UserRow {
@@ -202,10 +208,11 @@ interface UserRow {
   created_at: number;
   is_admin: number;
   must_change_password?: number;
+  daily_limit_usd?: number | null;
 }
 
 const toUser = (r: UserRow | undefined): User | undefined =>
-  r && { id: r.id, username: r.username, passwordHash: r.password_hash, salt: r.salt, createdAt: r.created_at, isAdmin: !!r.is_admin, mustChangePassword: !!r.must_change_password };
+  r && { id: r.id, username: r.username, passwordHash: r.password_hash, salt: r.salt, createdAt: r.created_at, isAdmin: !!r.is_admin, mustChangePassword: !!r.must_change_password, dailyLimitUsd: r.daily_limit_usd ?? null };
 
 function hashPassword(password: string, salt: string): string {
   return crypto.scryptSync(password, salt, 64).toString('hex');
@@ -236,7 +243,7 @@ export function inviteUser(username: string, isAdmin = false): { user: User; pas
   return tx(() => {
     if (q.userByName.get(name)) throw new Error('That user id is taken.');
     const salt = crypto.randomBytes(16).toString('hex');
-    const user: User = { id: `u_${crypto.randomBytes(6).toString('hex')}`, username: name, salt, passwordHash: hashPassword(password, salt), createdAt: Date.now(), isAdmin, mustChangePassword: true };
+    const user: User = { id: `u_${crypto.randomBytes(6).toString('hex')}`, username: name, salt, passwordHash: hashPassword(password, salt), createdAt: Date.now(), isAdmin, mustChangePassword: true, dailyLimitUsd: null };
     insertUser(user);
     return { user, password };
   });
@@ -280,6 +287,41 @@ export function setAdmin(userId: string, isAdmin: boolean): void {
     if (u.isAdmin && !isAdmin && (q.adminCount.get() as { n: number }).n <= 1) throw new Error('The server needs at least one administrator.');
     q.setAdmin.run(isAdmin ? 1 : 0, userId);
   });
+}
+
+// ------------------------------------------------------------------------------------ spending
+
+/** Today's date (server local time): budgets reset at midnight. */
+export const spendDay = (t = Date.now()) => {
+  const d = new Date(t);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+const sq = {
+  add: db.prepare('INSERT INTO spend (user_id, day, usd, calls) VALUES (?, ?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET usd = usd + excluded.usd, calls = calls + 1'),
+  one: db.prepare('SELECT usd, calls FROM spend WHERE user_id = ? AND day = ?'),
+  total: db.prepare('SELECT COALESCE(SUM(usd), 0) AS usd FROM spend WHERE day = ?'),
+  range: db.prepare('SELECT user_id, SUM(usd) AS usd, SUM(calls) AS calls FROM spend WHERE day >= ? GROUP BY user_id'),
+  setLimit: db.prepare('UPDATE users SET daily_limit_usd = ? WHERE id = ?'),
+};
+
+export function recordSpend(userId: string, usd: number) {
+  sq.add.run(userId, spendDay(), usd);
+}
+
+export function spentToday(userId: string): { usd: number; calls: number } {
+  return (sq.one.get(userId, spendDay()) as { usd: number; calls: number } | undefined) ?? { usd: 0, calls: 0 };
+}
+
+export const spentTodayTotal = () => (sq.total.get(spendDay()) as { usd: number }).usd;
+
+/** Spend per user since a day (inclusive), for the admin view. */
+export function spendSince(day: string): Record<string, { usd: number; calls: number }> {
+  return Object.fromEntries((sq.range.all(day) as { user_id: string; usd: number; calls: number }[]).map((r) => [r.user_id, { usd: r.usd, calls: r.calls }]));
+}
+
+export function setDailyLimit(userId: string, usd: number | null) {
+  sq.setLimit.run(usd === null ? null : Math.max(0, usd), userId);
 }
 
 export function listUsers(): User[] {

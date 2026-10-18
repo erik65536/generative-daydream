@@ -4,6 +4,7 @@
  * production through the image pipeline, stage by stage.
  */
 import type { AssetRecord, TileRole, TileRoleDef, TilesetDef, WorldDefinition } from '@gd/shared';
+import { BudgetExceeded } from '../genai/spend';
 import { OBJ, base64ToBytes } from '@gd/shared';
 import { z } from 'zod';
 import { VARIANTS, assetBrief, imagePromptSystem, produceAssets, supportsVariants, variantKey, wantsDescriptivePrompts, writerProfile } from '../genai/images';
@@ -36,8 +37,8 @@ const TEXTURE_ROLES: TileRole[] = ['floor', 'floorAlt', 'path', 'wall', 'water']
 const OBJ_ROLE: Record<number, TileRole> = { [OBJ.tree]: 'tree', [OBJ.rock]: 'rock', [OBJ.plant]: 'plant', [OBJ.light]: 'light', [OBJ.furniture]: 'furniture', [OBJ.rubble]: 'rubble', [OBJ.pillar]: 'pillar' };
 const FEATURE_ROLE: Record<string, TileRole> = { chest: 'chest', shrine: 'shrine', sign: 'sign', lever: 'lever', bed: 'bed' };
 const POSES = ['walk_a', 'walk_b', 'attack'] as const;
-/** Humanoids walk with a pose-guided eight-frame cycle; other bodies keep two painted strides. */
-const HUMANOID_POSES = ['walk', 'attack'] as const;
+/** Humanoids walk and attack with pose-guided frames (8 and 4); other bodies keep two painted strides and one strike. */
+const HUMANOID_POSES = ['walk', 'strike'] as const;
 
 /** What a job reports while painting (a WorldGenJob fits). */
 export interface ArtProgress {
@@ -79,6 +80,7 @@ async function tries<T>(label: string, report: (msg: string) => void, fn: () => 
       return await fn();
     } catch (e) {
       const msg = (e as Error).message.slice(0, 160);
+      if (e instanceof BudgetExceeded) throw e;
       if (attempt > waits.length) throw new Error(`${label} failed ${attempt} times (last: ${msg}). Resume once the model service is working.`);
       report(`${label}: try ${attempt} failed (${msg}); trying again in ${waits[attempt - 1]! / 1000}s`);
       await new Promise((r) => setTimeout(r, waits[attempt - 1]));

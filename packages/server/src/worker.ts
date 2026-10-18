@@ -12,6 +12,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DATA_DIR } from './paths';
 import { startWorker } from './jobs/worker';
+import { installSpendLedger } from './spending';
 import { HOLDER } from './jobs/queue';
 import { genai } from './genai/service';
 
@@ -24,6 +25,7 @@ const mtime = () => {
   }
 };
 
+installSpendLedger();
 const worker = startWorker();
 console.log(`[worker ${HOLDER}] ready; running up to ${genai().config.jobConcurrency ?? 1} job(s) at a time`);
 

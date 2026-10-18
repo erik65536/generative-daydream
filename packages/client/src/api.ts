@@ -27,11 +27,18 @@ export interface Me {
   isAdmin: boolean;
   /** Signed in with a one-time password: must choose a new one first. */
   mustChangePassword: boolean;
+  /** Today's spending on paid AI models against the daily budget (null limit: unlimited). */
+  ai?: { spentToday: number; limit: number | null };
 }
 
 export interface UserRow extends Me {
   createdAt: number;
+  /** This user's own daily budget, if an administrator set one (null: the server default). */
+  dailyLimitUsd: number | null;
+  spentWeek: number;
 }
+
+export interface SpendingSummary { today: number; dailyTotalUsd: number | null; dailyPerUserUsd: number | null; adminsUnlimited: boolean; systemWeek: number }
 
 export interface WorldSummary {
   id: string;
@@ -134,6 +141,8 @@ export const api = {
   inviteUser: (username: string, isAdmin: boolean) => call<{ user: UserRow; password: string }>('POST', '/api/admin/users', { username, isAdmin }),
   resetUser: (id: string) => call<{ password: string }>('POST', `/api/admin/users/${id}/reset`, {}),
   setUserAdmin: (id: string, isAdmin: boolean) => call<UserRow>('PATCH', `/api/admin/users/${id}`, { isAdmin }),
+  setUserBudget: (id: string, dailyLimitUsd: number | null) => call<UserRow>('PATCH', `/api/admin/users/${id}`, { dailyLimitUsd }),
+  spending: () => call<SpendingSummary>('GET', '/api/admin/spending'),
   logout: () => call<{ ok: true }>('POST', '/api/auth/logout', {}),
   worlds: () => call<WorldSummary[]>('GET', '/api/worlds'),
   world: (id: string) => call<WorldSummary>('GET', `/api/worlds/${id}`),

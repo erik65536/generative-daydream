@@ -15,15 +15,50 @@ export type Skeleton = Pt[];
 const LIMBS: [number, number][] = [[1, 2], [1, 5], [2, 3], [3, 4], [5, 6], [6, 7], [1, 8], [8, 9], [9, 10], [1, 11], [11, 12], [12, 13], [1, 0], [0, 14], [14, 16], [0, 15], [15, 17]];
 const COLORS = ['#ff0000', '#ff5500', '#ffaa00', '#ffff00', '#aaff00', '#55ff00', '#00ff00', '#00ff55', '#00ffaa', '#00ffff', '#00aaff', '#0055ff', '#0000ff', '#5500ff', '#aa00ff', '#ff00ff', '#ff00aa', '#ff0055'];
 
-/** One leg's pose in a walk frame: thigh angle from vertical (degrees, + = forward) and knee bend. */
+/** One leg: thigh angle from vertical (degrees, + = forward) and knee bend. */
 interface LegPose { thigh: number; knee: number }
-interface WalkKey { lead: LegPose; trail: LegPose; rise: number }
+/** One arm: upper-arm angle from hanging straight down (degrees, + = forward, 180 = straight up) and elbow bend. */
+interface ArmPose { upper: number; elbow: number }
+/** A whole-body pose. Near = the figure's left side, toward the viewer when facing left. */
+interface Pose { legNear: LegPose; legFar: LegPose; armNear: ArmPose; armFar: ArmPose; rise?: number; lean?: number }
+
+/**
+ * A pose as an OpenPose skeleton, for a figure facing left in a slight three-quarter view, with height 1 (top of
+ * head 0, soles 1) and its centre line at x = 0. `lean` tips the upper body forward (+) or back; `rise` lifts it.
+ */
+export function poseSkeleton(pose: Pose): Skeleton {
+  const thigh = 0.235, shin = 0.235, upper = 0.15, fore = 0.14;
+  const fwd = -1; // facing left: forward is -x
+  const depth = 0.035; // the far side sits a little behind (three-quarter view)
+  const rise = pose.rise ?? 0, lean = pose.lean ?? 0;
+  const hipY = 0.5 - rise;
+  // Upper body: points above the hips shift forward with the lean, more the higher they are.
+  const U = (x: number, y: number): [number, number] => {
+    const yy = y - rise;
+    return [x + fwd * lean * (hipY - yy) * 1.4, yy];
+  };
+  const hipL: [number, number] = [-0.012, hipY], hipR: [number, number] = [0.012 + depth, hipY - 0.004];
+  const leg = (hip: [number, number], p: LegPose): [[number, number], [number, number]] => {
+    const t = (p.thigh * Math.PI) / 180, s = ((p.thigh - p.knee) * Math.PI) / 180;
+    const knee: [number, number] = [hip[0] + fwd * Math.sin(t) * thigh, hip[1] + Math.cos(t) * thigh];
+    return [knee, [knee[0] + fwd * Math.sin(s) * shin, knee[1] + Math.cos(s) * shin]];
+  };
+  const arm = (sho: [number, number], p: ArmPose): [[number, number], [number, number]] => {
+    const a = (p.upper * Math.PI) / 180, b = ((p.upper + p.elbow) * Math.PI) / 180;
+    const elb: [number, number] = [sho[0] + fwd * Math.sin(a) * upper, sho[1] + Math.cos(a) * upper];
+    return [elb, [elb[0] + fwd * Math.sin(b) * fore, elb[1] + Math.cos(b) * fore]];
+  };
+  const [kneeL, ankL] = leg(hipL, pose.legNear), [kneeR, ankR] = leg(hipR, pose.legFar);
+  const shoL = U(-0.05, 0.185), shoR = U(0.06 + depth, 0.18);
+  const [elbL, wriL] = arm(shoL, pose.armNear), [elbR, wriR] = arm(shoR, pose.armFar);
+  return [U(-0.045, 0.075), U(0.005, 0.155), shoR, elbR, wriR, shoL, elbL, wriL, hipR, kneeR, ankR, hipL, kneeL, ankL, U(-0.012, 0.058), U(-0.035, 0.06), null, U(0.02, 0.07)];
+}
 
 /**
  * A walk cycle in eight frames (contact, down, passing, up, then the same with the other leg leading).
  * Values follow the classic animation keys: the body dips just after contact and rises as the leg passes.
  */
-const WALK_KEYS: WalkKey[] = [
+const WALK_KEYS: { lead: LegPose; trail: LegPose; rise: number }[] = [
   { lead: { thigh: 24, knee: 4 }, trail: { thigh: -20, knee: 14 }, rise: 0 },
   { lead: { thigh: 16, knee: 18 }, trail: { thigh: -14, knee: 40 }, rise: -0.012 },
   { lead: { thigh: 2, knee: 8 }, trail: { thigh: 8, knee: 62 }, rise: 0.004 },
@@ -31,41 +66,17 @@ const WALK_KEYS: WalkKey[] = [
 ];
 export const WALK_FRAMES = 8;
 
-/**
- * The skeleton of walk frame `i` (0..7), for a figure facing left in a slight three-quarter view, with height 1
- * (top of head 0, soles 1) and its centre line at x = 0. The near side (the figure's left) is drawn last.
- */
+/** Walk frame `i` (0..7): frames 0-3 lead with the near leg, 4-7 with the far one; arms swing against the legs. */
 export function walkSkeleton(i: number): Skeleton {
   const k = WALK_KEYS[i % 4]!;
-  // Frames 0-3 lead with the near (left) leg, 4-7 with the far (right) one.
   const nearLeads = i < 4;
-  const legL = nearLeads ? k.lead : k.trail, legR = nearLeads ? k.trail : k.lead;
-  const y = (v: number) => v - k.rise;
-  const thigh = 0.235, shin = 0.235, upper = 0.15, fore = 0.14;
-  const fwd = -1; // facing left: forward is -x
-  const depth = 0.035; // the far side sits a little behind (three-quarter view)
-  const neck: [number, number] = [0.005, y(0.155)];
-  const hipY = y(0.5);
-  const hipL: [number, number] = [-0.012, hipY], hipR: [number, number] = [0.012 + depth, hipY - 0.004];
-  const leg = (hip: [number, number], p: LegPose): [[number, number], [number, number]] => {
-    const t = (p.thigh * Math.PI) / 180, s = ((p.thigh - p.knee) * Math.PI) / 180;
-    const knee: [number, number] = [hip[0] + fwd * Math.sin(t) * thigh, hip[1] + Math.cos(t) * thigh];
-    return [knee, [knee[0] + fwd * Math.sin(s) * shin, knee[1] + Math.cos(s) * shin]];
-  };
-  const [kneeL, ankL] = leg(hipL, legL), [kneeR, ankR] = leg(hipR, legR);
-  // Arms swing against the legs on the same side.
-  const arm = (sho: [number, number], legThigh: number): [[number, number], [number, number]] => {
-    const a = (-legThigh * 0.85 * Math.PI) / 180, b = ((-legThigh * 0.85 + 18 + Math.max(0, legThigh) * 0.4) * Math.PI) / 180;
-    const elb: [number, number] = [sho[0] + fwd * Math.sin(a) * upper, sho[1] + Math.cos(a) * upper];
-    return [elb, [elb[0] + fwd * Math.sin(b) * fore, elb[1] + Math.cos(b) * fore]];
-  };
-  const shoL: [number, number] = [-0.05, y(0.185)], shoR: [number, number] = [0.06 + depth, y(0.18)];
-  const [elbL, wriL] = arm(shoL, legL.thigh), [elbR, wriR] = arm(shoR, legR.thigh);
-  const nose: [number, number] = [-0.045, y(0.075)];
-  const eyeL: [number, number] = [-0.035, y(0.06)], eyeR: [number, number] = [-0.012, y(0.058)];
-  const earL: [number, number] = [0.02, y(0.07)];
-  return [nose, neck, shoR, elbR, wriR, shoL, elbL, wriL, hipR, kneeR, ankR, hipL, kneeL, ankL, eyeR, eyeL, null, earL];
+  const legNear = nearLeads ? k.lead : k.trail, legFar = nearLeads ? k.trail : k.lead;
+  const swing = (l: LegPose): ArmPose => ({ upper: -l.thigh * 0.85, elbow: 18 + Math.max(0, l.thigh) * 0.4 });
+  return poseSkeleton({ legNear, legFar, armNear: swing(legNear), armFar: swing(legFar), rise: k.rise });
 }
+
+/** Attacks: four frames (ready, wind-up, strike, follow-through), painted from edit instructions. */
+export const STRIKE_FRAMES = 4;
 
 /**
  * Draw a skeleton as an OpenPose-style image (coloured limbs on black) at a figure height and foot line, so it
@@ -145,55 +156,101 @@ export async function skeletonLeak(png: Buffer, ignore?: [number, number, number
 const CELL_W = 416, CELL_H = 608;
 
 /**
- * Paint a character's walk cycle: one generation of an eight-pose sheet (consistent props, facing and detail
- * across frames), cut into cells, cleaned, scaled to a common height and aligned, and joined into a strip of
- * WALK_FRAMES equal frames. `figureRatio` on the result is the walking height relative to the reference framing.
+ * Animation strips. A walk is painted as one sheet guided by pose skeletons (consistent props, facing and detail
+ * across frames). Attack poses are too far from standing for a sheet, and Qwen Edit follows stick figures poorly
+ * for them, so each attack frame is painted on its own from the character and a plain edit instruction.
  */
-export async function paintWalkStrip(sprite: Buffer, description: string, seed: number): Promise<ProcessedImage> {
-  // The sheet is painted on a flat colour far from every colour of the character, so it can be keyed out exactly —
+const STRIPS = {
+  walk: { frames: WALK_FRAMES, sheet: true, cols: 4, rows: 2, skeleton: walkSkeleton, names: [] as string[] },
+  strike: {
+    frames: STRIKE_FRAMES, sheet: false, cols: 1, rows: 1, skeleton: walkSkeleton,
+    // Attack keys as edit instructions (Qwen Edit follows these far better than a stick figure for dramatic poses).
+    names: [
+      'in a fighting stance facing left: knees bent, feet apart, weapon (or claws, or casting hand) raised and ready in front of the body',
+      'winding up to strike toward the left: the weapon arm drawn far back and up behind the shoulder, the body twisted and leaning back, weight on the back foot',
+      'striking toward the left at full extension: a deep forward lunge with the front knee bent, the weapon arm driven all the way forward (a ranged or magic attacker looses the shot or spell straight ahead)',
+      'following through after the blow toward the left: the weapon arm swept down and across past the body, still leaning forward in the lunge',
+    ],
+  },
+} as const;
+export type StripKind = keyof typeof STRIPS;
+
+export function paintWalkStrip(sprite: Buffer, description: string, seed: number): Promise<ProcessedImage> {
+  return paintPoseStrip('walk', sprite, description, seed);
+}
+
+/** Generate until no skeleton was painted in (pixel check, then the art checker); returns the last try and whether it is clean. */
+async function paintClean(req: { prompt: string; width: number; height: number; references: Buffer[] }, seed: number, bg: [number, number, number]): Promise<{ raw: Buffer; clean: boolean }> {
+  let raw: Buffer = Buffer.alloc(0);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    raw = await genai().image('image.sprite', { ...req, seed: seed + attempt * 7919, transparent: true });
+    if ((await skeletonLeak(raw, bg)) < 0.0002 && !(await skeletonDrawn(raw))) return { raw, clean: true };
+  }
+  return { raw, clean: false };
+}
+
+/**
+ * Paint an animation strip from pose skeletons, key out its background, cut it into frames, clean them, scale
+ * them to a common height and align them. `figureRatio` is the frames' height relative to the reference framing.
+ */
+export async function paintPoseStrip(kind: StripKind, sprite: Buffer, description: string, seed: number): Promise<ProcessedImage> {
+  const spec = STRIPS[kind];
+  // Painted on a flat colour far from every colour of the character, so it can be keyed out exactly —
   // including the gaps between limbs, and without eating white shirts or grey suits.
   const bg = await contrastingBackground(sprite);
-  const reference = await referenceFrame(sprite, CELL_W, CELL_H, bg.hex);
-  const cellFig = { height: CELL_H * reference.figureRatio, footY: CELL_H * 0.92, centerX: CELL_W / 2 };
-  const cells = await Promise.all(Array.from({ length: WALK_FRAMES }, (_, i) => drawSkeleton(walkSkeleton(i), CELL_W, CELL_H, cellFig)));
-  const sheet = await sharp({ create: { width: CELL_W * 4, height: CELL_H * 2, channels: 3, background: '#000' } })
-    .composite(cells.map((c, i) => ({ input: c, left: (i % 4) * CELL_W, top: Math.floor(i / 4) * CELL_H })))
-    .png()
-    .toBuffer();
-  let raw: Buffer = Buffer.alloc(0);
-  let leak = 1;
-  for (let attempt = 0; attempt < 3 && leak >= 0.0002; attempt++) {
-    raw = await genai().image('image.sprite', {
+  const problems: string[] = [];
+  const cellsRaw: Buffer[] = [];
+  let ratioRef = 0.8;
+  const keep = 'Keep everything else the same as picture 1: the same face, hair, clothing, colours, gear (held in the same hand), proportions, art style and size, full body visible, on the same flat plain background colour as picture 1. The skeleton is only a guide: draw no lines, dots or coloured sticks.';
+  if (spec.sheet) {
+    const reference = await referenceFrame(sprite, CELL_W, CELL_H, bg.hex);
+    ratioRef = reference.figureRatio;
+    const cellFig = { height: CELL_H * reference.figureRatio, footY: CELL_H * 0.92, centerX: CELL_W / 2 };
+    const cells = await Promise.all(Array.from({ length: spec.frames }, (_, i) => drawSkeleton(spec.skeleton(i), CELL_W, CELL_H, cellFig)));
+    const sheet = await sharp({ create: { width: CELL_W * spec.cols, height: CELL_H * spec.rows, channels: 3, background: '#000' } })
+      .composite(cells.map((c, i) => ({ input: c, left: (i % spec.cols) * CELL_W, top: Math.floor(i / spec.cols) * CELL_H })))
+      .png()
+      .toBuffer();
+    const { raw, clean } = await paintClean({
       prompt: `Picture 1 shows a game character: ${description}. Picture 2 is a sheet of eight pose skeletons (coloured OpenPose stick figures on black) in a grid of 4 columns and 2 rows: the frames of a walk cycle toward the left. Draw a walk-cycle sprite sheet: the character from picture 1 eight times, one in each cell of the same grid, each in exactly the pose of the skeleton in that cell. Every copy is the same character with the same face, hair, clothing, colours, gear (held in the same hand every time), proportions, art style and size, full body visible, on one flat plain background of exactly the same colour as picture 1's background, with nothing between the cells. The skeletons are only a guide: draw no lines, dots or coloured sticks.`,
-      seed: seed + attempt * 7919,
-      transparent: true,
-      width: CELL_W * 4,
-      height: CELL_H * 2,
+      width: CELL_W * spec.cols,
+      height: CELL_H * spec.rows,
       references: [reference.png, sheet],
-    });
-    leak = await skeletonLeak(raw, bg.rgb);
-    // Lines painted over the figure are often not pure colours: the art checker looks too.
-    if (leak < 0.0002 && (await skeletonDrawn(raw))) leak = 1;
+    }, seed, bg.rgb);
+    if (!clean) problems.push('pose skeleton lines painted into the frames');
+    const meta = await sharp(raw).metadata();
+    const cw = Math.floor((meta.width ?? CELL_W * spec.cols) / spec.cols), ch = Math.floor((meta.height ?? CELL_H * spec.rows) / spec.rows);
+    for (let i = 0; i < spec.frames; i++) cellsRaw.push(await sharp(raw).extract({ left: (i % spec.cols) * cw, top: Math.floor(i / spec.cols) * ch, width: cw, height: ch }).png().toBuffer());
+  } else {
+    const FW = 832, FH = 1216;
+    const reference = await referenceFrame(sprite, FW, FH, bg.hex);
+    ratioRef = reference.figureRatio;
+    for (let i = 0; i < spec.frames; i++) {
+      const { raw, clean } = await paintClean({
+        prompt: `This picture shows a game character: ${description}. Change only the pose: show the same character ${spec.names[i]}, using the weapon, claws or power they already carry in the original — add no new weapon or object (someone holding no weapon strikes with a fist, keeping whatever they hold in the same hand). ${keep.replace(/picture 1/g, 'the original').replace(' The skeleton is only a guide: draw no lines, dots or coloured sticks.', '')}`,
+        width: FW,
+        height: FH,
+        references: [reference.png],
+      }, seed + i * 31, bg.rgb);
+      if (!clean && !problems.length) problems.push('pose skeleton lines painted into the frames');
+      cellsRaw.push(raw);
+    }
   }
-  const problems: string[] = leak >= 0.0002 ? ['pose skeleton lines painted into the frames'] : [];
-  const meta = await sharp(raw).metadata();
-  const cw = Math.floor((meta.width ?? CELL_W * 4) / 4), ch = Math.floor((meta.height ?? CELL_H * 2) / 2);
   const cut: { png: Buffer; ratio: number }[] = [];
-  for (let i = 0; i < WALK_FRAMES; i++) {
-    const cell = await keyOut(await sharp(raw).extract({ left: (i % 4) * cw, top: Math.floor(i / 4) * ch, width: cw, height: ch }).png().toBuffer(), bg.rgb);
-    const img = await processSprite(cell, 384);
+  for (const raw of cellsRaw) {
+    const img = await processSprite(await keyOut(raw, bg.rgb), 384);
     for (const p of img.problems) if (!problems.includes(p)) problems.push(p);
-    cut.push({ png: img.png, ratio: img.figureRatio ?? reference.figureRatio });
+    cut.push({ png: img.png, ratio: img.figureRatio ?? ratioRef });
   }
-  // Frames share one scale (their heights differ only by the gait's small rise and dip).
+  // Frames share one scale (heights differ only by the pose: a step's dip, an arm raised overhead).
   const ratios = cut.map((c) => c.ratio).sort((a, b) => a - b);
   const median = ratios[Math.floor(ratios.length / 2)]!;
-  const aligned = await alignFrames(cut.map((c) => ({ png: c.png, rel: Math.max(0.9, Math.min(1.1, c.ratio / median)) })), 256);
-  const strip = await sharp({ create: { width: aligned.width * WALK_FRAMES, height: aligned.height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
+  const aligned = await alignFrames(cut.map((c) => ({ png: c.png, rel: Math.max(0.8, Math.min(1.25, c.ratio / median)) })), 256);
+  const strip = await sharp({ create: { width: aligned.width * spec.frames, height: aligned.height, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } })
     .composite(aligned.frames.map((f, i) => ({ input: f, left: i * aligned.width, top: 0 })))
     .png()
     .toBuffer();
-  return { png: strip, width: aligned.width * WALK_FRAMES, height: aligned.height, anchorY: 0.99, figureRatio: median, problems, frames: WALK_FRAMES };
+  return { png: strip, width: aligned.width * spec.frames, height: aligned.height, anchorY: 0.99, figureRatio: median, problems, frames: spec.frames };
 }
 
 /** One frame of a walk strip (for checking it like a single sprite). */

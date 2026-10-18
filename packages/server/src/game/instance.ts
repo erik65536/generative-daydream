@@ -8,6 +8,8 @@ import {
 } from '@gd/shared';
 import { Actor, CharActor, MonsterActor, NpcActor, WALK_SPEED } from './actors';
 import { fitPack } from '../rules/encounters';
+import { forgeLegend, isTopRarity } from './legends';
+import { withCallContext } from '../genai/context';
 import { WorldCtx, type ZoneMap } from './worldctx';
 import { Combat, type CombatHost } from './combat';
 import { addStatus, checkItemUse, checkSkill, executeSkill, isHarmful, isHostileTo, springTrap, useConsumable, applySurface } from './effects';
@@ -686,6 +688,14 @@ export class GameInstance implements CombatHost {
       this.state.clock += dt / REAL_MS_PER_GAME_MINUTE;
       if (this.day() !== before) this.newDay();
     }
+    for (const [userId, s] of this.steering) {
+      const p = this.state.players[userId];
+      if (!p || now - s.at > 700) {
+        // The controller went quiet (released, disconnected): stop where we are.
+        this.steering.delete(userId);
+        if (p) this.stopSteering(p);
+      } else this.steerStep(p, s, now);
+    }
     const doAggro = now - this.lastAggro > 250;
     if (doAggro) this.lastAggro = now;
     const doRegen = now - this.lastRegen > 1000;
@@ -1170,6 +1180,9 @@ export class GameInstance implements CombatHost {
         const def = this.ctx.uniqueItems[u];
         if (def) loot.items.push(makeUnique(this.r, def, target.level));
       }
+      // A boss sometimes leaves a piece of legendary gear behind.
+      if (target.boss && !loot.items.some((i) => isTopRarity(this.r, i)) && this.rng.chance(0.35)) loot.items.push(rollRandomItem(this.r, this.rng, target.level, 0, { minRarity: this.r.rarities.length - 1 }));
+      this.forgeLegendaries(loot.items, z.id, target.boss ? `${target.boss.name}, ${target.boss.title}` : target.name);
       if (loot.items.length || loot.gold) {
         z.rt.loot.push({ id: uid('lp'), x: Math.round(target.x), y: Math.round(target.y), items: loot.items, gold: loot.gold, label: target.name, createdAt: Date.now() });
         z.lootDirty = true;
@@ -1271,11 +1284,17 @@ export class GameInstance implements CombatHost {
   // =================================================================== message handling
 
   handle(userId: string, msg: ClientMessage) {
+    // Whatever this message sets off (an NPC's reply, a legendary drop) is paid from this player's AI budget.
+    return withCallContext({ priority: 'interactive', userId }, () => this.handle_(userId, msg));
+  }
+
+  private handle_(userId: string, msg: ClientMessage) {
     const p = this.state.players[userId];
     if (!p) return;
     try {
       switch (msg.t) {
         case 'move': return this.cmdMove(p, msg.x, msg.y, msg.charId);
+        case 'steer': return this.cmdSteer(p, msg.dx, msg.dy);
         case 'interact': return this.cmdInteract(p, msg.targetId, msg.charId, msg.inspect);
         case 'request_trade': return void this.dialogue.requestTrade(userId);
         case 'talk': return void this.dialogue.say(userId, msg.text, { giveItemId: msg.giveItemId, giveGold: msg.giveGold, useSkillId: msg.useSkillId });
@@ -1396,6 +1415,111 @@ export class GameInstance implements CombatHost {
     // Outside combat the party walks to the exact point clicked, not just the tile centre.
     this.walkParty(p, leader, { x: tx, y: ty }, 0, Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined);
     this.closeDialogOnMove(p);
+  }
+
+  /** Controller walking: direction per player, refreshed by the client while the stick is held. */
+  private steering = new Map<string, { dx: number; dy: number; at: number; follow: number }>();
+
+  private cmdSteer(p: PlayerState, dx: number, dy: number) {
+    const len = Math.hypot(dx, dy);
+    if (!Number.isFinite(len) || this.charActors(p).some((a) => a.combatId)) return;
+    if (len < 0.2) {
+      this.steering.delete(p.userId);
+      return this.stopSteering(p);
+    }
+    const prev = this.steering.get(p.userId);
+    this.steering.set(p.userId, { dx: dx / len, dy: dy / len, at: Date.now(), follow: prev?.follow ?? 0 });
+    this.pending.delete(p.userId);
+    this.pendingSkill.delete(p.userId);
+    this.closeDialogOnMove(p);
+  }
+
+  /** Clear for walking along a straight line (sampled every quarter tile). */
+  private lineClear(zoneId: string, a: Vec2, b: Vec2): boolean {
+    const n = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 0.25);
+    for (let i = 1; i <= n; i++) if (!this.passable(zoneId, Math.round(a.x + ((b.x - a.x) * i) / n), Math.round(a.y + ((b.y - a.y) * i) / n))) return false;
+    return true;
+  }
+
+  /**
+   * Keep the leader walking the steered way: a short straight leg ahead, renewed before it runs out or when the
+   * direction changes, so motion never restarts from a standstill. Walls are slid along. Companions follow a
+   * trail behind the leader instead of being re-planned on every update.
+   */
+  private steerStep(p: PlayerState, s: { dx: number; dy: number; at: number; follow: number }, now: number) {
+    const lead = this.leader(p);
+    const z = this.zones.get(p.zoneId);
+    if (!lead || !z || lead.combatId) return;
+    const m = lead.motion;
+    const end = m?.path[m.path.length - 1];
+    const left = end ? Math.hypot(end.x - lead.x, end.y - lead.y) : 0;
+    const cur = end && left > 0.01 ? { x: (end.x - lead.x) / left, y: (end.y - lead.y) / left } : null;
+    const turned = !cur || cur.x * s.dx + cur.y * s.dy < 0.985;
+    if (!m || left < 0.9 || turned) {
+      const from = { x: lead.x, y: lead.y };
+      const base = Math.atan2(s.dy, s.dx);
+      let target: Vec2 | null = null;
+      for (const turn of [0, 0.35, -0.35, 0.75, -0.75, 1.2, -1.2]) {
+        const a = base + turn;
+        for (const len of [1.8, 1.0, 0.5]) {
+          const t = { x: from.x + Math.cos(a) * len, y: from.y + Math.sin(a) * len };
+          if (this.lineClear(z.id, from, t)) {
+            target = t;
+            break;
+          }
+        }
+        if (target) break;
+      }
+      if (target) {
+        lead.motion = { path: [target], from, speed: WALK_SPEED, t0: now };
+        lead.dirty = true;
+      } else if (m) {
+        lead.motion = null;
+        lead.dirty = true;
+      }
+    }
+    if (now - s.follow > 300) {
+      s.follow = now;
+      this.followLeader(p, lead, { x: s.dx, y: s.dy }, now);
+    }
+  }
+
+  private stopSteering(p: PlayerState) {
+    const lead = this.leader(p);
+    if (!lead || lead.combatId) return;
+    if (lead.motion) {
+      lead.motion = null;
+      lead.dirty = true;
+      p.x = Math.round(lead.x);
+      p.y = Math.round(lead.y);
+    }
+    this.followLeader(p, lead, { x: Math.cos(lead.facing), y: Math.sin(lead.facing) }, Date.now());
+  }
+
+  /** Companions walk to their places in a short column behind the leader (only when they have drifted). */
+  private followLeader(p: PlayerState, lead: CharActor, dir: Vec2, now: number) {
+    const z = this.zones.get(p.zoneId);
+    if (!z) return;
+    const followers = this.charActors(p).filter((a) => a !== lead && a.alive() && !a.combatId);
+    const clear = (x: number, y: number) => this.passable(z.id, x, y);
+    followers.forEach((f, i) => {
+      const back = 1.2 + 0.9 * Math.floor(i / 2), side = (i % 2 ? 1 : -1) * 0.55;
+      let slot = { x: lead.x - dir.x * back - dir.y * side, y: lead.y - dir.y * back + dir.x * side };
+      if (!clear(Math.round(slot.x), Math.round(slot.y))) slot = { x: lead.x - dir.x * back, y: lead.y - dir.y * back };
+      if (!clear(Math.round(slot.x), Math.round(slot.y))) slot = { x: lead.x, y: lead.y };
+      const d = Math.hypot(f.x - slot.x, f.y - slot.y);
+      const goal = f.motion?.path[f.motion.path.length - 1];
+      if (d < 0.7 || (goal && Math.hypot(goal.x - slot.x, goal.y - slot.y) < 0.6)) return;
+      const from = { x: f.x, y: f.y };
+      const tiles = findPath(from, { x: Math.round(slot.x), y: Math.round(slot.y) }, { width: z.map.def.width, height: z.map.def.height, passable: clear, stopWithin: 0, allowBlockedGoal: true, maxNodes: 4000 });
+      if (!tiles?.length && d > 0.7 && this.lineClear(z.id, from, slot)) {
+        f.motion = { path: [slot], from, speed: WALK_SPEED * 1.1, t0: now };
+      } else if (tiles?.length) {
+        // Catch up a little faster when far behind, so the party keeps together while walking.
+        f.motion = { path: smoothPath(from, tiles, clear, standPoint(Math.round(slot.x), Math.round(slot.y), slot, clear)), from, speed: WALK_SPEED * (d > 3 ? 1.35 : 1.1), t0: now };
+      } else return;
+      f.dirty = true;
+    });
   }
 
   /** Walking away ends a conversation. */
@@ -1599,6 +1723,7 @@ export class GameInstance implements CombatHost {
             const def = this.ctx.uniqueItems[u];
             if (def) fr.loot.unshift(makeUnique(this.r, def, f.lootTier ?? 1));
           }
+          this.forgeLegendaries(fr.loot, z.id, f.name ?? 'a sealed chest');
           z.featuresDirty.add(f.id);
         }
         return inspect ? this.openLoot(p, f.id) : this.lootAll(p, f.id);
@@ -2542,6 +2667,34 @@ export class GameInstance implements CombatHost {
       }
     }
     return id;
+  }
+
+  /**
+   * Give each top-rarity piece of gear among these items a name, legend and signature powers (in the background:
+   * the item drops at once and becomes named a moment later, wherever it is by then).
+   */
+  private forgeLegendaries(items: ItemInstance[], zoneId: string, source: string) {
+    const zone = this.ctx.zones.get(this.ctx.outerZone(zoneId));
+    for (const item of items.filter((i) => isTopRarity(this.r, i))) {
+      void forgeLegend(this.r, item, { world: { title: this.world.concept.title, pitch: this.world.concept.pitch, tone: this.world.concept.tone }, place: zone?.name ?? 'the wilds', source }).then((made) => {
+        if (!made || item.uniqueId) return;
+        this.state.dynamicItems ??= {};
+        this.state.dynamicItems[made.def.id] = made.def;
+        this.mergeDynamicItems();
+        item.uniqueId = made.def.id;
+        item.uniqueMods = made.mods;
+        for (const p of Object.values(this.state.players)) {
+          if (p.zoneId === zoneId || this.ctx.outerZone(p.zoneId) === this.ctx.outerZone(zoneId)) this.sendTo(p.userId, { t: 'toast', text: `Legendary: ${made.def.name}`, kind: 'loot' });
+          this.refreshCharStats(p);
+          this.markPlayer(p.userId);
+        }
+        for (const z of this.zones.values()) {
+          z.lootDirty = true;
+          for (const f of Object.keys(z.rt.features)) if (z.rt.features[f]?.loot?.includes(item)) z.featuresDirty.add(f);
+        }
+        this.markDirty();
+      });
+    }
   }
 
   private mergeDynamicItems() {

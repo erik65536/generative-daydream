@@ -29,6 +29,8 @@ export interface ProviderConfig {
   concurrency?: number;
   /** OpenAI: processing tier ("flex" is half price and slower; busy flex capacity is waited out, not billed). */
   serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
+  /** Prices in dollars per million tokens (cached input defaults to a tenth, output to five times input). Paid providers are metered against users' daily budgets. */
+  pricing?: { inputPerM: number; cachedPerM?: number; outputPerM?: number };
   /** Reasoning models: output tokens added to every request's limit for the model's thinking (billed only when used). */
   reasoningTokens?: number;
   /** Extra body parameters merged into every request (e.g. top_p, reasoning settings). */
@@ -94,6 +96,8 @@ export interface GenAIConfig {
   jobConcurrency?: number;
   /** How long background work waits for a busy, rate-limited or unreachable model before failing (ms). */
   waitForModelsMs?: number;
+  /** Daily budgets for paid models, in dollars: per user (an admin can set each user's own) and for the whole server. */
+  spending?: { dailyPerUserUsd?: number; dailyTotalUsd?: number; adminsUnlimited?: boolean };
 }
 
 // ------------------------------------------------------------------------------- decision models

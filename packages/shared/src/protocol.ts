@@ -236,6 +236,8 @@ export type ClientMessage =
   | { t: 'set_options'; open?: boolean; commandCompanions?: boolean }
   | { t: 'abandon_quest'; questId: string }
   | { t: 'pin_quest'; questId: string }
+  /** Controller walking: keep moving the leader this way (tile units; 0,0 stops). */
+  | { t: 'steer'; dx: number; dy: number }
   | { t: 'dismiss_companion'; charId: string }
   | { t: 'chat'; text: string };
 

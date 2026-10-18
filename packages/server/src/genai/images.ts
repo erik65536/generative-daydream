@@ -13,7 +13,7 @@ import { genai } from './service';
 import type { Purpose } from './types';
 import { inspectionImages, inspectionView, processSprite, referenceFrame, type ProcessedImage } from './matte';
 import { profileFor, type AssetKind, type PromptProfile } from './promptprofiles';
-import { paintWalkStrip, stripFrame } from './poses';
+import { paintPoseStrip, stripFrame } from './poses';
 
 export type { ProcessedImage };
 export { processSprite as cutoutSprite };
@@ -112,6 +112,7 @@ async function tiledPreview(png: Buffer): Promise<Buffer> {
 
 /** What changes in each variant, painted from the base image as a reference. */
 export const VARIANTS: Record<string, { kinds: AssetKind[]; change: string }> = {
+  strike: { kinds: ['sprite'], change: 'attacking: ready, wind-up, strike and follow-through (four frames guided by pose skeletons)' },
   walk: { kinds: ['sprite'], change: 'walking toward the left (an eight-frame walk cycle guided by pose skeletons)' },
   walk_a: { kinds: ['sprite'], change: 'walking, caught mid-stride with the left leg reaching far forward and the right leg pushing off far behind, the arms swinging in opposition' },
   walk_b: { kinds: ['sprite'], change: 'walking, caught mid-stride with the right leg reaching far forward and the left leg pushing off far behind, the arms swinging in opposition' },
@@ -376,7 +377,7 @@ async function generateCandidate(rec: AssetRecord, style: string, worldSeed: str
   const g = genai();
   const seed = hashOf(worldSeed, rec.key, attempt + (rec.roll ?? 0) * 1000) % 2147483647;
   // Humanoid walk cycles: a pose-guided sheet of frames painted from the approved character.
-  if (rec.variant === 'walk' && reference?.sprite) return paintWalkStrip(reference.sprite, rec.prompt, seed);
+  if ((rec.variant === 'walk' || rec.variant === 'strike') && reference?.sprite) return paintPoseStrip(rec.variant, reference.sprite, rec.prompt, seed);
   const { prompt, negative } = buildPrompt(rec, style);
   const raw = await g.image(KIND_PURPOSE[rec.kind], {
     prompt,
@@ -474,7 +475,7 @@ export async function produceAssets(
       const { rec } = entry;
       let img = entry.img;
       const ref = rec.ref ? refs.get(rec.ref) : undefined;
-      // A walk strip is judged by its passing frame against the character it was painted from.
+      // An animation strip is judged by one middle frame (a walk's passing pose, an attack's strike) against its character.
       const judged = img.frames ? await stripFrame(img.png, img.frames, 2) : img.png;
       const review = await qualityCheck(judged, rec.kind, rec.variant ? `${rec.prompt}, ${VARIANTS[rec.variant]?.change ?? rec.variant}` : rec.prompt, ref ? fs.readFileSync(path.join(outDir, fileFor(rec.ref!))) : undefined);
       // The game draws characters facing left (mirrored to go right): a frame painted facing right is mirrored.

@@ -10,6 +10,7 @@ import {
   type PlayerState, type QuestDef, type QuestObjective, type ZoneDef, type NewObjectiveSpec,
 } from '@gd/shared';
 import { genai } from '../genai/service';
+import { BudgetExceeded } from '../genai/spend';
 import type { DecisionQuestion } from '../genai/types';
 import { currentObjectiveIndex, objectivesOf, type QuestEngine } from './quests';
 import type { WorldCtx } from './worldctx';
@@ -300,7 +301,10 @@ export class DialogueEngine {
       if (g.isProcedural('npc.decision')) throw new Error('procedural');
       decision = g.isDecision('npc.decision') ? await this.decisionModelTurn(userId, p, def, rt, input) : await this.llmDecision(userId, p, def, rt, input);
     } catch (e) {
-      if ((e as Error).message !== 'procedural') console.warn('[dialogue] model failed, using procedural brain:', (e as Error).message);
+      if (e instanceof BudgetExceeded) {
+        // Out of AI budget: say so once, and let people answer simply until it resets.
+        if (!s.messages.some((m) => m.speaker === 'narrator' && m.text === e.message)) s.messages.push({ speaker: 'narrator', text: e.message });
+      } else if ((e as Error).message !== 'procedural') console.warn('[dialogue] model failed, using procedural brain:', (e as Error).message);
       decision = this.proceduralDecision(userId, p, def, rt, input);
     }
     if (!this.sessions.has(userId)) return;

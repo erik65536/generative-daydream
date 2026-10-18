@@ -12,6 +12,8 @@ export interface CallContext {
   priority: Priority;
   /** Told why the call is waiting (null when it goes ahead again). */
   onWait?: (why: string | null) => void;
+  /** Whose budget pays for it (unset: the server's own). */
+  userId?: string;
 }
 
 const store = new AsyncLocalStorage<CallContext>();

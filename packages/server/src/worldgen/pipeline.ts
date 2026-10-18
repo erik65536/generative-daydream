@@ -22,6 +22,7 @@ import { bindWorld } from '../rules/bind';
 import type { RulesetIntent } from '../rules/intent';
 
 import { Job as WorldGenJob, JobYield, workerState, type JobPhase } from '../jobs/job';
+import { BudgetExceeded } from '../genai/spend';
 export { WorldGenJob };
 export type { JobPhase, GenLogEntry } from '../jobs/job';
 
@@ -112,6 +113,8 @@ async function step<T extends z.ZodType>(job: WorldGenJob, purpose: Purpose, lab
       const msg = (e as Error).message;
       if (job.cancelled) throw new Error('cancelled');
       if (e instanceof JobYield) throw e;
+      // Out of AI budget: retrying will not help today. Stop now; resume once the budget resets.
+      if (e instanceof BudgetExceeded) throw new StepFailed(`${label}: ${msg} Resume the build then.`);
       if (attempt >= STEP_TRIES) throw new StepFailed(`${label} failed ${STEP_TRIES} times (last: ${msg.slice(0, 200)}). Resume the build once the model service is working.`);
       problem = msg.slice(0, 600);
       const wait = STEP_BACKOFF_MS[attempt - 1] ?? 120_000;

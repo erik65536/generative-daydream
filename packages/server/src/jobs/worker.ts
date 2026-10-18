@@ -44,7 +44,8 @@ async function run(rec: JobRecord): Promise<void> {
   const renew = setInterval(() => renewLease(rec.id), 15_000);
   try {
     if (rec.attempts > MAX_ATTEMPTS) throw new Error(`stopped unexpectedly ${MAX_ATTEMPTS} times`);
-    await withCallContext({ priority: rec.kind === 'studio' ? 'studio' : 'background', onWait: (why) => job.waiting(why) }, () => execute(rec, job));
+    // The daydream's owner pays for its building, painting and studio work.
+    await withCallContext({ priority: rec.kind === 'studio' ? 'studio' : 'background', onWait: (why) => job.waiting(why), userId: rec.ownerId }, () => execute(rec, job));
     job.finish(job.cancelled ? 'cancelled' : 'done');
   } catch (e) {
     if (e instanceof JobYield) {

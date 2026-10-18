@@ -9,7 +9,7 @@ import { hideTip } from '../ui/common';
 import { navigate } from '../App';
 import { applyWorldTheme } from '../ui/theme';
 import { PadInput } from '../input/gamepad';
-import { PadLegend, PadPrompt, PadWheel } from '../ui/pad';
+import { PadPrompt, PadWheel } from '../ui/pad';
 
 export function GameScreen({ me, instanceId }: { me: Me; instanceId: string }) {
   const [gc, setGc] = useState<GameClient | null>(null);
@@ -207,7 +207,6 @@ function GameView({ me }: { me: Me }) {
         {loot && <LootWindow />}
         <Narration />
         <PadPrompt />
-        <PadLegend />
         <PadWheel />
         {note && <div className={`cursor-note ${note.ok ? '' : 'bad'}`} style={{ left: note.x, top: note.y }}>{note.text}</div>}
         {combat && !c.isMyTurn() && <div />}

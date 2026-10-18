@@ -175,5 +175,11 @@
   "worldGenParallelism": 1,
   "gpuIdleUnloadMs": 120000,
   "jobConcurrency": 1,
-  "waitForModelsMs": 1800000
+  "waitForModelsMs": 1800000,
+  "spending": {
+    "dailyPerUserUsd": 0.5,
+    "dailyTotalUsd": 3,
+    "adminsUnlimited": true,
+    "_comment": "Daily budgets for paid (cloud) models in dollars: per player (an administrator can set each player's own on the Users page) and for the whole server. Administrators are unlimited unless given their own budget. Providers may set \"pricing\": {\"inputPerM\", \"cachedPerM\", \"outputPerM\"}; OpenAI providers default to gpt-6-luna prices."
+  }
 }

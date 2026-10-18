@@ -470,13 +470,15 @@ export function onImageSettled(url: string, cb: () => void) {
 export interface PoseFrames {
   /** A walk-cycle strip: `frames` equal frames side by side, one full stride pair. */
   walk?: { img: HTMLImageElement; rel: number; frames: number };
+  /** An attack strip: ready, wind-up, strike, follow-through. */
+  strike?: { img: HTMLImageElement; rel: number; frames: number };
   walk_a?: { img: HTMLImageElement; rel: number };
   walk_b?: { img: HTMLImageElement; rel: number };
   attack?: { img: HTMLImageElement; rel: number };
 }
 
 /** Painted walk-cycle speed relative to the gait phase. */
-const STRIP_PACE = 0.7;
+const STRIP_PACE = 0.3;
 
 export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; amt?: number; t: number; downed?: boolean; hurt?: number; attack?: number; frames?: PoseFrames }) {
   const walking = !Number.isNaN(opts.walk);
@@ -488,11 +490,21 @@ export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageEl
   const f = opts.frames;
   const striking = !!opts.attack && opts.attack > 0.08 && opts.attack < 0.92;
   const cycle = walking && m > 0.3 && f?.walk && f.walk.img.complete && f.walk.img.naturalWidth > 0;
-  if (f?.attack && striking) ({ img, rel } = f.attack);
+  const strikeReady = !!f?.strike && f.strike.img.complete && f.strike.img.naturalWidth > 0;
+  if (strikeReady && opts.attack && opts.attack > 0.02 && opts.attack < 0.98) {
+    // Hold each key a moment: ready, then the wind-up, the blow (longest), the follow-through.
+    const a = opts.attack, n = f!.strike!.frames;
+    const i = Math.min(n - 1, a < 0.14 ? 0 : a < 0.38 ? 1 : a < 0.7 ? 2 : 3);
+    img = f!.strike!.img;
+    rel = f!.strike!.rel;
+    const fw = img.naturalWidth / n;
+    src = [i * fw, 0, fw, img.naturalHeight];
+  } else if (f?.attack && striking) ({ img, rel } = f.attack);
   else if (cycle) {
     // One period of the walk phase is a full cycle (two steps): pick the frame for this moment of it.
     const n = f!.walk!.frames;
-    // The gait phase runs at the procedural bob's pace; a painted cycle covers about 1.3 tiles, so feet don't skate.
+    // The gait phase runs at the procedural bob's pace (about 29 per second at walking speed); a painted cycle
+    // plays at about 1.4 per second, a natural walking cadence.
     const t = opts.walk * STRIP_PACE;
     const phase = (((t % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2);
     const i = Math.floor(phase * n) % n;

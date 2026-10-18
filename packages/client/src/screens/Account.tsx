@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Me, type UserRow } from '../api';
+import { api, type Me, type SpendingSummary, type UserRow } from '../api';
 import { Backdrop } from '../ui/Backdrop';
 import { TopBar } from './Lobby';
 import { ChangePassword } from './Auth';
@@ -15,7 +15,46 @@ export function Account({ me, onMe }: { me: Me; onMe: (me: Me) => void }) {
           <div className="panel-head"><h3>Your account</h3><div className="spacer" /><span className="muted small">{me.username} · {me.isAdmin ? 'administrator' : 'player'}</span></div>
           <div className="panel-body"><ChangePassword me={me} onDone={onMe} /></div>
         </div>
+        {me.ai && (
+          <div className="panel" style={{ marginTop: 14 }}>
+            <div className="panel-head"><h3>AI budget</h3></div>
+            <div className="panel-body col" style={{ gap: 8 }}>
+              <Budget spent={me.ai.spentToday} limit={me.ai.limit} />
+              <div className="hint">What building daydreams, painting checks and conversations with people have cost today on paid models. It resets at midnight. Local models are free.</div>
+            </div>
+          </div>
+        )}
       </div>
+    </div>
+  );
+}
+
+const usd = (v: number) => (v < 0.01 && v > 0 ? `$${v.toFixed(4)}` : `$${v.toFixed(2)}`);
+
+/** Spent today against a daily budget, as a bar. */
+function Budget({ spent, limit }: { spent: number; limit: number | null }) {
+  const frac = limit ? Math.min(1, spent / Math.max(0.0001, limit)) : 0;
+  return (
+    <div className="col" style={{ gap: 4 }}>
+      <div className="row small"><span>{usd(spent)} today</span><div className="spacer" /><span className="muted">{limit === null ? 'no daily limit' : `of ${usd(limit)}`}</span></div>
+      {limit !== null && <div className="budget-bar"><div style={{ width: `${frac * 100}%`, background: frac > 0.9 ? 'var(--danger)' : frac > 0.6 ? 'var(--gold)' : 'var(--good)' }} /></div>}
+    </div>
+  );
+}
+
+/** A user's daily budget: the server default, or their own. */
+function BudgetCell({ u, onSet }: { u: UserRow; onSet: (v: number | null) => void }) {
+  const [v, setV] = useState(u.dailyLimitUsd === null ? '' : String(u.dailyLimitUsd));
+  const commit = () => {
+    const t = v.trim();
+    if (t === '' ? u.dailyLimitUsd === null : Number(t) === u.dailyLimitUsd) return;
+    if (t !== '' && !(Number(t) >= 0)) return setV(u.dailyLimitUsd === null ? '' : String(u.dailyLimitUsd));
+    onSet(t === '' ? null : Number(t));
+  };
+  return (
+    <div className="row" style={{ gap: 4 }}>
+      <span className="muted small">$</span>
+      <input className="input" style={{ width: 64, padding: '3px 6px' }} value={v} placeholder="default" onChange={(e) => setV(e.target.value)} onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && commit()} title="Daily budget in dollars; empty uses the server default" />
     </div>
   );
 }
@@ -27,7 +66,8 @@ export function Users({ me }: { me: Me }) {
   const [name, setName] = useState('');
   const [admin, setAdmin] = useState(false);
   const [issued, setIssued] = useState<{ username: string; password: string; reset: boolean } | null>(null);
-  const load = () => api.users().then(setUsers, (e) => setError(e.message));
+  const [spending, setSpending] = useState<SpendingSummary | null>(null);
+  const load = () => Promise.all([api.users().then(setUsers), api.spending().then(setSpending)]).catch((e) => setError(e.message));
   useEffect(() => {
     load();
   }, []);
@@ -73,9 +113,18 @@ export function Users({ me }: { me: Me }) {
             </form>
             {issued && <IssuedPassword {...issued} onClose={() => setIssued(null)} />}
             {error && <div className="error-text">{error}</div>}
+            {spending && (
+              <div className="studio-ai col" style={{ gap: 6 }}>
+                <div className="small">AI spending today across the server</div>
+                <Budget spent={spending.today} limit={spending.dailyTotalUsd} />
+                <div className="hint">
+                  Default daily budget per player: {spending.dailyPerUserUsd === null ? 'none' : usd(spending.dailyPerUserUsd)}{spending.adminsUnlimited ? '; administrators are unlimited unless given their own' : ''}. Set these in config/genai.json under "spending"; set a player's own below (empty = default).
+                </div>
+              </div>
+            )}
             <table className="table">
               <thead>
-                <tr><th>User id</th><th>Role</th><th>Status</th><th>Created</th><th /></tr>
+                <tr><th>User id</th><th>Role</th><th>Status</th><th>AI today</th><th>Daily budget</th><th>7 days</th><th /></tr>
               </thead>
               <tbody>
                 {(users ?? []).map((u) => (
@@ -88,7 +137,9 @@ export function Users({ me }: { me: Me }) {
                       </select>
                     </td>
                     <td className="small muted">{u.mustChangePassword ? 'must set a password' : 'active'}</td>
-                    <td className="small muted">{new Date(u.createdAt).toLocaleDateString()}</td>
+                    <td className="small">{u.ai ? `${usd(u.ai.spentToday)}${u.ai.limit !== null ? ` / ${usd(u.ai.limit)}` : ''}` : '—'}</td>
+                    <td><BudgetCell u={u} onSet={(v) => act(() => api.setUserBudget(u.id, v))} /></td>
+                    <td className="small muted">{usd(u.spentWeek)}</td>
                     <td style={{ textAlign: 'right' }}>
                       {u.id !== me.id && (
                         <button
