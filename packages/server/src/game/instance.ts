@@ -202,7 +202,7 @@ export class GameInstance implements CombatHost {
   join(conn: Conn) {
     const p = this.state.players[conn.userId];
     if (!p) {
-      conn.send({ t: 'error', message: 'Create a character for this world first.' });
+      conn.send({ t: 'error', message: 'Create a character for this daydream first.' });
       return;
     }
     let set = this.conns.get(conn.userId);
@@ -1910,7 +1910,7 @@ export class GameInstance implements CombatHost {
   /** Crafting: raise an item's upgrade level (better base damage/defense). */
   private cmdUpgrade(p: PlayerState, itemId: string, charId?: string) {
     const up = this.r.crafting.upgrades;
-    if (!up.enabled) return this.sendError(p.userId, 'Items cannot be upgraded in this world.');
+    if (!up.enabled) return this.sendError(p.userId, 'Items cannot be upgraded in this daydream.');
     if (this.charActors(p).some((a) => a.combatId)) return this.sendError(p.userId, 'Not during combat.');
     const { item } = this.findOwnedItem(p, itemId, charId);
     if (!item || rx(this.r).item.get(item.baseId)?.category !== 'equipment') return;
@@ -1930,7 +1930,7 @@ export class GameInstance implements CombatHost {
   /** Crafting: replace one affix with a new random one. */
   private cmdEnchant(p: PlayerState, itemId: string, affixIndex: number, charId?: string) {
     const en = this.r.crafting.enchanting;
-    if (!en.enabled) return this.sendError(p.userId, 'Enchanting is not possible in this world.');
+    if (!en.enabled) return this.sendError(p.userId, 'Enchanting is not possible in this daydream.');
     if (this.charActors(p).some((a) => a.combatId)) return this.sendError(p.userId, 'Not during combat.');
     const { item } = this.findOwnedItem(p, itemId, charId);
     if (!item) return;

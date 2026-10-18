@@ -8,6 +8,8 @@ import { OBJ, base64ToBytes } from '@gd/shared';
 import { z } from 'zod';
 import { VARIANTS, assetBrief, imagePromptSystem, produceAssets, supportsVariants, variantKey, wantsDescriptivePrompts, writerProfile } from '../genai/images';
 import { genai } from '../genai/service';
+import fs from 'node:fs';
+import path from 'node:path';
 import { worldAssetDir } from '../storage';
 import { RoleDefSchema, normColors } from './schemas';
 import { conceptSummary } from './prompts';
@@ -18,9 +20,16 @@ export const ART_VERSION = 2;
 const PRESENTATIONS = ['feminine', 'masculine', 'androgynous'] as const;
 /** Player heroes come in each presentation the player can choose; the class look itself stays gender-neutral. */
 const PRESENTATION_SUBJECT: Record<(typeof PRESENTATIONS)[number], string> = {
-  feminine: 'a feminine-presenting hero (a woman, or clearly female if not human)',
-  masculine: 'a masculine-presenting hero (a man, or clearly male if not human)',
-  androgynous: 'an androgynous hero, neither clearly male nor female',
+  feminine: 'a woman (clearly female if not human)',
+  masculine: 'a man (clearly male if not human)',
+  androgynous: 'an androgynous person, neither clearly male nor female',
+};
+
+/** The presentation must read at a glance from the front, at game size, whatever the class description says. */
+const PRESENTATION_LOOK: Record<(typeof PRESENTATIONS)[number], string> = {
+  feminine: 'Her face, build and hair read as unmistakably feminine at a glance from the front (hair visible around the face or shoulders), and her outfit is cut for her, keeping its colours and pieces.',
+  masculine: 'His face, build and hair read as unmistakably masculine at a glance from the front, and his outfit is cut for him, keeping its colours and pieces.',
+  androgynous: 'Their face, build and hair are deliberately ambiguous, neither clearly male nor female, and their outfit keeps its colours and pieces.',
 };
 
 const TEXTURE_ROLES: TileRole[] = ['floor', 'floorAlt', 'path', 'wall', 'water'];
@@ -174,7 +183,7 @@ function collectAssets(w: WorldDefinition, level: 'essential' | 'full'): { rec: 
     for (const r of DIRECTED_ROLES) {
       if (TEXTURE_ROLES.includes(r) || !use.roles.has(r)) continue;
       // Every object stands on the map's floor; a light in particular must be a free-standing version.
-      const stand = r === 'light' ? ', shown as a free-standing light source on its own stand or base' : '';
+      const stand = r === 'light' ? ', shown as a free-standing light source on its own stand or base' : r === 'sign' ? ', its face left blank: plain panels with no letters, numbers, symbols or logos' : '';
       const prompt = `${ts.roles[r].name}: ${ts.roles[r].prompt || ts.roles[r].name}${stand} (found in ${ts.name})`;
       add(`obj_${ts.id}_${r}`, 'object', prompt);
       if (r === 'chest') variants(`obj_${ts.id}_${r}`, 'object', prompt, ['open']);
@@ -185,7 +194,7 @@ function collectAssets(w: WorldDefinition, level: 'essential' | 'full'): { rec: 
     add(key, 'sprite', prompt);
     if (poses) variants(key, 'sprite', prompt, POSES);
   };
-  for (const o of w.origins) for (const pres of PRESENTATIONS) sprite(`spr_origin_${o.id}_${pres}`, `${PRESENTATION_SUBJECT[pres]}: ${o.appearance}, ${o.name}, the player's hero`);
+  for (const o of w.origins) for (const pres of PRESENTATIONS) sprite(`spr_origin_${o.id}_${pres}`, `The player's hero, ${PRESENTATION_SUBJECT[pres]}, a ${o.name}: ${o.appearance}. ${PRESENTATION_LOOK[pres]}`);
   for (const n of w.npcs) sprite(`spr_npc_${n.id}`, `${n.appearance}, ${n.title}`);
   for (const f of w.families) for (const m of f.members) sprite(`spr_mon_${f.id}_${m.archetype}`, `${m.appearance || m.name}, ${m.name}, hostile creature`);
   for (const b of w.bosses) sprite(`spr_boss_${b.id}`, `${b.appearance}, ${b.name} ${b.title}, imposing boss`);
@@ -230,7 +239,7 @@ const PromptBatch = z.object({ prompts: z.array(z.object({ key: z.string(), prom
  * Turn short asset briefs into full descriptive prompts, in batches, while the text model is still resident
  * (so a local GPU swaps to the image model once). Assets without a written prompt fall back to a template.
  */
-export async function writeImagePrompts(w: WorldDefinition, plan: AssetRecord[], report: (msg: string) => void, shouldStop?: () => boolean, onCount?: (done: number, total: number) => void): Promise<void> {
+export async function writeImagePrompts(w: WorldDefinition, plan: AssetRecord[], report: (msg: string) => void, shouldStop?: () => boolean, onCount?: (done: number, total: number) => void, notes?: Map<string, string>): Promise<void> {
   if (!wantsDescriptivePrompts()) return;
   // Variants are written from a template around their base image; they need no prompt of their own.
   const todo = plan.filter((r) => !r.imagePrompt && !r.variant);
@@ -240,7 +249,7 @@ export async function writeImagePrompts(w: WorldDefinition, plan: AssetRecord[],
   for (let i = 0; i < todo.length; i += BATCH) {
     if (shouldStop?.()) return;
     const batch = todo.slice(i, i + BATCH);
-    const briefs = batch.map((r) => `[${r.key}] ${assetBrief(r, w.concept.artStyle)}`).join('\n\n');
+    const briefs = batch.map((r) => `[${r.key}] ${assetBrief(r, w.concept.artStyle)}${notes?.get(r.key) ? `\nEARLIER ATTEMPTS WERE REJECTED: ${notes.get(r.key)}. Write the prompt so the image avoids this.` : ''}`).join('\n\n');
     try {
       const out = await genai().structured('image.prompt', {
         system,
@@ -307,5 +316,56 @@ export async function generateArt(w: WorldDefinition, level: 'essential' | 'full
         onAsset?.();
       }, shouldStop);
     }
+  }
+  await repairWeak(w, plan, report, onAsset, shouldStop);
+}
+
+/**
+ * Images that never passed the checker are painted again from a rewritten prompt: the prompt writer sees what
+ * was wrong (text on a sign, a puddle instead of a surface, a haze) and avoids it. A repair replaces the image
+ * only when it scores better, so nothing gets worse; after the last pass the best attempt stays.
+ */
+async function repairWeak(w: WorldDefinition, plan: AssetRecord[], report: (msg: string, frac: number) => void, onAsset?: () => void, shouldStop?: () => boolean) {
+  const minScore = genai().purpose('image.check').minScore ?? 6;
+  const outDir = worldAssetDir(w.id);
+  const tmp = path.join(outDir, '.repair');
+  const fileFor = (key: string) => `${key.replace(/[^a-z0-9_.-]/gi, '_')}.png`;
+  for (let pass = 1; pass <= 2; pass++) {
+    if (shouldStop?.()) return;
+    const weak = plan.filter((r) => !r.ref).filter((r) => {
+      const a = w.assets[r.key];
+      return !a || a.status === 'failed' || (a.status === 'ok' && (a.score ?? 10) < minScore);
+    });
+    if (!weak.length) return;
+    report(`Repairing ${weak.length} weak image${weak.length === 1 ? '' : 's'} (pass ${pass})`, 1);
+    const custom = (k: string) => !!w.artOverrides?.[k]?.imagePrompt;
+    const notes = new Map(weak.map((r) => [r.key, w.assets[r.key]?.error || 'it scored poorly with the art checker']));
+    const keptPrompts = new Map(weak.map((r) => [r.key, w.assets[r.key]?.imagePrompt]));
+    const recs: AssetRecord[] = weak.map((r) => ({ ...r, status: 'pending', roll: (r.roll ?? 0) + 100 * pass, imagePrompt: custom(r.key) ? r.imagePrompt : undefined }));
+    await writeImagePrompts(w, recs.filter((r) => !custom(r.key)), (m) => report(m, 1), shouldStop, undefined, notes);
+    // Variants of repaired bases are repainted with them (in the scratch folder, from the new base).
+    const keys = new Set(recs.map((r) => r.key));
+    const variants = plan.filter((r) => r.ref && keys.has(r.ref)).map((r) => ({ ...r, status: 'pending' as const, roll: (r.roll ?? 0) + 100 * pass }));
+    fs.rmSync(tmp, { recursive: true, force: true });
+    fs.mkdirSync(tmp, { recursive: true });
+    const better = new Set<string>();
+    for (const stage of STAGES) {
+      const batch = [...recs, ...variants].filter((r) => stage.pick(r) && (!r.ref || keys.has(r.ref)));
+      if (!batch.length) continue;
+      await produceAssets(batch, w.concept.artStyle, tmp, w.seed, (res) => {
+        const old = w.assets[res.key];
+        const improves = res.status === 'ok' && (!old || old.status !== 'ok' || (res.score ?? 0) > (old.score ?? 0) || (!!res.ref && better.has(res.ref)));
+        if (!improves) return;
+        if (!res.ref) better.add(res.key);
+        fs.copyFileSync(path.join(tmp, res.file!), path.join(outDir, fileFor(res.key)));
+        w.assets[res.key] = { ...res, file: fileFor(res.key) };
+        report(`Repaired ${res.key} (score ${(old?.score ?? 0).toFixed(1)} → ${(res.score ?? 0).toFixed(1)})`, 1);
+        linkAssets(w);
+        onAsset?.();
+      }, shouldStop);
+    }
+    fs.rmSync(tmp, { recursive: true, force: true });
+    // Where the old image stays, so does the prompt that made it.
+    for (const [k, prompt] of keptPrompts) if (!better.has(k) && w.assets[k]) w.assets[k] = { ...w.assets[k]!, imagePrompt: prompt };
   }
 }

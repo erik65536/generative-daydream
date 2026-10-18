@@ -9,10 +9,10 @@ const UNLOAD_AFTER_MS = 30_000;
 
 /** Why a save can't be played with the current engine (null if it can). */
 export function incompatibility(state: InstanceState, world: WorldDefinition | null): string | null {
-  if (!world) return 'Its world no longer exists.';
-  if (!world.ruleset) return 'Its world was generated before rules were generated per world. Regenerate the world’s rules on the world page, then start a new journey.';
+  if (!world) return 'Its daydream no longer exists.';
+  if (!world.ruleset) return 'Its daydream was made before rules were made per daydream. Regenerate the daydream’s rules on its page, then start a new journey.';
   if ((state.rulesVersion ?? 0) !== RULESET_VERSION || Object.values(state.players).some((p) => p.party.some((c) => !c.classId || !world.ruleset.classes.some((k) => k.id === c.classId))))
-    return 'This journey was started under an older rules engine (or before the world’s rules were regenerated). Start a new journey.';
+    return 'This reverie began under an older rules engine (or before the daydream’s rules were regenerated). Start a new reverie.';
   return null;
 }
 
@@ -74,7 +74,7 @@ class InstanceManager {
       id,
       worldId: world.id,
       ownerId,
-      name: name.trim().slice(0, 60) || `${ownerName}'s journey`,
+      name: name.trim().slice(0, 60) || `${ownerName}'s reverie`,
       createdAt: Date.now(),
       updatedAt: Date.now(),
       clock: 8 * 60,

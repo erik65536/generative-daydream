@@ -26,7 +26,7 @@ export function AuthScreen({ onAuthed }: { onAuthed: (me: Me) => void }) {
       <Backdrop />
       <div className="auth">
         <div className="title">Generative<br />Daydream</div>
-        <div className="subtitle">Describe a world. Then walk into it.</div>
+        <div className="subtitle">Describe a daydream. Then walk into it.</div>
         <form className="panel panel-body col" style={{ padding: 24, gap: 14 }} onSubmit={submit}>
           <div className="field">
             <label>User id</label>

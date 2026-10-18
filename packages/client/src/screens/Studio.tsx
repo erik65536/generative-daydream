@@ -85,7 +85,7 @@ export function Studio({ me, worldId }: { me: Me; worldId: string }) {
       <div className="page-inner studio">
         <div className="row" style={{ gap: 12, marginBottom: 12 }}>
           <button className="btn ghost sm" onClick={() => navigate(`#/world/${w.id}`)}>← {w.concept.title}</button>
-          <div className="h1" style={{ margin: 0, fontSize: 24 }}>World studio</div>
+          <div className="h1" style={{ margin: 0, fontSize: 24 }}>Daydream studio</div>
           <div className="spacer" />
           {stale > 0 && !busy && (
             <button className="btn sm" title="Paint every image whose prompt changed or that is missing" onClick={() => ctx.task({ kind: 'paint', keys: view.art.filter((a) => a.stale && !a.ref).map((a) => a.key), reroll: false })}>
@@ -237,7 +237,7 @@ function ArtCard({ ctx, k, compact }: { ctx: Ctx; k: string; compact?: boolean }
           <div className="field">
             <label>Brief (what to depict)</label>
             <textarea className="input" rows={2} value={brief} onChange={(x) => setBrief(x.target.value)} />
-            {custom && <div className="tiny dim">The world's own brief: {e.defaultBrief}</div>}
+            {custom && <div className="tiny dim">The daydream's own brief: {e.defaultBrief}</div>}
           </div>
           <div className="field">
             <label>Image prompt (written for the image model{rec?.imagePrompt ? '' : '; written when painted'})</label>
@@ -261,7 +261,7 @@ function ArtCard({ ctx, k, compact }: { ctx: Ctx; k: string; compact?: boolean }
                 Save prompts
               </button>
             )}
-            {(custom || customPrompt) && <button className="btn sm ghost" disabled={ctx.busy} onClick={() => ctx.edit({ type: 'art', key: k, brief: null, imagePrompt: null })}>Reset to the world's</button>}
+            {(custom || customPrompt) && <button className="btn sm ghost" disabled={ctx.busy} onClick={() => ctx.edit({ type: 'art', key: k, brief: null, imagePrompt: null })}>Reset to the daydream's</button>}
             <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.task({ kind: 'paint', keys: [k], reroll: !e.stale })}>{e.stale ? 'Paint' : 'Repaint'}{variants.length ? ' (with poses)' : ''}</button>
           </div>
         </div>
@@ -390,7 +390,7 @@ function Rebuild({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
   const what = z.kind === 'town' ? 'new residents, buildings and side quests' : 'new lore notes and shrine';
   const run = () => {
     const intro = `Build a new map for ${z.name}${content ? ` with ${what} from the AI` : ''}. Monsters, chests and people are placed again; its exits still lead to the same places.`;
-    ctx.task({ kind: 'zone', zoneId: z.id, plan: edited ? plan : undefined, content, guidance: g }, `${intro}\n\nSaved journeys standing in this place may find themselves somewhere odd. Continue?`).then(() => setG(''));
+    ctx.task({ kind: 'zone', zoneId: z.id, plan: edited ? plan : undefined, content, guidance: g }, `${intro}\n\nReveries standing in this place may find themselves somewhere odd. Continue?`).then(() => setG(''));
   };
   return (
     <div className="studio-ai col" style={{ gap: 6 }}>
@@ -418,7 +418,7 @@ function Rebuild({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
       </div>
       <div className="hint">
         {edited ? 'Your edited plan is used.' : g.trim() ? 'The plan is unchanged, so the AI chooses the level design from your direction.' : 'Same plan, new seed.'}
-        {content ? ' The direction also guides the new content.' : ''} Saved journeys standing in this place may land in odd spots.
+        {content ? ' The direction also guides the new content.' : ''} Reveries standing in this place may land in odd spots.
       </div>
     </div>
   );

@@ -726,7 +726,7 @@ export function MapWindow({ onClose }: { onClose: () => void }) {
   const nearWaypoint = zone.features.some((f) => f.kind === 'waypoint' && leader && Math.hypot(f.x - leader.x, f.y - leader.y) < 3);
   const color = (k: string) => (k === 'town' ? '#ffd890' : k === 'dungeon' ? '#ff8a70' : '#9fd88a');
   return (
-    <Window title="World map" onClose={onClose} style={{ left: '50%', top: 70, transform: 'translateX(-50%)', width: W + 34 }}>
+    <Window title="Map" onClose={onClose} style={{ left: '50%', top: 70, transform: 'translateX(-50%)', width: W + 34 }}>
       <div className="panel-body">
         <svg width={W} height={H} className="worldmap">
           <defs>
@@ -898,7 +898,7 @@ export function CraftWindow({ onClose }: { onClose: () => void }) {
           )}
         </div>
       )}
-      {!tabs.length && <div className="panel-body muted">There is no crafting in this world.</div>}
+      {!tabs.length && <div className="panel-body muted">There is no crafting in this daydream.</div>}
     </Window>
   );
 }
@@ -915,12 +915,12 @@ export function MenuWindow({ onClose, onHelp, onCodex }: { onClose: () => void; 
   return (
     <Window title={instanceName ?? 'Menu'} onClose={onClose} style={{ left: '50%', top: '14%', transform: 'translateX(-50%)', width: 430 }}>
       <div className="panel-body col">
-        <div className="label">Hard save</div>
+        <div className="label">Keep a memory</div>
         <div className="row">
-          <input className="input grow" placeholder="Save name" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.stopPropagation()} />
-          <button className="btn" onClick={() => { c.send({ t: 'hard_save', name }); setSaved('Saved as a separate copy you can return to.'); setName(''); }}>Save</button>
+          <input className="input grow" placeholder="Name this memory" value={name} onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.stopPropagation()} />
+          <button className="btn" onClick={() => { c.send({ t: 'hard_save', name }); setSaved('Kept. You can return to this moment from the daydream page.'); setName(''); }}>Keep</button>
         </div>
-        <div className="hint">{saved || 'Progress is saved continuously. A hard save is a snapshot you can load later from the world page.'}</div>
+        <div className="hint">{saved || 'Progress is kept as you play. A memory is a moment you can return to later from the daydream page.'}</div>
         <div className="ornament" />
         <div className="label">Difficulty</div>
         <div className="seg">
@@ -928,15 +928,15 @@ export function MenuWindow({ onClose, onHelp, onCodex }: { onClose: () => void; 
             <button key={d} className={`btn sm ${player.difficulty === d ? 'primary' : 'ghost'}`} disabled={!isOwner} onClick={() => c.send({ t: 'set_difficulty', difficulty: d })}>{r.difficulty[d].name}</button>
           ))}
         </div>
-        <div className="hint">{isOwner ? 'Changes your foes from the next fight on. See the codex for details.' : 'Only the owner of this journey can change it.'}</div>
+        <div className="hint">{isOwner ? 'Changes your foes from the next fight on. See the codex for details.' : 'Only the owner of this reverie can change it.'}</div>
         <div className="ornament" />
         <label className="row small" style={{ cursor: isOwner ? 'pointer' : 'default', opacity: isOwner ? 1 : 0.5 }}>
           <input type="checkbox" disabled={!isOwner} checked={keepRunning} onChange={(e) => { c.send({ t: 'set_options', keepRunning: e.target.checked }); c.update({ keepRunning: e.target.checked }); }} />
-          Keep the world running while I’m away (time and events continue)
+          Keep this reverie running while I’m away (time and events continue)
         </label>
         <label className="row small" style={{ cursor: isOwner ? 'pointer' : 'default', opacity: isOwner ? 1 : 0.5 }}>
           <input type="checkbox" disabled={!isOwner} checked={open} onChange={(e) => { c.send({ t: 'set_options', open: e.target.checked }); c.update({ open: e.target.checked }); }} />
-          Let other players join this world (experimental)
+          Let other dreamers join this reverie (experimental)
         </label>
         {world.input.combatMode === 'party_npc' && (
           <label className="row small" style={{ cursor: 'pointer' }}>
@@ -993,7 +993,7 @@ export function HelpWindow({ onClose }: { onClose: () => void }) {
           </tbody>
         </table>
         <p className="hint" style={{ marginTop: 10 }}>
-          Combat is turn-based: each turn grants {t?.actionPoints ?? 'action points'}, and moving and acting spend them. The codex (X) explains the rules of this world.
+          Combat is turn-based: each turn grants {t?.actionPoints ?? 'action points'}, and moving and acting spend them. The codex (X) explains the rules of this daydream.
         </p>
         <p className="hint">You can say anything to anyone. People remember what you tell them, react to gifts and abilities, and may change your {t?.quest.toLowerCase() ?? 'quest'}s in response.</p>
       </div>

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type Me, type WorldSummary } from '../api';
-import { Backdrop, WorldArt } from '../ui/Backdrop';
+import { Backdrop, DaydreamArt } from '../ui/Backdrop';
 import { navigate } from '../App';
 
 export function TopBar({ me, onLogout }: { me: Me; onLogout?: () => void }) {
@@ -43,14 +43,14 @@ export function Lobby({ me, onLogout }: { me: Me; onLogout: () => void }) {
       <Backdrop />
       <TopBar me={me} onLogout={onLogout} />
       <div className="page-inner">
-        <h1 className="h1">Worlds</h1>
-        <p className="lede">Each world is dreamed once — its places, people, history and secrets — and can then be played any number of times.</p>
+        <h1 className="h1">Daydreams</h1>
+        <p className="lede">Each daydream is dreamed once — its places, people, history and secrets — and can then be lived in any number of reveries.</p>
         {error && <div className="error-text">{error}</div>}
         <div className="cards" style={{ marginTop: 22 }}>
           <div className="card new" onClick={() => navigate('#/create')}>
             <div className="col" style={{ alignItems: 'center', gap: 6 }}>
               <div className="display gold" style={{ fontSize: 40, lineHeight: 1 }}>+</div>
-              <div className="display gold">Dream a new world</div>
+              <div className="display gold">Dream a new daydream</div>
               <div className="muted small">Describe a setting; the engine builds the rest.</div>
             </div>
           </div>
@@ -60,7 +60,7 @@ export function Lobby({ me, onLogout }: { me: Me; onLogout: () => void }) {
         </div>
         {others.length > 0 && (
           <>
-            <h2 className="h2" style={{ marginTop: 40 }}>Worlds by other dreamers</h2>
+            <h2 className="h2" style={{ marginTop: 40 }}>Daydreams of other dreamers</h2>
             <div className="cards" style={{ marginTop: 14 }}>
               {others.map((w) => (
                 <WorldCard key={w.id} w={w} />
@@ -68,7 +68,7 @@ export function Lobby({ me, onLogout }: { me: Me; onLogout: () => void }) {
             </div>
           </>
         )}
-        {worlds && !worlds.length && <p className="muted" style={{ marginTop: 20 }}>No worlds yet. Dream the first one.</p>}
+        {worlds && !worlds.length && <p className="muted" style={{ marginTop: 20 }}>No daydreams yet. Dream the first one.</p>}
       </div>
     </div>
   );
@@ -78,7 +78,7 @@ function WorldCard({ w }: { w: WorldSummary }) {
   return (
     <div className="card" onClick={() => navigate(`#/world/${w.id}`)}>
       <div className="art">
-        <WorldArt id={w.id} palette={w.palette} />
+        <DaydreamArt id={w.id} palette={w.palette} art={w.coverArt} />
       </div>
       <div className="body">
         <div className="title">{w.title}</div>
@@ -90,7 +90,7 @@ function WorldCard({ w }: { w: WorldSummary }) {
           <span className="badge gray">{LENGTH_LABEL[w.input.length]}</span>
           <span className="badge gray">{MODE_LABEL[w.input.combatMode]}</span>
           {w.status === 'ready' && <span className="badge gray">{w.zones} places · {w.npcs} people · {w.quests} quests</span>}
-          {w.status === 'ready' && (w.rules ? <span className="badge" title={w.rules.classes.join(', ')}>{w.rules.name}</span> : <span className="badge red" title="Generate this world's rules on its page to play it.">Needs rules</span>)}
+          {w.status === 'ready' && (w.rules ? <span className="badge" title={w.rules.classes.join(', ')}>{w.rules.name}</span> : <span className="badge red" title="Generate this daydream's rules on its page to play it.">Needs rules</span>)}
         </div>
       </div>
     </div>

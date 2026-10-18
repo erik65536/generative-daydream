@@ -124,7 +124,7 @@ export const LEASE_MS = 60_000;
 /** Queue a job. One active job per world; a few per person. */
 export function enqueue(kind: JobKind, worldId: string, owner: { id: string; name: string }, params: unknown, opts: { priority?: number; maxPerOwner?: number; step?: string; phases?: Omit<JobPhase, 'status'>[] } = {}): JobRecord {
   return tx(() => {
-    if (q.activeForWorld.get(worldId)) throw new JobConflict('Something is already being made for this world; wait for it to finish.');
+    if (q.activeForWorld.get(worldId)) throw new JobConflict('Something is already being made for this daydream; wait for it to finish.');
     if (opts.maxPerOwner && (q.activeForOwner.get(owner.id) as { n: number }).n >= opts.maxPerOwner) throw new JobConflict(`You already have ${opts.maxPerOwner} jobs queued or running; wait for one to finish.`);
     const id = `j_${crypto.randomBytes(6).toString('hex')}`;
     const now = Date.now();

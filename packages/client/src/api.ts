@@ -50,6 +50,8 @@ export interface WorldSummary {
   quests: number;
   palette: { primary: string; secondary: string; accent: string; ui: string };
   cover?: string;
+  /** The daydream's own art for its card. */
+  coverArt?: { floor?: string; figures: string[] };
   artProgress: { ok: number; total: number };
   job?: { status: string; progress: number; step: string; error?: string; queuePosition?: number };
 }

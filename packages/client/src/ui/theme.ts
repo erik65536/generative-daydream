@@ -77,17 +77,18 @@ export function applyWorldTheme(world: ThemeSource | null | undefined): () => vo
   const ui = hexToHsl(p.ui) ?? hexToHsl(p.secondary);
   if (primary) {
     // Titles and lines must stay readable on dark panels whatever the palette says.
-    const title = clampL(primary, 0.58, 0.72, 0.75);
+    // Muted: the palette tints the interface without making it loud.
+    const title = clampL(primary, 0.6, 0.72, 0.42);
     root.setProperty('--gold', hsl(title));
     root.setProperty('--gold-2', hsl({ ...title, l: Math.min(0.86, title.l + 0.14) }));
-    root.setProperty('--line', hsl(title, 0.28));
-    root.setProperty('--line-strong', hsl(title, 0.6));
-    root.setProperty('--btn-primary-a', hsl({ ...title, l: 0.55, s: Math.min(0.6, title.s) }));
-    root.setProperty('--btn-primary-b', hsl({ ...title, l: 0.33, s: Math.min(0.6, title.s) }));
-    root.setProperty('--btn-primary-edge', hsl({ ...title, l: 0.7 }));
+    root.setProperty('--line', hsl(title, 0.22));
+    root.setProperty('--line-strong', hsl(title, 0.45));
+    root.setProperty('--btn-primary-a', hsl({ ...title, l: 0.32, s: Math.min(0.3, title.s) }));
+    root.setProperty('--btn-primary-b', hsl({ ...title, l: 0.22, s: Math.min(0.3, title.s) }));
+    root.setProperty('--btn-primary-edge', hsl({ ...title, l: 0.5, s: Math.min(0.35, title.s) }));
   }
   if (accent) {
-    const a = clampL(accent, 0.5, 0.66, 0.85);
+    const a = clampL(accent, 0.5, 0.62, 0.5);
     root.setProperty('--accent', hsl(a));
     root.setProperty('--accent-glow', hsl(a, 0.28));
   }

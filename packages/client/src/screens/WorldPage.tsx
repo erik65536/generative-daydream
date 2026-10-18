@@ -3,7 +3,7 @@ import type { InstanceSummary, Ruleset } from '@gd/shared';
 import { api, jobActive, type JobPhase, type JobStatus, type Me, type WorldSummary } from '../api';
 import { CodexView } from '../ui/windows';
 import { setRules } from '../rules';
-import { Backdrop, WorldArt } from '../ui/Backdrop';
+import { Backdrop, DaydreamArt } from '../ui/Backdrop';
 import { LENGTH_LABEL, MODE_LABEL, SIZE_LABEL, TopBar } from './Lobby';
 import { navigate } from '../App';
 
@@ -78,7 +78,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
       <div className="page-inner">
         <div className="panel" style={{ overflow: 'hidden' }}>
           <div style={{ height: 180, position: 'relative' }}>
-            <WorldArt id={w.id} palette={w.palette} height={180} />
+            <DaydreamArt id={w.id} palette={w.palette} art={w.coverArt} height={180} />
             <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(transparent 30%, rgba(14,11,18,.95))' }} />
             <div style={{ position: 'absolute', left: 24, bottom: 16, right: 24 }}>
               <div className="h1" style={{ marginBottom: 2 }}>{job?.preview.title ?? w.title}</div>
@@ -146,16 +146,16 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
           <div className="row" style={{ marginTop: 18, alignItems: 'flex-start', gap: 18 }}>
             <div className="panel grow">
               <div className="panel-head">
-                <h3>Your journeys</h3>
+                <h3>Your reveries</h3>
                 <div className="spacer" />
-                <button className="btn primary" onClick={() => navigate(`#/world/${w.id}/new`)}>New journey</button>
+                <button className="btn primary" onClick={() => navigate(`#/world/${w.id}/new`)}>New reverie</button>
               </div>
               <div className="panel-body col">
-                {!mine.length && <div className="muted">No saves yet. Start a new journey to create your character.</div>}
+                {!mine.length && <div className="muted">No reveries yet. Start one to create your character.</div>}
                 {mine.map((s) => (
                   <div key={s.id} className="row" style={{ padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 10 }}>
                     <div className="grow">
-                      <div style={{ fontWeight: 600 }}>{s.name} {s.snapshotOf && <span className="badge gray">hard save</span>} {s.open && <span className="badge green">open</span>} {s.keepRunning && <span className="badge">keeps running</span>} <span className="badge gray">{ruleset?.difficulty[s.difficulty]?.name ?? s.difficulty}</span></div>
+                      <div style={{ fontWeight: 600 }}>{s.name} {s.snapshotOf && <span className="badge gray">memory</span>} {s.open && <span className="badge green">open</span>} {s.keepRunning && <span className="badge">keeps running</span>} <span className="badge gray">{ruleset?.difficulty[s.difficulty]?.name ?? s.difficulty}</span></div>
                       <div className="small muted">
                         Day {s.day} · {s.players.map((p) => `${p.name} (lv ${p.level})`).join(', ')} · {new Date(s.updatedAt).toLocaleString()}
                         {s.online ? ` · ${s.online} online` : ''}
@@ -164,7 +164,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
                     </div>
                     <button className="btn primary" disabled={!!s.incompatible} onClick={() => navigate(s.players.some((p) => p.userId === me.id) ? `#/play/${s.id}` : `#/join/${w.id}/${s.id}`)}>Continue</button>
                     {s.ownerId === me.id && (
-                      <button className="btn ghost sm" title="Delete save" onClick={() => confirm(`Delete "${s.name}"? This cannot be undone.`) && api.deleteInstance(s.id).then(() => setSaves((x) => x.filter((y) => y.id !== s.id)))}>✕</button>
+                      <button className="btn ghost sm" title="Delete reverie" onClick={() => confirm(`Delete "${s.name}"? This cannot be undone.`) && api.deleteInstance(s.id).then(() => setSaves((x) => x.filter((y) => y.id !== s.id)))}>✕</button>
                     )}
                   </div>
                 ))}
@@ -187,21 +187,20 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
               )}
               {w.ownerId === me.id && (
                 <div className="panel">
-                  <div className="panel-head"><h3>World art</h3></div>
+                  <div className="panel-head"><h3>Art</h3></div>
                   <div className="panel-body col">
                     <div className="small muted">{w.artProgress.total ? `${w.artProgress.ok} of ${w.artProgress.total} images generated.` : 'Using procedural art.'}</div>
                     <div className="row">
                       <button className="btn sm primary" onClick={() => api.regenArt(w.id, 'full', true).catch((e) => alert(e.message))}>Paint everything</button>
-                      <button className="btn sm" onClick={() => api.regenArt(w.id, 'essential').catch((e) => alert(e.message))}>Places & characters only</button>
                     </div>
                     <div className="hint">Only paints what is missing, failed, out of date or changed. Requires an image model in config/genai.json.</div>
-                    <button className="btn sm" onClick={() => navigate(`#/world/${w.id}/studio`)}>Open the world studio</button>
+                    <button className="btn sm" onClick={() => navigate(`#/world/${w.id}/studio`)}>Open the daydream studio</button>
                     <div className="hint">See every place, person, quest and image with the prompts behind them; edit them and regenerate any piece.</div>
                   </div>
                 </div>
               )}
               {w.ownerId === me.id && (
-                <button className="btn danger sm" onClick={() => confirm('Delete this world and its art? Saves will stop working.') && api.deleteWorld(w.id).then(() => navigate('#/'))}>Delete world</button>
+                <button className="btn danger sm" onClick={() => confirm('Delete this daydream and its art? Its reveries will stop working.') && api.deleteWorld(w.id).then(() => navigate('#/'))}>Delete daydream</button>
               )}
             </div>
           </div>
@@ -217,8 +216,8 @@ function RulesPanel({ w, me, ruleset, canRebalance, hasSaves, onView }: { w: Wor
   const [busy, setBusy] = useState(false);
   const run = async (mode: 'regenerate' | 'rebalance') => {
     const msg = mode === 'regenerate'
-      ? `Design a completely new ruleset for this world (classes, skills, items…)? The story, places and people stay. ${hasSaves ? 'Existing journeys will no longer be playable. ' : ''}New classes start with procedural art until you generate art again. This takes several minutes.`
-      : 'Run the balance simulation again on the current rules? Numbers may change; journeys stay playable. This takes several minutes.';
+      ? `Design a completely new ruleset for this daydream (classes, skills, items…)? The story, places and people stay. ${hasSaves ? 'Existing reveries will no longer be playable. ' : ''}New classes start with procedural art until you generate art again. This takes several minutes.`
+      : 'Run the balance simulation again on the current rules? Numbers may change; reveries stay playable. This takes several minutes.';
     if (!confirm(msg)) return;
     setBusy(true);
     try {

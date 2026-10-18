@@ -14,6 +14,12 @@ import type { DecisionQuestion } from '../genai/types';
 import { currentObjectiveIndex, objectivesOf, type QuestEngine } from './quests';
 import type { WorldCtx } from './worldctx';
 
+/** A recruitable person's starting feeling toward the player ("friendly"), and the feeling at which they agree to come along. */
+const RECRUIT_START = 30;
+const JOIN_AT = 15;
+/** The player asks someone to come along. */
+const ASKS_TO_JOIN = /\b(join (me|us|my|our)|travel with|come with (me|us)|come along|be my companion|companion|join (the|my|our) (party|team|group|crew|squad)|team up|adventure together|tag along|fight (with|alongside) (me|us))/i;
+
 export interface DialogueHost {
   ctx: WorldCtx;
   quests: QuestEngine;
@@ -73,7 +79,8 @@ export class DialogueEngine {
   }
 
   disposition(rt: NpcRuntime, userId: string) {
-    return rt.disposition[userId] ?? 0;
+    // People who could travel with the player were written as companions: they start out well disposed.
+    return rt.disposition[userId] ?? (this.recruitable(rt) ? RECRUIT_START : 0);
   }
 
   private send(userId: string) {
@@ -307,6 +314,20 @@ export class DialogueEngine {
     this.h.playerChanged(p);
   }
 
+  /** Could join the player's party now (a companion in a world played with recruited companions). */
+  private recruitable(rt: NpcRuntime): boolean {
+    const def = this.h.ctx.npcs.get(rt.npcId);
+    return !!def?.canJoinParty && !rt.partyOf && this.h.ctx.world.input.combatMode === 'party_npc';
+  }
+
+  /**
+   * The player asks a recruitable person who likes them to come along: they say yes. The decision is made here
+   * so the spoken reply (written to match the decision) and the outcome agree.
+   */
+  private acceptsJoin(p: PlayerState, def: NpcDef, rt: NpcRuntime, text: string): boolean {
+    return !!text && this.recruitable(rt) && def.canJoinParty && ASKS_TO_JOIN.test(text) && this.disposition(rt, p.userId) >= JOIN_AT;
+  }
+
   // ------------------------------------------------------------------ LLM decision
 
   private persona(p: PlayerState, def: NpcDef, rt: NpcRuntime): string {
@@ -373,7 +394,12 @@ export class DialogueEngine {
     if (npcItems.length) lines.push(`ITEMS YOU HAVE (give_item with itemRef):\n${npcItems.map((it, i) => `- item${i}: ${this.h.ctx.itemName(it)} — ${this.h.ctx.itemDescription(it)}`).join('\n')}`);
     if (this.teachList(def, p).length) lines.push(`SKILLS YOU CAN TEACH for ${this.teachPrice(p)} ${this.h.ctx.r.terminology.currency} (teach_skill with skillId):\n${this.teachList(def, p).map((sk) => `- ${sk}: ${this.h.ctx.skillName(sk)} — ${rx(this.h.ctx.r).skill.get(sk)?.description ?? ''}`).join('\n')}`);
     if (allowed.includes('open_trade')) lines.push('You run a shop: use open_trade when the player wants to buy or sell.');
-    if (allowed.includes('join_party')) lines.push('You could join the player as a travelling companion (join_party) if you trust them and it suits you.');
+    if (allowed.includes('join_party'))
+      lines.push(
+        this.acceptsJoin(p, def, rt, input.text)
+          ? `The player is asking you to travel with them, and you like them: you accept and join (join_party), in your own voice and manner.`
+          : `You are ready to travel with the player as a companion (join_party) — part of why you are here. If they ask and have not mistreated you, say yes, perhaps with a condition or a remark in character; do not string them along.`,
+      );
     if (knownZones.length) lines.push(`PLACES YOU KNOW (reveal_location with zoneId when you tell them how to get there): ${knownZones.map((zz) => `${zz.id}=${zz.name}`).join(', ')}`);
     const comm = this.h.communication();
     lines.push(`MEMORY: use "remember" for anything about the player worth recalling later (promises, personal details, deeds). If it is about a future date set dueInDays. "spread" says who you would tell (${['nobody — keep it to yourself', 'close friends and family', 'the whole town', 'anyone, far and wide'][comm]} is the most this world allows). Set gathering=true only for an event the community would gather for (a celebration, a memorial).`);
@@ -432,6 +458,7 @@ export class DialogueEngine {
       newObjective: a.newObjective as NewObjectiveSpec | undefined,
       newQuest: a.newQuest as NpcAction['newQuest'],
     }));
+    if (this.acceptsJoin(p, def, rt, input.text) && !actions.some((a) => a.type === 'join_party')) actions.push({ type: 'join_party' });
     return { actions, emotion: out.emotion as Emotion, speech: out.speech };
   }
 
@@ -453,7 +480,7 @@ export class DialogueEngine {
     if (c.knownZones.length) questions.zone = { type: 'choice', instructions: 'If revealing a location, which place?', criteria: Object.fromEntries(c.knownZones.map((zz) => [zz.id, zz.name])) };
     const ans = await g.decide('npc.decision', { state: `${this.persona(p, def, rt)}\n\n${c.lines.join('\n\n')}`, questions });
     const pick = (k: string) => (ans[k]?.type === 'choice' ? (ans[k] as { choice: string }).choice : undefined);
-    const type = (pick('action') ?? 'none') as NpcActionType;
+    const type = (this.acceptsJoin(p, def, rt, input.text) ? 'join_party' : pick('action') ?? 'none') as NpcActionType;
     const actions: NpcAction[] = [];
     const quest = pick('quest');
     const prog = quest ? c.involved.find((q) => q.def.id === quest) : undefined;
@@ -774,7 +801,7 @@ export class DialogueEngine {
       } else if (rt.partyOf === userId && has('part ways', 'leave the party', 'go home', 'dismiss', 'parted')) {
         actions.push({ type: 'leave_party' });
         say.push('If that is what you want. You know where to find me.');
-      } else if (def.canJoinParty && !rt.partyOf && has('join', 'travel with', 'come with', 'companion', 'party', 'adventure together')) {
+      } else if (def.canJoinParty && !rt.partyOf && ASKS_TO_JOIN.test(t)) {
         if (disp >= -5) {
           actions.push({ type: 'join_party' });
           say.push(pickLine(['About time someone asked. Lead the way.', 'Why not? It beats sitting here.', 'Alright. But I take my share of the loot.'], def.name));

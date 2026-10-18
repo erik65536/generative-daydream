@@ -393,8 +393,8 @@ export async function produceAssets(
     finished.add(rec.key);
     const b = best.get(rec.key);
     if (!b) return onDone({ ...rec, status: 'failed', error: errors.get(rec.key), attempts: attempts.get(rec.key) });
-    // A surface that never came close repeats its flaw across the whole floor: the procedural surface is better.
-    if (rec.kind === 'texture' && b.score < minScore - 1.5) return onDone({ ...rec, status: 'failed', error: `best attempt scored ${b.score.toFixed(1)}: ${b.problems.join('; ')}`, attempts: attempts.get(rec.key) });
+    // The best attempt is always kept (every world's art is its own; nothing falls back to procedural art). A weak
+    // one carries its problems in `error`, and the art job repairs it with a rewritten prompt.
     fs.mkdirSync(outDir, { recursive: true });
     const file = fileFor(rec.key);
     fs.writeFileSync(path.join(outDir, file), b.img.png);

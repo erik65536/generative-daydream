@@ -149,7 +149,7 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
 }
 
 export function TopRight({ open }: { open: (p: 'inventory' | 'character' | 'skills' | 'quests' | 'map' | 'menu' | 'help' | 'craft' | 'codex') => void }) {
-  const { zone, world, clockAt, paused, player } = useGame((s) => ({ zone: s.zone, world: s.world, clockAt: s.clock?.minute, paused: s.clock?.paused, player: s.player }));
+  const { zone, clockAt, paused } = useGame((s) => ({ zone: s.zone, clockAt: s.clock?.minute, paused: s.clock?.paused }));
   const [, force] = useState(0);
   useEffect(() => {
     const t = setInterval(() => force((x) => x + 1), 1000);
@@ -159,34 +159,45 @@ export function TopRight({ open }: { open: (p: 'inventory' | 'character' | 'skil
   const day = Math.floor(m / 1440) + 1;
   const h = Math.floor((m % 1440) / 60), mm = Math.floor(m % 60);
   void clockAt;
+  return (
+    <div className="topright">
+      <div className="map-head">
+        <div className="zone-name">{zone?.name}</div>
+        <div className="clock">
+          Day {day} · {String(h).padStart(2, '0')}:{String(mm).padStart(2, '0')}
+          {paused ? ' · paused' : ''}
+        </div>
+      </div>
+      <Minimap onOpen={() => open('map')} />
+    </div>
+  );
+}
+
+type Panel = Parameters<Parameters<typeof TopRight>[0]['open']>[0];
+
+/** The game's menus, as a slim bar in the bottom-right corner beside the action bar. */
+export function SystemBar({ open }: { open: (p: Panel) => void }) {
+  const { world, player } = useGame((s) => ({ world: s.world, player: s.player }));
   const points = player?.party.reduce((s, c) => s + c.treePoints, 0) ?? 0;
   const r = world?.ruleset;
   const crafting = !!r && (r.crafting.enabled || r.crafting.upgrades.enabled || r.crafting.enchanting.enabled);
-  const btn = (p: Parameters<typeof open>[0], label: string, k: string, badge?: number) => (
+  const btn = (p: Panel, label: string, k: string, badge?: number) => (
     <button className="btn" onClick={() => open(p)} {...tip(<div><b>{label}</b> <span className="dim">({k})</span></div>)}>
       <Icon name={p} />
       <span className="k">{k}</span>
-      {badge ? <span className="points" style={{ right: -4, top: -4 }}>{badge}</span> : null}
+      {badge ? <span className="points">{badge}</span> : null}
     </button>
   );
   return (
-    <div className="topright">
-      <Minimap onOpen={() => open('map')} />
-      <div className="zone-name">{zone?.name}</div>
-      <div className="clock">
-        Day {day} · {String(h).padStart(2, '0')}:{String(mm).padStart(2, '0')}
-        {paused ? ' · paused' : ''}
-      </div>
-      <div className="menu-btns">
-        {btn('character', 'Character', 'C')}
-        {btn('inventory', 'Inventory', 'I')}
-        {btn('skills', 'Talents', 'K', points)}
-        {btn('quests', r?.terminology.quest ? `${r.terminology.quest} log` : 'Quests', 'J')}
-        {crafting && btn('craft', 'Crafting', 'B')}
-        {btn('codex', 'Codex', 'X')}
-        {btn('map', 'Map', 'M')}
-        {btn('menu', 'Menu', 'Esc')}
-      </div>
+    <div className="systembar">
+      {btn('character', 'Character', 'C')}
+      {btn('inventory', 'Inventory', 'I')}
+      {btn('skills', 'Talents', 'K', points)}
+      {btn('quests', r?.terminology.quest ? `${r.terminology.quest} log` : 'Quests', 'J')}
+      {crafting && btn('craft', 'Crafting', 'B')}
+      {btn('codex', 'Codex', 'X')}
+      {btn('map', 'Map', 'M')}
+      {btn('menu', 'Menu', 'Esc')}
     </div>
   );
 }

@@ -30,7 +30,7 @@ export function corePrompt(world: string, input: WorldInput): string {
 Design the CORE RULES for this world.${overrideLines(input.rules)}
 - "numbers": how big numbers feel (cozy/silly worlds: small; grim/epic: medium; high-tech: large).
 - "health": what this world calls health (Health, Integrity, Spirits, Composure...) and its bar colour.
-- "terminology": names for experience, level, action points (short, like AP), currency, party, town, dungeon, wilderness, quest.
+- "terminology": names for experience, level, action points (short, like AP), currency, party, town, dungeon, wilderness, quest, and what this world calls a character's class ("calling") and their origin or ancestry ("kin"). Use the world's own idiom (an office world might say Job Title and Department).
 - "pools": 0-3 resources skills spend. Mark each physical, magical or any. Classes will be built around them.
 - "attributes": 3-6 attributes. Each lists 1-3 effects with weights 1-5. Effects: health, health_regen, pool (of = pool name), pool_regen, melee_damage, ranged_damage, skill_damage, all_damage, type_damage (of = damage type), subtype_damage (of = subtype), healing, crit_chance, crit_damage, dodge, movement, initiative, mitigation (of = damage type), resist_all, resist (of = subtype), trap_sense, lockpicking, barter, loot_find, life_steal, thorns. Give every major play style (melee, ranged, skills, healing) an attribute that feeds it.
 - "damageTypes": 1-3 broad categories, each with its own mitigation stat name (e.g. Physical → Armor, Magical → Ward).

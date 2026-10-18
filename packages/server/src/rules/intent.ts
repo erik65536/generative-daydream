@@ -31,7 +31,11 @@ export const CoreIntentSchema = z.object({
   intro: text(400).describe('Two sentences introducing how the world works mechanically, in-world voice.'),
   numbers: z.enum(['small', 'medium', 'large']).describe('How big numbers feel: small (health ~30), medium (~80), large (~400).'),
   health: z.object({ name, color }),
-  terminology: z.object({ xp: name, level: name, actionPoints: name, currency: name, party: name, town: name, dungeon: name, wilderness: name, quest: name }),
+  terminology: z.object({
+    xp: name, level: name, actionPoints: name, currency: name, party: name, town: name, dungeon: name, wilderness: name, quest: name,
+    calling: name.optional().describe('What a character class is called here (e.g. Calling, Discipline, Job Title, Specialty)'),
+    kin: name.optional().describe('What a character origin or ancestry choice is called here (e.g. Kin, Bloodline, Department, Background)'),
+  }),
   pools: z.array(z.object({ name, color, description: text(), use: z.enum(['physical', 'magical', 'any']) })).max(3).describe('0-3 resource pools skills spend (e.g. Stamina, Mana). Empty means skills only cost AP and cooldowns.'),
   attributes: z.array(z.object({ name, abbr: z.string().max(4), description: text(), effects: z.array(statPick).min(1).max(3) })).min(3).max(6),
   damageTypes: z.array(z.object({ name, color, description: text(140), mitigationName: name })).min(1).max(3).describe('Broad damage categories each with its own mitigation stat, e.g. Physical (Armor) and Magical (Ward).'),

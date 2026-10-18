@@ -20,7 +20,7 @@ const MAX_ATTEMPTS = 6;
 async function execute(rec: JobRecord, job: Job): Promise<void> {
   const world = (): WorldDefinition => {
     const w = loadWorld(rec.worldId);
-    if (!w) throw new Error('The world no longer exists.');
+    if (!w) throw new Error('The daydream no longer exists.');
     return w;
   };
   const p = rec.params as Record<string, unknown>;

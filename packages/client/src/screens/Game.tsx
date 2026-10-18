@@ -3,7 +3,7 @@ import { rx } from '@gd/shared';
 import type { Me } from '../api';
 import { GameClient, setClient, clearClient, useGame, client } from '../net/game';
 import { Renderer, type HoverInfo } from '../render/renderer';
-import { ActionBar, CombatLog, Narration, PartyFrames, Toasts, TopRight, TurnBar, startSkill } from '../ui/hud';
+import { ActionBar, CombatLog, Narration, PartyFrames, SystemBar, Toasts, TopRight, TurnBar, startSkill } from '../ui/hud';
 import { CharacterWindow, CodexWindow, CraftWindow, DialogWindow, HelpWindow, InventoryWindow, LootWindow, MapWindow, MenuWindow, QuestWindow, SkillsWindow, TradeWindow } from '../ui/windows';
 import { hideTip } from '../ui/common';
 import { navigate } from '../App';
@@ -177,6 +177,7 @@ function GameView({ me }: { me: Me }) {
       <div className="hud">
         <PartyFrames />
         <TopRight open={(p) => c.update({ panel: panel === p ? null : p })} />
+        <SystemBar open={(p) => c.update({ panel: panel === p ? null : p })} />
         <TurnBar />
         <ActionBar />
         <CombatLog />
@@ -209,7 +210,7 @@ function GameView({ me }: { me: Me }) {
           {status !== 'connecting' && (
             <div className="row">
               <button className="btn" onClick={() => location.reload()}>Reconnect</button>
-              <button className="btn ghost" onClick={() => navigate('#/')}>Back to worlds</button>
+              <button className="btn ghost" onClick={() => navigate('#/')}>Back to daydreams</button>
             </div>
           )}
           <span className="dim small">{me.username}</span>

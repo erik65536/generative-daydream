@@ -402,7 +402,7 @@ export interface Ruleset {
   /** Per-save difficulty: enemy multipliers over level and encounter adjustments. */
   difficulty: Record<DifficultyId, { name: string; enemyHp: Knots; enemyDmg: Knots; extraEnemyChance: number; eliteChance: number; lootMult: number }>;
 
-  terminology: { xp: string; level: string; actionPoints: string; party: string; town: string; dungeon: string; wilderness: string; quest: string; currency: string };
+  terminology: { xp: string; level: string; actionPoints: string; party: string; town: string; dungeon: string; wilderness: string; quest: string; currency: string; /** What a class is called (older worlds: absent). */ calling?: string; /** What an origin or ancestry choice is called. */ kin?: string };
 
   ui: { material: 'parchment' | 'wood' | 'stone' | 'metal' | 'glass' | 'organic' | 'paper' | 'neon'; ornament: 'none' | 'filigree' | 'runes' | 'rivets' | 'circuit' | 'vines'; typeface?: 'engraved' | 'classic' | 'modern' | 'condensed' | 'storybook' | 'gothic' | 'technical'; grading: { tint: string; saturation: number; contrast: number; vignette: number; grain: number } };
 

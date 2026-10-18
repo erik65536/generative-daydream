@@ -173,9 +173,6 @@ textarea.input { resize: vertical; min-height: 80px; line-height: 1.5; }
 .minimap canvas { width: 100%; height: 100%; }
 .zone-name { font-family: var(--display); color: var(--gold-2); font-size: 15px; text-shadow: 0 2px 6px #000; text-align: right; }
 .clock { font-size: 12px; color: var(--muted); text-shadow: 0 1px 3px #000; text-align: right; }
-.menu-btns { display: flex; gap: 6px; }
-.menu-btns .btn { padding: 0; width: 36px; height: 36px; position: relative; }
-.menu-btns .btn .k { position: absolute; bottom: 1px; right: 3px; font-size: 9px; color: var(--dim); }
 
 .actionbar { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 8px; }
 .slots { display: flex; gap: 5px; padding: 7px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
@@ -478,64 +475,6 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
   .minimap { width: 140px; height: 140px; }
 }
 
-/* =================================================================== polish */
-/* Party frames: portrait ring, level badge, glossy bars. */
-.pcard { padding: 7px 10px 7px 7px; width: 240px; border-radius: 12px; background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 90%, transparent), var(--panel)); }
-.pcard .portrait { width: 54px; height: 54px; border-radius: 50%; border: 2px solid var(--line-strong); box-shadow: 0 0 0 2px rgba(0,0,0,.55), inset 0 0 12px rgba(0,0,0,.6); }
-.pcard.sel .portrait { border-color: var(--gold); }
-.pcard .name { font-family: var(--display); font-weight: 500; letter-spacing: .03em; font-size: 13.5px; }
-.pcard .lvl { background: rgba(0,0,0,.45); border: 1px solid var(--line); border-radius: 99px; padding: 0 6px; font-family: var(--sans); font-weight: 700; }
-.bar { background: rgba(0,0,0,.55); box-shadow: inset 0 1px 2px rgba(0,0,0,.7), 0 1px 0 rgba(255,255,255,.04); height: 9px; }
-.bar > div { position: relative; }
-.bar > div::after { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 45%; background: linear-gradient(rgba(255,255,255,.28), rgba(255,255,255,0)); border-radius: inherit; }
-.bar.thin { height: 5px; }
-.bar .lbl { font-size: 9.5px; line-height: 9px; font-weight: 600; }
-
-/* Action bar: framed, bevelled slots, radial cooldowns, gem pips. */
-.slots { padding: 8px 10px; border-radius: 14px; background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 85%, transparent), var(--panel)); box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,.05); }
-.slot { width: 52px; height: 52px; border-radius: 10px; border: 1px solid rgba(255,255,255,.1); background: radial-gradient(circle at 50% 28%, rgba(255,255,255,.07), rgba(0,0,0,.45)), var(--panel-solid); box-shadow: inset 0 2px 4px rgba(0,0,0,.6), inset 0 -1px 0 rgba(255,255,255,.05); overflow: hidden; }
-.slot:hover { transform: translateY(-1px); }
-.slot .key { top: 3px; left: 5px; font-size: 9.5px; color: rgba(255,255,255,.55); text-shadow: 0 1px 2px #000; z-index: 2; }
-.slot .ap { bottom: 3px; right: 4px; min-width: 15px; height: 15px; border-radius: 99px; background: rgba(0,0,0,.7); border: 1px solid rgba(255,224,138,.5); display: grid; place-items: center; font-size: 9.5px; z-index: 2; }
-.slot.cd { filter: none; }
-.slot.cd::before { content: ''; position: absolute; inset: 0; z-index: 1; background: conic-gradient(rgba(0,0,0,.72) calc(var(--cdf, 1) * 360deg), rgba(0,0,0,.15) 0); }
-.slot .cdn { z-index: 2; font-family: var(--display); }
-.slot.na:not(.cd) { filter: grayscale(.7) brightness(.6); }
-.ap-row { padding: 6px 14px; background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 85%, transparent), var(--panel)); box-shadow: var(--shadow); }
-.pip { width: 15px; height: 15px; transform: rotate(45deg); border-radius: 3px; border: 1px solid rgba(255,230,140,.35); }
-.pip.on { background: linear-gradient(135deg, #fff6c8, #f0b030 55%, #a06a10); box-shadow: 0 0 9px rgba(255,200,80,.65); }
-.pip.spend { background: linear-gradient(135deg, #ffd0c0, #e05030 55%, #902010); box-shadow: 0 0 9px rgba(255,90,60,.6); }
-
-/* Top right: minimap ring with ticks; round icon buttons. */
-.minimap { border: 3px solid var(--line-strong); box-shadow: 0 0 0 2px rgba(0,0,0,.6), 0 0 0 5px color-mix(in srgb, var(--gold) 25%, transparent), var(--shadow), inset 0 0 36px rgba(0,0,0,.85); }
-.minimap::after { content: ''; position: absolute; inset: 0; border-radius: 50%; pointer-events: none; background: repeating-conic-gradient(from -2deg, rgba(255,230,160,.35) 0 4deg, transparent 4deg 90deg); -webkit-mask: radial-gradient(circle, transparent 92%, #000 93%); mask: radial-gradient(circle, transparent 92%, #000 93%); }
-.zone-name { font-size: 16px; letter-spacing: .06em; }
-.menu-btns .btn { width: 36px; height: 36px; border-radius: 50%; background: radial-gradient(circle at 50% 30%, rgba(255,255,255,.08), rgba(0,0,0,.5)), var(--panel-solid); }
-.menu-btns .btn:hover { box-shadow: 0 0 0 1px var(--line-strong), 0 0 14px color-mix(in srgb, var(--gold) 35%, transparent); }
-.menu-btns .btn .k { right: 50%; transform: translateX(50%); bottom: -13px; font-size: 9px; color: var(--dim); text-shadow: 0 1px 2px #000; }
-.menu-btns { margin-bottom: 10px; }
-
-/* Turn order: active turn pulses. */
-.turnbar { background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 85%, transparent), var(--panel)); }
-.turnbar .tp { border-radius: 10px; }
-.turnbar .tp.active { animation: turnPulse 1.6s ease-in-out infinite; }
-@keyframes turnPulse { 50% { box-shadow: 0 0 22px rgba(255,220,120,.85); } }
-
-/* Windows and tooltips. */
-.window .panel-head { background: linear-gradient(180deg, rgba(255,255,255,.045), transparent); border-bottom: 1px solid var(--line); box-shadow: 0 1px 0 rgba(0,0,0,.4); }
-.window .panel-head h3 { font-size: 18px; letter-spacing: .08em; }
-.window { box-shadow: var(--shadow), inset 0 0 0 1px rgba(255,255,255,.03); }
-.tooltip { padding: 11px 14px; border-radius: 10px; background: linear-gradient(180deg, color-mix(in srgb, var(--panel-2) 95%, #000), rgba(10,8,14,.97)); max-width: 320px; }
-.tooltip .tname { font-family: var(--display); font-weight: 500; letter-spacing: .03em; font-size: 15px; }
-.tooltip .tline { color: #dce6ff; }
-
-/* Toasts: accent edge. */
-.toast { border-left-width: 3px; padding: 9px 18px; background: linear-gradient(90deg, rgba(20,16,26,.96), rgba(14,11,18,.93)); }
-.toast.quest { border-left-color: var(--quest); }
-.toast.good { border-left-color: var(--good); }
-.toast.bad { border-left-color: var(--danger); }
-.toast.loot { border-left-color: var(--info); }
-
 /* ---------------------------------------------------------------- world studio */
 .page-inner.studio { max-width: 1320px; }
 .studio .seg > button { background: transparent; border: 0; color: var(--muted); padding: 4px 10px; border-radius: 7px; cursor: pointer; font: inherit; font-size: 12px; }
@@ -575,3 +514,128 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
   .studio-list { border-right: 0; border-bottom: 1px solid var(--line); max-height: 220px; }
   .studio-cols { grid-template-columns: 1fr; }
 }
+
+/* =====================================================================================================
+   Serious look: square edges, hairline borders, muted accents, no glows, fine grain. Each daydream still
+   brings its own palette, lettering and grading; this keeps every one of them grounded and minimal.
+   ===================================================================================================== */
+:root {
+  --radius: 3px;
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
+  --hair: rgba(255, 255, 255, 0.085);
+  --hair-strong: rgba(255, 255, 255, 0.18);
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 .5 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.09'/%3E%3C/svg%3E");
+}
+::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 0; }
+
+/* Panels and windows */
+.panel,
+:root[data-material] .panel { border: 1px solid var(--hair); border-radius: var(--radius); background-image: var(--grain); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), var(--shadow); backdrop-filter: blur(4px); }
+:root[data-material='neon'] .panel { border-color: var(--line); box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035), var(--shadow); }
+:root[data-material='neon'] .panel-head h3, :root[data-material='neon'] .panel-head h2 { text-shadow: none; }
+.panel-head { border-bottom: 1px solid var(--hair); padding: 10px 14px; }
+.panel-head h2, .panel-head h3 { font-size: 12.5px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.16em; color: var(--text); }
+.ornament { background: var(--hair); }
+/* Corner ornaments become small brackets, the same for every daydream. */
+.ornate > .corner,
+:root[data-ornament] .ornate > .corner { display: block; width: 7px; height: 7px; border: 0; border-left: 1px solid var(--hair-strong); border-top: 1px solid var(--hair-strong); border-radius: 0; background: none; box-shadow: none; opacity: 1; }
+:root[data-ornament] .ornate > .corner::after { display: none; }
+.ornate > .corner.tl, :root[data-ornament] .ornate > .corner.tl { left: -1px; top: -1px; right: auto; bottom: auto; }
+.ornate > .corner.tr, :root[data-ornament] .ornate > .corner.tr { right: -1px; top: -1px; left: auto; bottom: auto; }
+.ornate > .corner.bl, :root[data-ornament] .ornate > .corner.bl { left: -1px; bottom: -1px; right: auto; top: auto; }
+.ornate > .corner.br, :root[data-ornament] .ornate > .corner.br { right: -1px; bottom: -1px; left: auto; top: auto; }
+
+/* Controls */
+.btn,
+:root[data-material] .btn { border-radius: 2px; box-shadow: none; text-shadow: none; }
+.btn:hover { box-shadow: none; border-color: var(--hair-strong); background-color: rgba(255, 255, 255, 0.05); }
+.btn.primary { background: var(--btn-primary-b, #3a3226); border-color: var(--btn-primary-edge, #8a7550); color: var(--text); font-weight: 600; letter-spacing: 0.03em; text-shadow: none; }
+.btn.primary:hover { filter: brightness(1.15); }
+.input, textarea.input, select.input { border-radius: 2px; }
+.input:focus { box-shadow: none; border-color: var(--hair-strong); }
+.badge { border-radius: 2px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; padding: 2px 6px; }
+.choice { border-radius: 2px; }
+.choice.on { box-shadow: none; background: rgba(255, 255, 255, 0.045); }
+.tab.on { border-bottom-width: 1px; }
+.tab .dot { border-radius: 0; box-shadow: none; }
+.tab.glow { text-shadow: none; color: var(--quest); }
+.label, .field label { letter-spacing: 0.12em; }
+
+/* HUD */
+.pcard { border-radius: 2px; border-color: var(--hair); background-image: var(--grain); }
+.pcard.sel { border-color: var(--line-strong); box-shadow: var(--shadow); }
+.pcard.active { box-shadow: inset 2px 0 0 var(--gold), var(--shadow); }
+.portrait, .portrait-lg { border-radius: 2px; background: #0e0d11; border-color: var(--hair); }
+.bar, .bar > div { border-radius: 0; }
+.bar { height: 5px; background: rgba(0, 0, 0, 0.7); }
+.points { border-radius: 2px; box-shadow: none; font-size: 9px; padding: 0 4px; right: -3px; top: -3px; }
+.topright { gap: 6px; }
+.map-head { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+.zone-name { font-family: var(--sans); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.16em; color: var(--text); text-shadow: 0 1px 3px #000; }
+.clock { font-size: 11px; letter-spacing: 0.04em; }
+.minimap { width: 176px; height: 176px; border-radius: 2px; border: 1px solid var(--hair-strong); box-shadow: var(--shadow); }
+.slots { border-radius: 2px; padding: 5px; gap: 4px; border-color: var(--hair); background-image: var(--grain); }
+.slot { border-radius: 2px; background: #121116; border-color: var(--hair); }
+.slot.on { box-shadow: none; border-color: var(--gold); }
+.slot .cost { box-shadow: none; }
+.systembar { position: absolute; right: 14px; bottom: 14px; display: flex; gap: 3px; padding: 5px; background: var(--panel); background-image: var(--grain); border: 1px solid var(--hair); border-radius: 2px; box-shadow: var(--shadow); }
+.systembar .btn { padding: 0; width: 34px; height: 34px; position: relative; border-color: transparent; background: transparent; }
+.systembar .btn:hover { border-color: var(--hair-strong); }
+.systembar .btn .k { position: absolute; bottom: 0; right: 2px; font-size: 8.5px; color: var(--dim); }
+@media (max-width: 1100px) {
+  .systembar { bottom: auto; top: 214px; flex-direction: column; }
+}
+
+/* Party frames */
+.pcard { padding: 6px 9px 6px 6px; width: 236px; }
+.pcard .portrait { width: 48px; height: 48px; border-radius: 2px; border: 1px solid var(--hair-strong); }
+.pcard.sel .portrait { border-color: var(--gold); }
+.pcard .name { font-family: var(--sans); font-weight: 600; font-size: 12.5px; letter-spacing: 0.02em; }
+.pcard .lvl { font-family: var(--sans); font-size: 10px; font-weight: 600; color: var(--muted); }
+.bar .lbl { font-size: 8.5px; line-height: 5px; }
+
+/* Action bar: flat slots, radial cooldowns, square action-point pips */
+.slot .key { top: 2px; left: 4px; font-size: 9px; color: rgba(255, 255, 255, 0.45); z-index: 2; }
+.slot .ap { bottom: 2px; right: 3px; min-width: 13px; height: 13px; border-radius: 1px; background: rgba(0, 0, 0, 0.75); display: grid; place-items: center; font-size: 9px; z-index: 2; }
+.slot.cd { filter: none; }
+.slot.cd::before { content: ''; position: absolute; inset: 0; z-index: 1; background: conic-gradient(rgba(0, 0, 0, 0.72) calc(var(--cdf, 1) * 360deg), rgba(0, 0, 0, 0.15) 0); }
+.slot .cdn { z-index: 2; }
+.slot.na:not(.cd) { filter: grayscale(0.7) brightness(0.6); }
+.ap-row { padding: 6px 12px; border-radius: 2px; background: var(--panel); border: 1px solid var(--hair); }
+.pip { width: 11px; height: 11px; border-radius: 1px; transform: none; border: 1px solid var(--hair-strong); background: transparent; box-shadow: none; }
+.pip.on { background: var(--gold); border-color: var(--gold); box-shadow: none; }
+.pip.spend { background: var(--danger); border-color: var(--danger); box-shadow: none; }
+
+/* Turn order, windows, tooltips, toasts */
+.turnbar { border-radius: 2px; }
+.turnbar .tp { border-radius: 2px; }
+.turnbar .tp.active { box-shadow: inset 0 -2px 0 var(--gold); }
+.tooltip { padding: 10px 12px; border-radius: 2px; background: rgba(12, 11, 15, 0.97); border-color: var(--hair-strong); max-width: 320px; }
+.tooltip .tname { font-family: var(--sans); font-weight: 600; font-size: 13px; letter-spacing: 0.02em; }
+.toast { border-radius: 2px; border-left-width: 2px; padding: 8px 16px; background: rgba(14, 12, 18, 0.95); }
+.toast.quest { border-left-color: var(--quest); }
+.toast.good { border-left-color: var(--good); }
+.toast.bad { border-left-color: var(--danger); }
+.toast.loot { border-left-color: var(--info); }
+.dialog, .modal { border-radius: 2px; }
+
+/* Studio and pages */
+.studio .seg > button { border-radius: 2px; }
+.studio-item, .studio-ai, .zone-map, .art-card, .art-thumb, .element-row .art-thumb { border-radius: 2px; }
+.studio-ai { border-style: solid; border-color: var(--hair); background: rgba(255, 255, 255, 0.02); }
+.seg { border-radius: 2px; }
+
+/* Square edges everywhere (dots and spinners stay round). */
+.chip, .card, .progress, .progress > div, .item, .quest, .skill-card, .skill-card canvas, .seg, .seg .btn, .swatch-btn, .offer-row, .recipe,
+.loot-row, .worldmap, .dialog .dlg-portrait, .replies li, .msg, .cursor-note, .icon-btn, .ap-row, .turnbar, .gen-log, .phases li, .hero-stage,
+.branch-chip, .codex-entry, .lobby-card, .choice-grid .choice { border-radius: 2px; }
+.card { border-color: var(--hair); }
+.progress { height: 5px; }
+.progress > div { box-shadow: none; }
+
+/* Daydream banners: the daydream's own ground and cast. */
+.daydream-art { position: relative; overflow: hidden; background: linear-gradient(180deg, color-mix(in srgb, var(--dd-tint) 22%, #0b0a0e), #08070a); }
+.daydream-art .dd-floor { position: absolute; inset: 0; background-size: 88px 88px; background-position: center bottom; filter: saturate(0.7) brightness(0.55); }
+.daydream-art .dd-shade { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 85%, transparent 20%, rgba(8, 7, 10, 0.85) 75%), linear-gradient(180deg, rgba(8, 7, 10, 0.7), transparent 60%), var(--grain); }
+.daydream-art .dd-figures { position: absolute; left: 0; right: 0; bottom: 4%; display: flex; justify-content: center; align-items: flex-end; gap: 2%; }
+.daydream-art .dd-figures img { object-fit: contain; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.7)); }

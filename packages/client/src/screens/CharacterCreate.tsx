@@ -122,7 +122,10 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
               <div className="hero-stage">
                 <Portrait full size={210} sprite={sprite} colors={d.colors} archetype={cls.aiRole} weapon={weaponVisual({ equipment: preview.equipment })} seed={d.name + d.classId} presentation={d.presentation} />
               </div>
-              <input className="input" style={{ width: '100%', textAlign: 'center', fontSize: 18 }} value={d.name} maxLength={24} onChange={(e) => update({ name: e.target.value })} />
+              <div className="field" style={{ width: '100%' }}>
+                <label>{idx === 0 ? 'Your name' : 'Their name'}</label>
+                <input className="input" style={{ width: '100%', textAlign: 'center', fontSize: 18 }} value={d.name} maxLength={24} placeholder="Type a name" autoFocus={idx === 0} onChange={(e) => update({ name: e.target.value })} />
+              </div>
               <div className="seg" style={{ width: '100%' }}>
                 {(['feminine', 'masculine', 'androgynous'] as const).map((p) => (
                   <button key={p} className={`btn sm ${d.presentation === p ? 'primary' : 'ghost'}`} onClick={() => update({ presentation: p, pronouns: Object.values(PRONOUNS).includes(d.pronouns) ? PRONOUNS[p] : d.pronouns })}>{{ feminine: 'Feminine', masculine: 'Masculine', androgynous: 'Androgynous' }[p]}</button>
@@ -160,7 +163,7 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
 
           <div className="col grow" style={{ gap: 18, minWidth: 0 }}>
             <div className="panel ornate">
-              <div className="panel-head"><h3>Calling</h3><span className="muted small">{r.classes.length} classes</span></div>
+              <div className="panel-head"><h3>{r.terminology.calling ?? 'Role'}</h3><span className="muted small">{r.classes.length} classes</span></div>
               <div className="panel-body">
                 <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
                   {r.classes.map((c) => (
@@ -192,7 +195,7 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
             </div>
             {r.kins.length > 1 && (
               <div className="panel ornate">
-                <div className="panel-head"><h3>Kin</h3></div>
+                <div className="panel-head"><h3>{r.terminology.kin ?? 'Background'}</h3></div>
                 <div className="panel-body">
                   <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
                     {r.kins.map((k) => (
@@ -224,14 +227,14 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
             <div className="panel panel-body row">
               {!joinInstanceId && (
                 <div className="field grow">
-                  <label>Name this journey</label>
-                  <input className="input" value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder={`${party[0]?.name}’s journey`} />
+                  <label>Name this reverie</label>
+                  <input className="input" value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder={party[0]?.name.trim() ? `${party[0].name.trim()}’s reverie` : 'A new reverie'} />
                 </div>
               )}
               <div className="spacer" />
               {error && <div className="error-text">{error}</div>}
               <button className="btn ghost" onClick={() => navigate(`#/world/${worldId}`)}>Back</button>
-              <button className="btn primary lg" disabled={busy || party.some((p) => !p.name.trim())} onClick={start}>{joinInstanceId ? 'Join' : 'Enter the world'}</button>
+              <button className="btn primary lg" disabled={busy || party.some((p) => !p.name.trim())} onClick={start}>{joinInstanceId ? 'Join' : 'Enter the daydream'}</button>
             </div>
           </div>
         </div>
@@ -252,7 +255,8 @@ function newDraft(s: WorldSetup, i: number): Draft {
   const r = s.ruleset;
   const presentation: Presentation = (['feminine', 'masculine', 'androgynous'] as const)[(i + s.id.length) % 2]!;
   return {
-    name: NAMES[(i * 3 + s.id.length) % NAMES.length]!,
+    // The player names their own hero; companions in a party they control start with a name to change.
+    name: i === 0 ? '' : NAMES[(i * 3 + s.id.length) % NAMES.length]!,
     classId: r.classes[i % r.classes.length]!.id,
     kinId: r.kins[0]!.id,
     presentation,

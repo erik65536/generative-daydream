@@ -72,7 +72,7 @@ export function CreateWorld({ me }: { me: Me }) {
   const [length, setLength] = useState<'short' | 'medium' | 'long' | 'epic'>('short');
   const [communication, setCommunication] = useState(2);
   const [combatMode, setCombatMode] = useState<'solo' | 'party_manual' | 'party_npc'>('party_npc');
-  const [art, setArt] = useState<'none' | 'essential' | 'full'>('full');
+  const art = 'full';
   const [seed, setSeed] = useState('');
   const [difficulty, setDifficulty] = useState<DifficultyId>('normal');
   const [advanced, setAdvanced] = useState(false);
@@ -109,12 +109,12 @@ export function CreateWorld({ me }: { me: Me }) {
       <Backdrop />
       <TopBar me={me} />
       <div className="page-inner" style={{ maxWidth: 980 }}>
-        <h1 className="h1">Dream a world</h1>
+        <h1 className="h1">Dream a new daydream</h1>
         <p className="lede">Describe the feel of the place. Everything else — towns, dungeons, people, monsters, items, the main story and its twists — is generated before you start.</p>
 
         <div className="panel panel-body col" style={{ marginTop: 18, gap: 18, padding: 22 }}>
           <div className="field">
-            <label>Setting, world & feel *</label>
+            <label>Setting, place & feel *</label>
             <div className="row wrap" style={{ gap: 6, marginBottom: 4 }}>
               <span className="tiny dim">Try one:</span>
               {PRESETS.map((p) => (
@@ -137,7 +137,7 @@ export function CreateWorld({ me }: { me: Me }) {
           </div>
 
           <div className="field">
-            <label>World size</label>
+            <label>Size</label>
             <div className="choice-grid">
               {([
                 ['small', 'Small', '2 towns, 2 wilds, 3 dungeons'],
@@ -196,20 +196,8 @@ export function CreateWorld({ me }: { me: Me }) {
           </div>
           <div className="row" style={{ gap: 16, alignItems: 'flex-start' }}>
             <div className="field grow">
-              <label>Generated art</label>
-              <div className="choice-grid">
-                {([
-                  ['none', 'Painted by engine', 'Procedural art only. Fast.'],
-                  ['essential', 'Places & characters', 'Surfaces, props and landmarks for every place, and every character.'],
-                  ['full', 'Everything', 'Also walking and attack poses for every character, and item icons. Slowest, and worth it.'],
-                ] as const).map(([v, t, d]) => (
-                  <div key={v} className={`choice ${art === v ? 'on' : ''}`} onClick={() => setArt(v)}>
-                    <div className="t">{t}</div>
-                    <div className="d">{d}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="hint">Image generation only runs if an image model is configured. You can add art to a world later.</div>
+              <label>Art</label>
+              <div className="hint">Everything in it is painted for this daydream alone: its places, people, creatures and items. With local models this takes a few hours; you can explore the studio while it paints.</div>
             </div>
             <div className="field" style={{ width: 200 }}>
               <label>Seed (optional)</label>
@@ -226,14 +214,14 @@ export function CreateWorld({ me }: { me: Me }) {
                 </div>
               ))}
             </div>
-            <div className="hint">Each journey picks its own difficulty when it starts and can change it later. Rules are balanced by simulating thousands of fights for every difficulty.</div>
+            <div className="hint">Each reverie picks its own difficulty when it starts and can change it later. Rules are balanced by simulating thousands of fights for every difficulty.</div>
           </div>
 
           <div className="field">
             <button className="btn ghost sm" style={{ alignSelf: 'flex-start' }} onClick={() => setAdvanced((v) => !v)}>{advanced ? '▾' : '▸'} Advanced rules</button>
             {advanced && (
               <div className="col advanced" style={{ gap: 14 }}>
-                <div className="hint">Every world gets its own ruleset — classes, skills, resources, damage types, items — designed from your setting. Leave a choice on Auto to let the setting decide.</div>
+                <div className="hint">Every daydream gets its own ruleset — classes, skills, resources, damage types, items — designed from your setting. Leave a choice on Auto to let the setting decide.</div>
                 <div className="row" style={{ gap: 16, alignItems: 'flex-start' }}>
                   <div className="field grow">
                     <label>Turns</label>
@@ -253,7 +241,7 @@ export function CreateWorld({ me }: { me: Me }) {
                   <label>Reviving downed allies</label>
                   <div className="choice-grid">
                     {([
-                      [undefined, 'Auto', 'Chosen to fit the world.'],
+                      [undefined, 'Auto', 'Chosen to fit the daydream.'],
                       ['heal', 'Any healing', 'Healing a downed ally brings them back.'],
                       ['special', 'Special only', 'Only revive skills and items work in a fight.'],
                       ['after_combat', 'After the fight', 'Downed allies stay down until the battle ends.'],

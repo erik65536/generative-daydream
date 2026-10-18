@@ -150,6 +150,16 @@ app.patch('/api/admin/users/:id', auth, adminOnly, (req, res) => {
 
 // ------------------------------------------------------------------------------ worlds
 
+/** A daydream's own art for its card: the ground of its first place and a few of its people and foes. */
+function coverArt(w: WorldDefinition): { floor?: string; figures: string[] } | undefined {
+  const ok = (k: string) => (w.assets[k]?.status === 'ok' ? w.assets[k]!.file : undefined);
+  const start = w.zones.find((z) => z.id === w.startZoneId) ?? w.zones[0];
+  const floor = start ? ok(`tex_${start.tilesetId}_floor`) : undefined;
+  const keys = [...w.bosses.map((b) => `spr_boss_${b.id}`), ...w.npcs.filter((n) => n.essential).map((n) => `spr_npc_${n.id}`), ...w.origins.map((o) => `spr_origin_${o.id}_androgynous`), ...w.npcs.map((n) => `spr_npc_${n.id}`)];
+  const figures = [...new Set(keys.map(ok).filter((f): f is string => !!f))].slice(0, 4);
+  return floor || figures.length ? { floor, figures } : undefined;
+}
+
 function worldSummary(w: WorldDefinition) {
   const latest = latestJob(w.id);
   const job = latest && ACTIVE.includes(latest.status) ? latest : undefined;
@@ -170,6 +180,7 @@ function worldSummary(w: WorldDefinition) {
     quests: w.quests.length,
     palette: w.concept.palette,
     cover: Object.values(w.assets).find((a) => a.status === 'ok' && a.kind === 'sprite')?.file,
+    coverArt: coverArt(w),
     artProgress: { ok: Object.values(w.assets).filter((a) => a.status === 'ok').length, total: Object.keys(w.assets).length },
     job: latest && (job || latest.status === 'failed') ? { status: latest.status, progress: latest.progress, step: latest.step, error: latest.error, queuePosition: queuePosition(latest) } : undefined,
   };
@@ -224,7 +235,7 @@ app.post('/api/worlds', auth, (req, res) => {
 
 app.get('/api/worlds/:id', auth, (req, res) => {
   const w = store.loadWorld(String(req.params.id));
-  if (!w) return void res.status(404).json({ error: 'World not found.' });
+  if (!w) return void res.status(404).json({ error: 'Daydream not found.' });
   res.json(worldSummary(w));
 });
 
@@ -248,7 +259,7 @@ app.delete('/api/worlds/:id', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
   const w = store.loadWorld(String(req.params.id));
   if (!w) return void res.status(404).json({ error: 'Not found.' });
-  if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your world.' });
+  if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your daydream.' });
   store.deleteWorld(w.id);
   res.json({ ok: true });
 });
@@ -264,7 +275,7 @@ app.post('/api/worlds/:id/rules', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
   const w = store.loadWorld(String(req.params.id));
   if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'Not found.' });
-  if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your world.' });
+  if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your daydream.' });
   const mode = req.body?.mode === 'rebalance' && w.rulesIntent ? 'rebalance' : 'regenerate';
   if (!queueJob(res, 'rules', w, u, { mode })) return;
   res.json({ ok: true, mode });
@@ -274,10 +285,10 @@ app.post('/api/worlds/:id/art', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
   const w = store.loadWorld(String(req.params.id));
   if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'Not found.' });
-  if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your world.' });
+  if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your daydream.' });
   if (genai().isProcedural('image.texture') && genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
   const level = req.body?.level === 'full' ? 'full' : 'essential';
-  if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this world; wait for it to finish.' });
+  if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this daydream; wait for it to finish.' });
   if (req.body?.retryFailed) {
     for (const a of Object.values(w.assets)) if (a.status !== 'ok') delete w.assets[a.key];
     store.saveWorld(w);
@@ -304,7 +315,7 @@ function queueJob(res: Response, kind: JobKind, w: WorldDefinition, u: store.Use
 function ownedWorld(req: Request, res: Response) {
   const u = (req as AuthedRequest).user;
   const w = store.loadWorld(String(req.params.id));
-  if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'World not found or still generating.' });
+  if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'Daydream not found or still being dreamed.' });
   if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Only the owner can open the studio.' });
   return w;
 }
@@ -317,7 +328,7 @@ app.get('/api/worlds/:id/studio', auth, (req, res) => {
 app.post('/api/worlds/:id/studio/edit', auth, (req, res) => {
   const w = ownedWorld(req, res);
   if (!w) return;
-  if (activeJob(w.id)) return void res.status(409).json({ error: 'A job is running on this world; wait for it to finish.' });
+  if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is being made for this daydream; wait for it to finish.' });
   const edits = z.array(EditSchema).max(50).safeParse(Array.isArray(req.body) ? req.body : [req.body]);
   if (!edits.success) return void res.status(400).json({ error: edits.error.issues[0]?.message ?? 'Invalid edit.' });
   for (const e of edits.data) {
@@ -331,7 +342,7 @@ app.post('/api/worlds/:id/studio/edit', auth, (req, res) => {
 app.post('/api/worlds/:id/studio/task', auth, (req, res) => {
   const w = ownedWorld(req, res);
   if (!w) return;
-  if (activeJob(w.id)) return void res.status(409).json({ error: 'A job is already running on this world.' });
+  if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this daydream.' });
   const task = TaskSchema.safeParse(req.body);
   if (!task.success) return void res.status(400).json({ error: task.error.issues[0]?.message ?? 'Invalid task.' });
   if (task.data.kind !== 'rewrite' && task.data.kind !== 'zone' && genai().isProcedural('image.texture') && genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
@@ -343,8 +354,8 @@ app.post('/api/worlds/:id/studio/task', auth, (req, res) => {
 /** Everything character creation needs. */
 app.get('/api/worlds/:id/setup', auth, (req, res) => {
   const w = store.loadWorld(String(req.params.id));
-  if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'World not ready.' });
-  if (!w.ruleset) return void res.status(409).json({ error: 'This world was generated before per-world rules. Regenerate its rules on the world page first.' });
+  if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'This daydream is not ready yet.' });
+  if (!w.ruleset) return void res.status(409).json({ error: 'This daydream was made before per-daydream rules. Regenerate its rules on its page first.' });
   res.json({
     id: w.id,
     concept: { title: w.concept.title, pitch: w.concept.pitch, tone: w.concept.tone, playerRole: w.concept.playerRole, palette: w.concept.palette, genre: w.concept.genre },
@@ -386,8 +397,8 @@ app.get('/api/worlds/:id/instances', auth, (req, res) => {
 app.post('/api/worlds/:id/instances', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
   const w = store.loadWorld(String(req.params.id));
-  if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'World not ready.' });
-  if (!w.ruleset) return void res.status(409).json({ error: 'Regenerate this world\'s rules first.' });
+  if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'This daydream is not ready yet.' });
+  if (!w.ruleset) return void res.status(409).json({ error: 'Regenerate this daydream\'s rules first.' });
   const body = z.object({ name: z.string().max(60).default(''), party: z.array(CharSpecSchema).min(1).max(4), difficulty: z.enum(DIFFICULTIES as [string, ...string[]]).optional() }).safeParse(req.body);
   if (!body.success) return void res.status(400).json({ error: body.error.issues[0]?.message ?? 'Invalid party.' });
   const inst = instances.create(w, u.id, u.username, body.data.name, body.data.party, body.data.difficulty as never);
@@ -399,7 +410,7 @@ app.post('/api/instances/:id/join', auth, (req, res) => {
   const inst = instances.get(String(req.params.id));
   if (!inst) return void res.status(404).json({ error: 'Save not found.' });
   if (inst.hasPlayer(u.id)) return void res.json({ ok: true });
-  if (!inst.state.open && inst.state.ownerId !== u.id) return void res.status(403).json({ error: 'That world is not open to other players.' });
+  if (!inst.state.open && inst.state.ownerId !== u.id) return void res.status(403).json({ error: 'That reverie is not open to other dreamers.' });
   const body = z.object({ party: z.array(CharSpecSchema).min(1).max(4) }).safeParse(req.body);
   if (!body.success) return void res.status(400).json({ error: 'Invalid party.' });
   instances.addPlayer(inst, u.id, u.username, body.data.party);

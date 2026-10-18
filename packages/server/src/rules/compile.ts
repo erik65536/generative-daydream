@@ -171,7 +171,7 @@ function compileCore(r: Ruleset, ctx: Ctx, core: CoreIntent) {
   r.curves.mit = { base: n.dmg * 3, lin: 0.2, quad: 0.012 };
   r.health = { name: core.health.name.slice(0, 24) || 'Health', color: color(core.health.color, '#c8322a') };
   const t = core.terminology;
-  r.terminology = { xp: t.xp || 'Experience', level: t.level || 'Level', actionPoints: t.actionPoints || 'AP', party: t.party || 'Party', town: t.town || 'Town', dungeon: t.dungeon || 'Dungeon', wilderness: t.wilderness || 'Wilds', quest: t.quest || 'Quest', currency: t.currency || 'Gold' };
+  r.terminology = { xp: t.xp || 'Experience', level: t.level || 'Level', actionPoints: t.actionPoints || 'AP', party: t.party || 'Party', town: t.town || 'Town', dungeon: t.dungeon || 'Dungeon', wilderness: t.wilderness || 'Wilds', quest: t.quest || 'Quest', currency: t.currency || 'Gold', calling: t.calling || 'Role', kin: t.kin || 'Background' };
   r.economy.currency = r.terminology.currency;
   // Pools
   ctx.pools = core.pools.slice(0, 3).map((p) => ({ id: ctx.ids.make('p_', p.name), name: p.name, color: color(p.color, '#d8a440'), description: p.description, base: n.pool, perLevel: n.poolPer, regenPerTurn: 0.12 }));

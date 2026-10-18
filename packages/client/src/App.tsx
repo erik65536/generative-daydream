@@ -41,7 +41,7 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
         <div className="muted small" style={{ maxWidth: 520, textAlign: 'center' }}>{this.state.error.message}</div>
         <div className="row">
           <button className="btn primary" onClick={() => location.reload()}>Reload</button>
-          <button className="btn ghost" onClick={() => { location.hash = '#/'; location.reload(); }}>Back to worlds</button>
+          <button className="btn ghost" onClick={() => { location.hash = '#/'; location.reload(); }}>Back to daydreams</button>
         </div>
       </div>
     );
