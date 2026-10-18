@@ -58,6 +58,8 @@ interface Anim {
   death: number;
   lastHp: number;
   fade: number;
+  /** 0..1: how far into the up-or-down-the-screen walk (standing figure with a step bob) from the painted stride. */
+  vert: number;
 }
 
 interface Drawable {
@@ -179,6 +181,13 @@ export class Renderer {
    */
   steer: { x: number; y: number } | null = null;
   private predicted: { x: number; y: number } | null = null;
+  /** After the stick is let go: hold the leader where they stopped until the server agrees. */
+  private holdUntil = 0;
+
+  /** Where this screen has the steered leader (sent to the server, which takes it). */
+  predictedPos(): { x: number; y: number } | null {
+    return this.predicted ? { ...this.predicted } : null;
+  }
 
   /** Hover set by a controller (a tile cursor or a focused target). Moving the mouse takes over again. */
   padHover: HoverInfo | null = null;
@@ -1119,9 +1128,19 @@ export class Renderer {
   /** The steered leader's position this frame: walked locally, pulled gently toward where the server has it. */
   private predict(id: string, server: { x: number; y: number; moving: boolean; facing: number }, a: Anim, dt: number) {
     if (!this.steer) {
-      this.predicted = null;
-      return server;
+      // Stopped: stay exactly where the walk ended while the server catches up (it was told this spot).
+      const p = this.predicted;
+      if (!p) return server;
+      if (!this.holdUntil) this.holdUntil = performance.now() + 1500;
+      // (A new move — a click — releases it too, once the stop has reached the server.)
+      if ((server.moving && performance.now() > this.holdUntil - 1100) || Math.hypot(server.x - p.x, server.y - p.y) < 0.12 || performance.now() > this.holdUntil) {
+        this.predicted = null;
+        this.holdUntil = 0;
+        return server;
+      }
+      return { x: p.x, y: p.y, moving: false, facing: server.facing };
     }
+    this.holdUntil = 0;
     const p = (this.predicted ??= { x: a.px, y: a.py });
     const step = 4.2 * Math.min(dt, 0.05);
     const d = this.steer;
@@ -1136,14 +1155,11 @@ export class Renderer {
         break;
       }
     }
-    const gap = Math.hypot(server.x - p.x, server.y - p.y);
-    if (gap > 2) {
+    // This screen leads (the server takes its position); only a big disagreement — a teleport, a zone change,
+    // a refused move — snaps back.
+    if (Math.hypot(server.x - p.x, server.y - p.y) > 3) {
       p.x = server.x;
       p.y = server.y;
-    } else {
-      const k = Math.min(1, dt * 1.6);
-      p.x += (server.x - p.x) * k;
-      p.y += (server.y - p.y) * k;
     }
     return { x: p.x, y: p.y, moving: true, facing: Math.atan2(d.y, d.x) };
   }
@@ -1151,7 +1167,7 @@ export class Renderer {
   private anim(e: EntityView): Anim {
     let a = this.anims.get(e.id);
     if (!a) {
-      a = { px: e.x, py: e.y, walk: 0, moving: false, amt: 0, dir: 1, face: e.facing, hurt: 0, attack: 0, death: 0, lastHp: e.hp, fade: 0 };
+      a = { px: e.x, py: e.y, walk: 0, moving: false, amt: 0, dir: 1, face: e.facing, hurt: 0, attack: 0, death: 0, lastHp: e.hp, fade: 0, vert: 0 };
       this.anims.set(e.id, a);
     }
     return a;
@@ -1197,7 +1213,11 @@ export class Renderer {
       if (sdx < -0.3) a.dir = -1;
       else if (sdx > 0.3) a.dir = 1;
       // Walking mostly up or down the screen: a painted side-on stride would look wrong, so the standing figure bobs.
-      const vertical = Math.abs(sdy) > Math.abs(sdx) * 1.2;
+      // With hysteresis (in at a steep angle, out at a shallower one) and a quick crossfade, so the change of walk
+      // never flickers or pops.
+      const steep = Math.abs(sdy) / Math.max(1e-6, Math.abs(sdx));
+      const wantVert = a.vert > 0.5 ? steep > 1.0 : steep > 1.4;
+      a.vert += ((wantVert ? 1 : 0) - a.vert) * Math.min(1, dt * 7);
       const dir = a.dir;
       const back = sdy < -0.25;
       const depth = pos.x + pos.y + 0.1;
@@ -1241,7 +1261,19 @@ export class Renderer {
             ctx.restore();
           }
           const walk = a.amt > 0.02 ? a.walk : NaN;
-          if (img) drawImageSprite(ctx, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames: this.poseFrames(e.sprite), vertical });
+          if (img) {
+            const opts = { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames: this.poseFrames(e.sprite) };
+            if (a.vert < 0.03 || a.vert > 0.97 || !opts.frames?.walk) drawImageSprite(ctx, img, { ...opts, vertical: a.vert > 0.5 });
+            else {
+              // Mid-change: both walks, crossfaded.
+              const alpha = ctx.globalAlpha;
+              ctx.globalAlpha = alpha * (1 - a.vert);
+              drawImageSprite(ctx, img, { ...opts, vertical: false });
+              ctx.globalAlpha = alpha * a.vert;
+              drawImageSprite(ctx, img, { ...opts, vertical: true });
+              ctx.globalAlpha = alpha;
+            }
+          }
           else
             drawFigure(ctx, {
               shape: e.shape, colors: e.colors.length ? e.colors : this.defaultColors(e, ts), scale: e.scale * 1.15, dir, back, walk, t: this.t, weapon: e.weapon, archetype: e.archetype,

@@ -154,7 +154,9 @@ class ServerVoiceIn implements VoiceIn {
     an.fftSize = 1024;
     ac.createMediaStreamSource(stream).connect(an);
     const buf = new Float32Array(an.fftSize);
-    let spoke = false, quietSince = performance.now();
+    // Speech is judged against this microphone's own background level (measured over the first moments), since
+    // levels differ a lot between microphones and noise suppression.
+    let spoke = false, quietSince = performance.now(), floor = 0, samples = 0, peak = 0;
     const started = performance.now();
     const done = new Promise<void>((resolve) => (rec.onstop = () => resolve()));
     const finish = () => {
@@ -167,11 +169,16 @@ class ServerVoiceIn implements VoiceIn {
       for (const v of buf) sum += v * v;
       const level = Math.sqrt(sum / buf.length);
       const now = performance.now();
-      if (level > 0.025) {
+      peak = Math.max(peak, level);
+      if (now - started < 350) {
+        floor = (floor * samples + level) / ++samples;
+        return;
+      }
+      if (level > Math.max(0.004, floor * 2.5)) {
         spoke = true;
         quietSince = now;
       }
-      if ((spoke && now - quietSince > 1100) || (!spoke && now - started > 6000) || now - started > 20000) finish();
+      if ((spoke && now - quietSince > 1200) || (!spoke && now - started > 7000) || now - started > 20000) finish();
     }, 60);
     rec.start(250);
     await done;
@@ -179,7 +186,9 @@ class ServerVoiceIn implements VoiceIn {
     stream.getTracks().forEach((t) => t.stop());
     void ac.close();
     this.stopNow = null;
-    if (!spoke || !chunks.length) return '';
+    // Send whatever was recorded unless it was only a blip; the transcription model knows silence when it hears it.
+    if (!chunks.length || performance.now() - started < 600) return '';
+    if (peak < 0.0015) throw new Error('No sound reached the microphone. Check that the right microphone is selected.');
     onPartial?.('…');
     const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
     const res = await fetch(`/api/voice/transcribe?lang=${encodeURIComponent((navigator.language || 'en').slice(0, 2))}`, { method: 'POST', headers: { 'content-type': blob.type.split(';')[0]! }, body: blob, credentials: 'include' });

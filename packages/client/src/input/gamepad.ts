@@ -144,10 +144,11 @@ export class PadInput {
       this.r.steer = d;
       const now = performance.now();
       const turned = d.x * this.sentDir.x + d.y * this.sentDir.y < 0.99;
-      if (!this.moving || (turned && now - this.lastMove > 60) || now - this.lastMove > 250) {
+      if (!this.moving || (turned && now - this.lastMove > 60) || now - this.lastMove > 150) {
         this.lastMove = now;
         this.sentDir = d;
-        c.send({ t: 'steer', dx: d.x, dy: d.y });
+        const at = this.r.predictedPos();
+        c.send({ t: 'steer', dx: d.x, dy: d.y, x: at?.x, y: at?.y });
         this.moving = true;
       }
     } else this.stopWalking();
@@ -176,7 +177,9 @@ export class PadInput {
     this.r.steer = null;
     if (!this.moving) return;
     this.moving = false;
-    this.c.send({ t: 'steer', dx: 0, dy: 0 });
+    // Stop where this screen shows the leader.
+    const at = this.r.predictedPos();
+    this.c.send({ t: 'steer', dx: 0, dy: 0, x: at?.x, y: at?.y });
   }
 
   /** Things to act on near the leader, best first: close, and ahead of where the party is heading. */

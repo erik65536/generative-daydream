@@ -1294,7 +1294,7 @@ export class GameInstance implements CombatHost {
     try {
       switch (msg.t) {
         case 'move': return this.cmdMove(p, msg.x, msg.y, msg.charId);
-        case 'steer': return this.cmdSteer(p, msg.dx, msg.dy);
+        case 'steer': return this.cmdSteer(p, msg.dx, msg.dy, msg.x, msg.y);
         case 'interact': return this.cmdInteract(p, msg.targetId, msg.charId, msg.inspect);
         case 'request_trade': return void this.dialogue.requestTrade(userId);
         case 'talk': return void this.dialogue.say(userId, msg.text, { giveItemId: msg.giveItemId, giveGold: msg.giveGold, useSkillId: msg.useSkillId });
@@ -1420,9 +1420,11 @@ export class GameInstance implements CombatHost {
   /** Controller walking: direction per player, refreshed by the client while the stick is held. */
   private steering = new Map<string, { dx: number; dy: number; at: number; follow: number; legDir?: { x: number; y: number } }>();
 
-  private cmdSteer(p: PlayerState, dx: number, dy: number) {
+  private cmdSteer(p: PlayerState, dx: number, dy: number, x?: number, y?: number) {
     const len = Math.hypot(dx, dy);
     if (!Number.isFinite(len) || this.charActors(p).some((a) => a.combatId)) return;
+    // The walker's own screen decides where the leader is (within reason: a standable spot close by).
+    this.takeClientPosition(p, x, y);
     if (len < 0.2) {
       this.steering.delete(p.userId);
       return this.stopSteering(p);
@@ -1432,6 +1434,21 @@ export class GameInstance implements CombatHost {
     this.pending.delete(p.userId);
     this.pendingSkill.delete(p.userId);
     this.closeDialogOnMove(p);
+  }
+
+  /** Put the leader where the walker's client has them, entering tiles on the way (exits, traps, exploration). */
+  private takeClientPosition(p: PlayerState, x?: number, y?: number) {
+    const lead = this.leader(p);
+    const z = this.zones.get(p.zoneId);
+    if (!lead || !z || x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) return;
+    if (Math.hypot(x - lead.x, y - lead.y) > 4 || !this.lineClear(z.id, { x: lead.x, y: lead.y }, { x, y })) return;
+    const before = { x: Math.round(lead.x), y: Math.round(lead.y) };
+    lead.x = x;
+    lead.y = y;
+    if (lead.motion) lead.motion = { ...lead.motion, from: { x, y }, t0: Date.now() };
+    lead.dirty = true;
+    const tile = { x: Math.round(x), y: Math.round(y) };
+    if (tile.x !== before.x || tile.y !== before.y) this.onEnterTile(z, lead, tile);
   }
 
   /** Clear for walking along a straight line (sampled every quarter tile). */

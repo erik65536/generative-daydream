@@ -236,8 +236,11 @@ export type ClientMessage =
   | { t: 'set_options'; open?: boolean; commandCompanions?: boolean }
   | { t: 'abandon_quest'; questId: string }
   | { t: 'pin_quest'; questId: string }
-  /** Controller walking: keep moving the leader this way (tile units; 0,0 stops). */
-  | { t: 'steer'; dx: number; dy: number }
+  /**
+   * Controller walking: keep moving the leader this way (tile units; 0,0 stops). x,y is where the player's own
+   * screen has the leader: the server takes it (the walker's view decides), so stopping never snaps back.
+   */
+  | { t: 'steer'; dx: number; dy: number; x?: number; y?: number }
   | { t: 'dismiss_companion'; charId: string }
   | { t: 'chat'; text: string };
 
