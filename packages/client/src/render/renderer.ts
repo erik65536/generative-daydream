@@ -58,7 +58,7 @@ interface Anim {
   death: number;
   lastHp: number;
   fade: number;
-  /** 0..1: how far into the up-or-down-the-screen walk (standing figure with a step bob) from the painted stride. */
+  /** 1 while walking up or down the screen (standing figure with a step bob), 0 for the painted stride. */
   vert: number;
 }
 
@@ -183,6 +183,7 @@ export class Renderer {
   private predicted: { x: number; y: number } | null = null;
   /** After the stick is let go: hold the leader where they stopped until the server agrees. */
   private holdUntil = 0;
+  private predictedZone: string | undefined;
 
   /** Where this screen has the steered leader (sent to the server, which takes it). */
   predictedPos(): { x: number; y: number } | null {
@@ -1141,6 +1142,12 @@ export class Renderer {
       return { x: p.x, y: p.y, moving: false, facing: server.facing };
     }
     this.holdUntil = 0;
+    // A new zone (an exit walked through) starts from where the server put the party.
+    const zid = this.client.state.zone?.id;
+    if (this.predictedZone !== zid) {
+      this.predictedZone = zid;
+      this.predicted = { x: server.x, y: server.y };
+    }
     const p = (this.predicted ??= { x: a.px, y: a.py });
     const step = 4.2 * Math.min(dt, 0.05);
     const d = this.steer;
@@ -1155,9 +1162,9 @@ export class Renderer {
         break;
       }
     }
-    // This screen leads (the server takes its position); only a big disagreement — a teleport, a zone change,
-    // a refused move — snaps back.
-    if (Math.hypot(server.x - p.x, server.y - p.y) > 3) {
+    // This screen leads (the server takes its position); only a big disagreement — a teleport or a zone change —
+    // snaps back.
+    if (Math.hypot(server.x - p.x, server.y - p.y) > 6) {
       p.x = server.x;
       p.y = server.y;
     }
@@ -1213,11 +1220,10 @@ export class Renderer {
       if (sdx < -0.3) a.dir = -1;
       else if (sdx > 0.3) a.dir = 1;
       // Walking mostly up or down the screen: a painted side-on stride would look wrong, so the standing figure bobs.
-      // With hysteresis (in at a steep angle, out at a shallower one) and a quick crossfade, so the change of walk
-      // never flickers or pops.
+      // With hysteresis (in at a steep angle, out at a shallower one), so the change of walk never flickers.
       const steep = Math.abs(sdy) / Math.max(1e-6, Math.abs(sdx));
       const wantVert = a.vert > 0.5 ? steep > 1.0 : steep > 1.4;
-      a.vert += ((wantVert ? 1 : 0) - a.vert) * Math.min(1, dt * 7);
+      a.vert = wantVert ? 1 : 0;
       const dir = a.dir;
       const back = sdy < -0.25;
       const depth = pos.x + pos.y + 0.1;
@@ -1261,19 +1267,7 @@ export class Renderer {
             ctx.restore();
           }
           const walk = a.amt > 0.02 ? a.walk : NaN;
-          if (img) {
-            const opts = { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames: this.poseFrames(e.sprite) };
-            if (a.vert < 0.03 || a.vert > 0.97 || !opts.frames?.walk) drawImageSprite(ctx, img, { ...opts, vertical: a.vert > 0.5 });
-            else {
-              // Mid-change: both walks, crossfaded.
-              const alpha = ctx.globalAlpha;
-              ctx.globalAlpha = alpha * (1 - a.vert);
-              drawImageSprite(ctx, img, { ...opts, vertical: false });
-              ctx.globalAlpha = alpha * a.vert;
-              drawImageSprite(ctx, img, { ...opts, vertical: true });
-              ctx.globalAlpha = alpha;
-            }
-          }
+          if (img) drawImageSprite(ctx, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames: this.poseFrames(e.sprite), vertical: a.vert > 0.5 });
           else
             drawFigure(ctx, {
               shape: e.shape, colors: e.colors.length ? e.colors : this.defaultColors(e, ts), scale: e.scale * 1.15, dir, back, walk, t: this.t, weapon: e.weapon, archetype: e.archetype,

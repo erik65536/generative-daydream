@@ -1441,7 +1441,9 @@ export class GameInstance implements CombatHost {
     const lead = this.leader(p);
     const z = this.zones.get(p.zoneId);
     if (!lead || !z || x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) return;
-    if (Math.hypot(x - lead.x, y - lead.y) > 4 || !this.lineClear(z.id, { x: lead.x, y: lead.y }, { x, y })) return;
+    // Trust the walker's screen: only the spot itself must be standable (a straight-line check from the server's
+    // own copy, which lags and slides differently around corners, refused good updates and caused snap-backs).
+    if (Math.hypot(x - lead.x, y - lead.y) > 6 || !this.passable(z.id, Math.round(x), Math.round(y))) return;
     const before = { x: Math.round(lead.x), y: Math.round(lead.y) };
     lead.x = x;
     lead.y = y;
