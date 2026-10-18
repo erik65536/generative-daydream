@@ -141,6 +141,7 @@ export const api = {
   deleteWorld: (id: string) => call<{ ok: true }>('DELETE', `/api/worlds/${id}`),
   job: (id: string, since = 0) => call<JobStatus>('GET', `/api/worlds/${id}/job?since=${since}`),
   cancelJob: (id: string) => call<{ ok: true }>('POST', `/api/worlds/${id}/cancel`, {}),
+  resumeWorld: (id: string) => call<{ ok: true }>('POST', `/api/worlds/${id}/resume`),
   regenArt: (id: string, level: 'essential' | 'full', retryFailed = false) => call<{ ok: true }>('POST', `/api/worlds/${id}/art`, { level, retryFailed }),
   setup: (id: string) => call<WorldSetup>('GET', `/api/worlds/${id}/setup`),
   instances: (worldId: string) => call<import('@gd/shared').InstanceSummary[]>('GET', `/api/worlds/${worldId}/instances`),

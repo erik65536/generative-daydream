@@ -159,7 +159,8 @@ export interface Review {
   problems: string[];
 }
 
-const FACING_QUESTION = 'Which side of the image is the figure facing or moving toward, as the viewer sees it?';
+const FACING_QUESTION = "Which side of the image is the figure's body turned toward (its chest and feet, the way it would walk), as the viewer sees it? Ignore where the eyes look.";
+const SPLIT_QUESTION = "Are the figure's head and its body turned toward opposite sides of the image (for example the body faces left while the face looks right)?";
 const FACING_CHOICES = { left: 'toward the left edge of the image', right: 'toward the right edge of the image', front: 'straight at the viewer' };
 
 /** Score an image 0-10 with the configured checker: a decision model (fast, probabilistic) or a vision LLM. */
@@ -257,7 +258,7 @@ const KIND_NOUN: Record<AssetKind, string> = { texture: 'surface', sprite: 'char
 /** Framing every brief carries (the prompt writer must respect it). */
 export const BRIEF_FRAMING: Record<AssetKind, string> = {
   texture: 'A seamless tileable surface texture seen straight from above (top-down orthographic, no perspective or vanishing point), filling the whole square frame edge to edge with one continuous material and no objects, shapes, pools, patches, holes, horizon, border, shadow or vignette; the material continues off every edge so tiles join invisibly, at a scale of roughly one metre across the frame.',
-  sprite: 'A game character sprite: one full-body figure standing in a relaxed ready stance, in a three-quarter view facing the viewer and turned slightly to the left, centred, the entire figure visible from the top of the head to the soles of the feet with a little empty space around it.',
+  sprite: 'A game character sprite: one full-body figure standing in a relaxed ready stance, in a three-quarter view turned slightly to the left, with head, gaze, chest and feet all turned the same way, centred, the entire figure visible from the top of the head to the soles of the feet with a little empty space around it.',
   object: 'A game prop seen from a high three-quarter angle (about 35 degrees from above, as in an isometric game): one object shown whole and centred, standing upright as it would stand on the ground (a sign on its post, a lantern on its base or pole, a table on its legs), with empty space around it.',
   icon: 'A game inventory icon: one item centred and shown whole, slightly angled, filling most of a square frame, no hands.',
   portrait: 'A head-and-shoulders character portrait.',
@@ -470,8 +471,10 @@ export async function produceAssets(
       const ref = rec.ref ? refs.get(rec.ref) : undefined;
       const review = await qualityCheck(img.png, rec.kind, rec.variant ? `${rec.prompt}, ${VARIANTS[rec.variant]?.change ?? rec.variant}` : rec.prompt, ref ? fs.readFileSync(path.join(outDir, fileFor(rec.ref!))) : undefined);
       // The game draws characters facing left (mirrored to go right): a frame painted facing right is mirrored.
-      if (rec.kind === 'sprite' && (await facingOf(img.png)) === 'right') img = { ...img, png: await sharp(img.png).flop().png().toBuffer() };
-      const notes = img.notes ?? [];
+      const facing = rec.kind === 'sprite' ? await facingCheck(img.png) : null;
+      if (facing?.facing === 'right') img = { ...img, png: await sharp(img.png).flop().png().toBuffer() };
+      // A head turned against the body reads as walking backwards whichever way it is drawn: paint it again.
+      const notes = [...(img.notes ?? []), ...(facing?.split ? ['head and body turned opposite ways'] : [])];
       const problems = [...img.problems, ...(review?.problems ?? []), ...notes];
       let score = review ? review.score : 7;
       if (img.problems.length) score = Math.min(score, 4);
@@ -494,24 +497,31 @@ export async function produceAssets(
  * the mirror count (a checker leaning one way whatever it sees gives "front", and nothing is changed).
  */
 export async function facingOf(png: Buffer): Promise<'left' | 'right' | 'front' | null> {
+  return (await facingCheck(png))?.facing ?? null;
+}
+
+/** Facing (as in facingOf) and whether the head is turned against the body. */
+export async function facingCheck(png: Buffer): Promise<{ facing: 'left' | 'right' | 'front'; split: boolean } | null> {
   const g = genai();
   if (g.isProcedural('image.check')) return null;
+  let split = false;
   const plain = (b: Buffer) => sharp(b).resize(384, 384, { fit: 'contain', background: { r: 128, g: 128, b: 128, alpha: 1 } }).flatten({ background: '#808080' }).png().toBuffer();
   const ask = async (b: Buffer): Promise<string | null> => {
     const view = await plain(b);
     if (g.isDecision('image.check')) {
-      const a = await g.decide('image.check', { state: 'A game character on a plain grey background.', images: [view], questions: { facing: { type: 'choice', instructions: FACING_QUESTION, criteria: FACING_CHOICES } } });
+      const a = await g.decide('image.check', { state: 'A game character on a plain grey background.', images: [view], questions: { facing: { type: 'choice', instructions: FACING_QUESTION, criteria: FACING_CHOICES }, split: { type: 'noul', instructions: SPLIT_QUESTION } } });
+      if (a.split?.type === 'noul' && a.split.noul > 0.6) split = true;
       return a.facing?.type === 'choice' ? (a.facing as { choice: string }).choice : null;
     }
-    const r = await g.structured('image.check', { system: 'Judge only what you see.', prompt: `${FACING_QUESTION} Answer left, right or front.`, schema: z.object({ facing: z.enum(['left', 'right', 'front']) }), name: 'facing', images: [view], maxTokens: 60 });
+    const r = await g.structured('image.check', { system: 'Judge only what you see.', prompt: `${FACING_QUESTION} Answer left, right or front. Also: ${SPLIT_QUESTION}`, schema: z.object({ facing: z.enum(['left', 'right', 'front']), split: z.boolean() }), name: 'facing', images: [view], maxTokens: 80 });
+    if (r.split) split = true;
     return r.facing;
   };
   try {
     const asPainted = await ask(png);
     const mirrored = await ask(await sharp(png).flop().png().toBuffer());
-    if (asPainted === 'left' && mirrored === 'right') return 'left';
-    if (asPainted === 'right' && mirrored === 'left') return 'right';
-    return 'front';
+    const facing = asPainted === 'left' && mirrored === 'right' ? 'left' : asPainted === 'right' && mirrored === 'left' ? 'right' : 'front';
+    return { facing, split };
   } catch {
     return null;
   }

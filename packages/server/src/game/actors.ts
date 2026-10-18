@@ -23,6 +23,8 @@ export abstract class Actor {
   /** Combat turn resources. */
   ap = 0;
   movementLeft = 0;
+  /** An attack made out of combat that started the fight: its cost comes out of this actor's first turn. */
+  openerAp = 0;
   /** Turns of immunity to control effects (after one ends). */
   controlImmune = 0;
   /** Dirty flag for broadcasting. */

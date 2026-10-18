@@ -151,6 +151,10 @@ export interface NpcRuntime {
   /** Gathering: NPC goes to a place at a time. */
   gathering?: { zoneId: string; x: number; y: number; day: number; reason: string };
   fled?: boolean;
+  /** Day this NPC last gave each player a gift (gifts are occasional). */
+  giftDay?: Record<string, number>;
+  /** Secrets (indexes into the NPC's secrets) already told to each player. */
+  secretsTold?: Record<string, number[]>;
 }
 
 export interface MonsterRuntime {
@@ -239,7 +243,6 @@ export interface InstanceState {
   updatedAt: number;
   /** Game minutes since start. */
   clock: number;
-  keepRunning: boolean;
   /** Allow other users to join (experimental multiplayer). */
   open: boolean;
   /** Snapshot instances are hard saves of another instance. */
@@ -269,7 +272,6 @@ export interface InstanceSummary {
   createdAt: number;
   snapshotOf?: string;
   open: boolean;
-  keepRunning: boolean;
   day: number;
   players: { userId: string; name: string; level: number; zone: string }[];
   online?: number;

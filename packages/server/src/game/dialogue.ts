@@ -5,7 +5,7 @@
  */
 import { z } from 'zod';
 import {
-  EMOTIONS, NPC_ACTION_INFO, OBJECTIVE_TYPES, rx, uid,
+  EMOTIONS, NPC_ACTION_INFO, NPC_GIFTS, OBJECTIVE_TYPES, rx, uid, type NpcGift, type JournalEntry,
   type DialogMessage, type DialogState, type Emotion, type ItemInstance, type Memory, type NpcAction, type NpcActionType, type NpcDef, type NpcRuntime,
   type PlayerState, type QuestDef, type QuestObjective, type ZoneDef, type NewObjectiveSpec,
 } from '@gd/shared';
@@ -44,7 +44,10 @@ export interface DialogueHost {
   remember(npcId: string, mem: Memory): void;
   scheduleGathering(npcId: string, about: string, day: number, reason: string): void;
   playerChanged(p: PlayerState): void;
-  journal(p: PlayerState, kind: 'social' | 'quest', text: string): void;
+  journal(p: PlayerState, kind: JournalEntry['kind'], text: string): void;
+  /** Something an NPC can spare, made at the party's level ("within reason": modest rarity). */
+  rollGift(userId: string, kind: NpcGift, generous: boolean): ItemInstance | null;
+  grantXp(userId: string, amount: number): void;
   partySummary(userId: string): string;
   communication(): 0 | 1 | 2 | 3;
   dynamicQuest(def: QuestDef): void;
@@ -65,6 +68,9 @@ interface Session {
 }
 
 const MAX_HISTORY = 24;
+/** Days between gifts from the same person, and the feeling they need toward the player to give one unprompted. */
+const GIFT_EVERY_DAYS = 3;
+const GIFT_AT = 20;
 
 export class DialogueEngine {
   private sessions = new Map<string, Session>();
@@ -347,7 +353,9 @@ export class DialogueEngine {
       `World facts you might know:\n${w.worldFacts.slice(0, 6).map((f) => `- ${f}`).join('\n')}`,
       mems.length ? `What you remember:\n${mems.map((m) => `- ${m.source === 'rumor' ? `(heard from ${this.npc(m.fromNpcId ?? '')?.name ?? 'someone'}) ` : ''}${m.text}${m.dueDay !== undefined ? ` (day ${m.dueDay})` : ''}`).join('\n')}` : '',
       `Your feelings toward ${p.name}: ${label}.`,
-      `How to behave: stay fully in character and speak as ${def.name} would — natural dialogue, 1-4 sentences unless asked for detail. React to exactly what the player says and does; you can be charmed, persuaded, offended, fooled or unimpressed like a real person with your personality. Never mention being an AI, game mechanics, JSON, ids or numbers. Do not invent quests or items that are not listed. Most replies need only "none" or a "remember" action — choose other actions only when they truly follow from the conversation.`,
+      `How to behave: stay fully in character and speak as ${def.name} would — natural dialogue, 1-4 sentences unless asked for detail. React to exactly what the player says and does; you can be charmed, persuaded, offended, fooled or unimpressed like a real person with your personality. Never mention being an AI, game mechanics, JSON, ids or numbers.`,
+      `Make talking to you worth it. You have a life, worries and things you know; when the conversation earns it, act on them the way a real person would, through the actions you are offered each turn, and say it in your own words. Do not hand out things to strangers who have done nothing; small talk can stay small talk.`,
+      `How you feel about ${p.name} is never said as a label or number: show it in tone, in what you share and in what you will do for them.`,
     ]
       .filter(Boolean)
       .join('\n\n');
@@ -382,6 +390,11 @@ export class DialogueEngine {
     if (knownZones.length) allowed.push('reveal_location');
     if (this.h.ctx.r.systems.dynamicQuests) allowed.push('create_quest');
     if (def.role !== 'guard' && this.h.ctx.townOf(rt.zoneId)) allowed.push('call_guards');
+    const gift = this.canGift(rt, userId);
+    if (gift) allowed.push('give_gift');
+    const untold = this.untoldSecrets(def, rt, userId);
+    if (untold.length) allowed.push('share_secret');
+    allowed.push('share_lead');
     const lines: string[] = [];
     lines.push(`THE PLAYER: ${this.h.partySummary(userId)}`);
     if (available.length) lines.push(`QUESTS YOU COULD OFFER (use offer_quest with questId when it fits the conversation, e.g. they ask for work or help):\n${available.map((q) => `- ${q.id}: "${q.title}" — ${q.summary}`).join('\n')}`);
@@ -401,20 +414,29 @@ export class DialogueEngine {
           : `You are ready to travel with the player as a companion (join_party) — part of why you are here. If they ask and have not mistreated you, say yes, perhaps with a condition or a remark in character; do not string them along.`,
       );
     if (knownZones.length) lines.push(`PLACES YOU KNOW (reveal_location with zoneId when you tell them how to get there): ${knownZones.map((zz) => `${zz.id}=${zz.name}`).join(', ')}`);
+    if (gift) lines.push(`GIFTS: you could give ${p.name} something you can spare (give_gift with gift = supplies: remedies and consumables; gear: a piece of equipment; material: crafting stock; keepsake: something of small value) — as thanks, out of friendship, or to help with a danger you talked about. ${gift === 'generous' ? 'You feel generous toward them.' : 'Something modest.'} Not every conversation.`);
+    if (untold.length) lines.push(`SECRETS YOU COULD CONFIDE (share_secret with secretRef, only when trust is earned or you are truly persuaded): ${untold.map((i) => `secret${i}`).join(', ')} — the secrets listed above, in order (secret0 is the first).`);
+    lines.push('LEADS: when you tell them something they should act on — a warning, a rumour, where something can be found — also record it with share_lead (one plain sentence) so it goes in their journal.');
     const comm = this.h.communication();
     lines.push(`MEMORY: use "remember" for anything about the player worth recalling later (promises, personal details, deeds). If it is about a future date set dueInDays. "spread" says who you would tell (${['nobody — keep it to yourself', 'close friends and family', 'the whole town', 'anyone, far and wide'][comm]} is the most this world allows). Set gathering=true only for an event the community would gather for (a celebration, a memorial).`);
+    if (allowed.includes('create_quest')) {
+      const people = [...this.h.ctx.npcs.values()].filter((n) => n.id !== def.id && this.h.ctx.townOf(n.zoneId) === this.h.ctx.townOf(rt.zoneId)).slice(0, 12).map((n) => n.name);
+      const families = w.families.slice(0, 6).map((f) => f.name);
+      lines.push(`NEW WORK (create_quest): when you ask for help with a problem of your own, make it a real task: 1-3 objectives, each of a type the world can track — talk/persuade (target: a person's name), kill (target: a creature kind), reach (target: a place name), collect (target: the thing to bring back, named plainly). Use names from this world: people ${people.join(', ') || '(none)'}; creatures ${families.join(', ')}; places ${knownZones.map((zz) => zz.name).join(', ') || '(none)'}. The engine adds "return to you" at the end. Set rewardGold to what you would honestly pay.`);
+    }
     lines.push(`AVAILABLE ACTIONS: ${allowed.map((a) => `${a} (${NPC_ACTION_INFO[a]})`).join('; ')}`);
+    lines.push('BEFORE YOU ANSWER: every job, payment, direction, gift, secret or promise in your speech must have its action in this same reply (offer_quest or create_quest for work, reveal_location for directions, give_gift / give_item / give_gold for things, share_secret, share_lead). If you would not take the action, do not offer it in words.');
     lines.push(this.transcript(p, def));
     if (input.event) lines.push(`[SITUATION: ${input.event}]`);
     if (input.offered) lines.push(`[The player offers you: ${this.h.ctx.itemName(input.offered)} — ${this.h.ctx.itemDescription(input.offered) || rx(this.h.ctx.r).item.get(input.offered.baseId)?.category}. Accept or refuse it.]`);
     if (input.gold) lines.push(`[The player offers you ${input.gold} ${this.h.ctx.r.terminology.currency}.]`);
     if (input.skillId) lines.push(`[The player uses an ability on you: ${this.h.ctx.skillName(input.skillId)} — ${rx(this.h.ctx.r).skill.get(input.skillId)?.description}. React to it.]`);
     lines.push(input.text ? `${p.name} says: "${input.text}"` : `Respond as ${def.name} now.`);
-    return { available, involved, npcItems, knownZones, allowed, lines };
+    return { available, involved, npcItems, knownZones, allowed, lines, untold };
   }
 
   private async llmDecision(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: TurnInput) {
-    const { available, involved, npcItems, knownZones, allowed, lines } = this.turnContext(userId, p, def, rt, input);
+    const { available, involved, npcItems, knownZones, allowed, lines, untold } = this.turnContext(userId, p, def, rt, input);
     const itemRefs = npcItems.map((_, i) => `item${i}`);
     const questIds = [...available.map((q) => q.id), ...involved.map((q) => q.def.id)];
     const objectiveIds = involved.flatMap((q) => q.objectives.map((o) => o.id));
@@ -439,6 +461,9 @@ export class DialogueEngine {
             gathering: z.boolean().optional(),
             newObjective: newObjective.optional(),
             newQuest: z.object({ title: z.string().max(80), summary: z.string().max(300), objectives: z.array(newObjective).min(1).max(3), rewardGold: z.coerce.number().optional() }).optional(),
+            gift: z.enum(NPC_GIFTS).optional(),
+            secretRef: enumOr(untold.map((i) => `secret${i}`)).optional(),
+            lead: z.string().max(240).optional(),
           }),
         )
         .max(5),
@@ -457,6 +482,9 @@ export class DialogueEngine {
       skillId: a.skillId === 'none' ? undefined : a.skillId,
       newObjective: a.newObjective as NewObjectiveSpec | undefined,
       newQuest: a.newQuest as NpcAction['newQuest'],
+      gift: a.gift ?? undefined,
+      secretRef: a.secretRef === 'none' ? undefined : a.secretRef ?? undefined,
+      lead: a.lead ?? undefined,
     }));
     if (this.acceptsJoin(p, def, rt, input.text) && !actions.some((a) => a.type === 'join_party')) actions.push({ type: 'join_party' });
     return { actions, emotion: out.emotion as Emotion, speech: out.speech };
@@ -466,7 +494,7 @@ export class DialogueEngine {
   private async decisionModelTurn(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: TurnInput): Promise<{ actions: NpcAction[]; emotion: Emotion; speech: string; needsSpeech: boolean }> {
     const g = genai();
     const c = this.turnContext(userId, p, def, rt, input);
-    const simple = c.allowed.filter((a) => a !== 'create_quest' && a !== 'modify_objective' && a !== 'add_objective' && a !== 'remember' && a !== 'change_disposition');
+    const simple = c.allowed.filter((a) => a !== 'create_quest' && a !== 'modify_objective' && a !== 'add_objective' && a !== 'remember' && a !== 'change_disposition' && a !== 'share_lead');
     const questions: Record<string, DecisionQuestion> = {
       action: { type: 'choice', instructions: `Which single action should ${def.name} take right now, in response to what the player just said and did? Prefer "none" unless the conversation clearly calls for something.`, criteria: Object.fromEntries(simple.map((a) => [a, NPC_ACTION_INFO[a]])) },
       emotion: { type: 'choice', instructions: `How does ${def.name} feel right now?`, criteria: Object.fromEntries(EMOTIONS.map((e) => [e, null])) },
@@ -478,13 +506,15 @@ export class DialogueEngine {
     if (c.npcItems.length) questions.item = { type: 'choice', instructions: 'If giving an item, which one?', criteria: Object.fromEntries(c.npcItems.map((it, i) => [`item${i}`, this.h.ctx.itemName(it)])) };
     if (this.teachList(def, p).length) questions.skill = { type: 'choice', instructions: 'If teaching a skill, which one?', criteria: Object.fromEntries(this.teachList(def, p).map((sk) => [sk, this.h.ctx.skillName(sk)])) };
     if (c.knownZones.length) questions.zone = { type: 'choice', instructions: 'If revealing a location, which place?', criteria: Object.fromEntries(c.knownZones.map((zz) => [zz.id, zz.name])) };
+    if (c.allowed.includes('give_gift')) questions.gift = { type: 'choice', instructions: 'If giving a gift, what kind?', criteria: { supplies: 'remedies and consumables', gear: 'a piece of equipment', material: 'crafting stock', keepsake: 'something of small value' } };
+    if (c.untold.length) questions.secret = { type: 'choice', instructions: 'If confiding a secret, which one?', criteria: Object.fromEntries(c.untold.map((i) => [`secret${i}`, def.secrets[i]!])) };
     const ans = await g.decide('npc.decision', { state: `${this.persona(p, def, rt)}\n\n${c.lines.join('\n\n')}`, questions });
     const pick = (k: string) => (ans[k]?.type === 'choice' ? (ans[k] as { choice: string }).choice : undefined);
     const type = (this.acceptsJoin(p, def, rt, input.text) ? 'join_party' : pick('action') ?? 'none') as NpcActionType;
     const actions: NpcAction[] = [];
     const quest = pick('quest');
     const prog = quest ? c.involved.find((q) => q.def.id === quest) : undefined;
-    actions.push({ type, questId: quest, objectiveId: prog?.objectives[prog.current]?.id, itemRef: pick('item'), skillId: pick('skill'), zoneId: pick('zone') });
+    actions.push({ type, questId: quest, objectiveId: prog?.objectives[prog.current]?.id, itemRef: pick('item'), skillId: pick('skill'), zoneId: pick('zone'), gift: pick('gift') as NpcGift | undefined, secretRef: pick('secret') });
     const att = ans.attitude?.type === 'score' ? ans.attitude.score : 2;
     if (Math.abs(att - 2) > 0.4) actions.push({ type: 'change_disposition', amount: Math.round((att - 2) * 8) });
     if (ans.remember?.type === 'noul' && ans.remember.noul > 0.6 && input.text) {
@@ -507,6 +537,20 @@ export class DialogueEngine {
     void def;
   }
 
+  /** Whether this person could give the player a gift now: 'generous' for someone they are fond of. */
+  private canGift(rt: NpcRuntime, userId: string): 'modest' | 'generous' | null {
+    const last = rt.giftDay?.[userId];
+    if (last !== undefined && this.h.day() - last < GIFT_EVERY_DAYS) return null;
+    const disp = this.disposition(rt, userId);
+    if (disp < GIFT_AT && !this.h.player(userId)?.stats.questsCompleted) return null;
+    return disp >= 60 ? 'generous' : 'modest';
+  }
+
+  private untoldSecrets(def: NpcDef, rt: NpcRuntime, userId: string): number[] {
+    const told = new Set(rt.secretsTold?.[userId] ?? []);
+    return def.secrets.map((_, i) => i).filter((i) => !told.has(i));
+  }
+
   teachPrice(p: PlayerState) {
     const lvl = Math.max(...p.party.map((c) => c.level));
     return 40 + lvl * 25;
@@ -519,6 +563,7 @@ export class DialogueEngine {
     const w = this.h.ctx.world;
     let disp = 0;
     let giftHandled = false;
+    let leads = 0;
     for (const a of actions.slice(0, 5)) {
       try {
         switch (a.type) {
@@ -663,6 +708,33 @@ export class DialogueEngine {
             if (!a.skillId || !this.teachList(def, p).includes(a.skillId)) break;
             const err = this.h.teachSkill(userId, a.skillId, this.teachPrice(p));
             notes.push(err ?? `You learn ${this.h.ctx.skillName(a.skillId)} (−${this.teachPrice(p)} ${this.h.ctx.r.terminology.currency}).`);
+            break;
+          }
+          case 'give_gift': {
+            const kind = this.canGift(rt, userId);
+            if (!kind) break;
+            const it = this.h.rollGift(userId, a.gift ?? 'supplies', kind === 'generous');
+            if (!it) break;
+            (rt.giftDay ??= {})[userId] = this.h.day();
+            this.h.giveItemsToPlayer(userId, [it]);
+            notes.push(`${def.name} gives you ${this.h.ctx.itemName(it)}.`);
+            break;
+          }
+          case 'share_secret': {
+            const i = Number((a.secretRef ?? '').replace('secret', ''));
+            if (!Number.isInteger(i) || !this.untoldSecrets(def, rt, userId).includes(i)) break;
+            ((rt.secretsTold ??= {})[userId] ??= []).push(i);
+            this.h.journal(p, 'story', `${def.name} confided: ${def.secrets[i]}`);
+            // Earning someone's trust is progress in itself.
+            this.h.grantXp(userId, 20 + Math.max(...p.party.map((c) => c.level)) * 12);
+            notes.push(`${def.name} trusted you with a secret. (Journal)`);
+            break;
+          }
+          case 'share_lead': {
+            const lead = (a.lead ?? '').trim();
+            if (lead.length < 8 || leads++ > 0) break;
+            this.h.journal(p, 'discovery', `${def.name}: ${lead.slice(0, 240)}`);
+            notes.push('Noted in your journal.');
             break;
           }
           case 'create_quest': {

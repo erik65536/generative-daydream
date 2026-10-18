@@ -240,7 +240,7 @@ export async function writeZoneContent(w: WorldDefinition, zoneId: string, guida
     const here = townZoneIds(w, z);
     const keyNpcs = w.npcs.filter((n) => here.has(n.zoneId) && n.essential);
     const size = SIZE_PROFILES[w.input.size];
-    const npcCount = Math.max(3, w.npcs.filter((n) => here.has(n.zoneId) && !n.essential).length);
+    const npcCount = Math.max(w.input.combatMode === 'party_npc' ? 8 : 7, w.npcs.filter((n) => here.has(n.zoneId) && !n.essential).length);
     const sideQuests = Math.max(size.sideQuestsPerTown[0], Math.min(size.sideQuestsPerTown[1], w.quests.filter((q) => !q.main && q.zoneId === z.id).length));
     const families = [...new Set(linked.flatMap((l) => l.familyIds))].map((id) => w.families.find((f) => f.id === id)?.name).filter((x): x is string => !!x);
     const fb = () => {

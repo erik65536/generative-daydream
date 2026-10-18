@@ -553,7 +553,7 @@ function compileAffixes(r: Ruleset, ctx: Ctx, gear: GearIntent) {
   if (r.resolution.dodge) list.push(['dodge', ['armor', ...J], 4, 'Evasive', 'of Shadows']);
   if (r.systems.traps) list.push(['trapSense', [...J, 'armor'], 2, 'Wary', 'of Caution']);
   if (r.systems.locks) list.push(['lockpick', [...J, 'armor'], 2, 'Nimble', 'of Locks']);
-  for (const t of ctx.types) list.push([`mit:${t.id}`, A, 8, `${t.mitigationName}ed`, `of ${t.mitigationName}`]);
+  ctx.types.forEach((t, i) => list.push([`mit:${t.id}`, A, 8, ['Reinforced', 'Hardened', 'Warded', 'Braced', 'Tempered'][i % 5]!, `of ${t.mitigationName}`]));
   for (const s of ctx.subs.slice(0, 6)) list.push([`res:${s.id}`, [...A, ...J], 3, `${s.name}proof`, `of ${s.name} Warding`], [`dmg:${s.id}`, [...W, ...J], 3, `${s.name}`, `of ${s.name}`]);
   for (const s of ctx.subs.filter((x) => x.statusId).slice(0, 3)) list.push([`onhit:${s.id}`, W, 3, `${s.name}-laced`, `of ${s.name}`]);
   for (const p of ctx.pools) list.push([`pool:${p.id}`, [...A, ...J, 'weapon'], 5, 'Tireless', `of ${p.name}`], [`poolRegen:${p.id}`, [...J, 'offhand'], 3, 'Flowing', `of ${p.name} Flow`]);

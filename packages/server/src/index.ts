@@ -10,7 +10,7 @@ import { CLIENT_DIST, CONFIG_DIR } from './paths';
 import * as store from './storage';
 import { genai, reloadGenAI } from './genai/service';
 import { imagePromptSystem, writerProfile } from './genai/images';
-import { startWorldGeneration } from './worldgen/pipeline';
+import { resumeWorldGeneration, startWorldGeneration } from './worldgen/pipeline';
 import { activeJob, ACTIVE, enqueue, JobConflict, latestJob, logSince, logTail, queuePosition, requestCancel, type JobKind } from './jobs/queue';
 import { startWorker } from './jobs/worker';
 import { applyEdit, EditSchema, studioView, TaskSchema } from './worldgen/studio';
@@ -269,6 +269,17 @@ app.get('/api/worlds/:id/rules', auth, (req, res) => {
   const w = store.loadWorld(String(req.params.id));
   if (!w) return void res.status(404).json({ error: 'Not found.' });
   res.json({ ruleset: w.ruleset ?? null, canRebalance: !!w.rulesIntent });
+});
+
+/** Continue a build that stopped (a model or service was down): finished steps are kept. */
+app.post('/api/worlds/:id/resume', auth, (req, res) => {
+  const u = (req as AuthedRequest).user;
+  const w = store.loadWorld(String(req.params.id));
+  if (!w || w.status !== 'failed') return void res.status(404).json({ error: 'No stopped build to resume.' });
+  if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your daydream.' });
+  if (activeJob(w.id)) return void res.status(409).json({ error: 'This daydream is already being made.' });
+  resumeWorldGeneration(w);
+  res.json({ ok: true });
 });
 
 app.post('/api/worlds/:id/rules', auth, (req, res) => {

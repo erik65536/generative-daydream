@@ -10,7 +10,7 @@ import { defaultClasses, defaultCore, defaultGear, defaultTree } from './default
 import { ClassTreeIntentSchema, ClassesIntentSchema, CoreIntentSchema, GearIntentSchema, SKILL_EFFECT_KINDS, STAT_EFFECTS, type RulesetIntent } from './intent';
 import * as RP from './prompts';
 
-/** Runs one structured LLM step with a fallback (provided by the pipeline so logging and errors are uniform). */
+/** Runs one structured LLM step (provided by the pipeline: it retries, then stops the build; the last argument is only for purposes configured without a model). */
 export type StepRunner = <T extends z.ZodType>(purpose: Purpose, label: string, opts: { prompt: string; schema: T; name: string; maxTokens?: number; system?: string }, fallback: () => z.infer<T>) => Promise<z.infer<T>>;
 
 export async function designRules(run: StepRunner, world: string, input: WorldInput, genre: Genre, onClass?: (i: number, n: number) => void): Promise<RulesetIntent> {

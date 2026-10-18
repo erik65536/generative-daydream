@@ -43,10 +43,13 @@ export function modifierLabel(r: Ruleset, m: Modifier, level: number): string {
   const v = modifierAmount(r, m, level);
   const name = statName(r, m.stat);
   if (m.stat === 'hpPct') return `${v >= 0 ? '+' : ''}${Math.round(v)}% ${name}`;
-  if (pctStat(m.stat)) return `${v >= 0 ? '+' : ''}${Math.round(v * 10) / 10}% ${name}`;
+  if (pctStat(m.stat)) return `${v >= 0 ? '+' : ''}${Math.abs(v) >= 0.1 || v === 0 ? Math.round(v * 10) / 10 : Math.round(v * 100) / 100}% ${name}`;
   if (m.stat === 'move') return `${v >= 0 ? '+' : ''}${Math.round(v * 10) / 10} ${name}`;
-  return `${v >= 0 ? '+' : ''}${Math.round(v)} ${name}`;
+  return `${v >= 0 ? '+' : ''}${fine(v)} ${name}`;
 }
+
+/** Whole numbers, but small amounts (a fraction per attribute point) keep enough digits not to read as 0. */
+const fine = (v: number) => (Math.abs(v) >= 1 || v === 0 ? Math.round(v) : Math.abs(v) >= 0.1 ? Math.round(v * 10) / 10 : Math.round(v * 100) / 100);
 
 function effectLine(r: Ruleset, e: Effect, skill: SkillDef, rank: number, stats?: StatBlock): string | null {
   const ix = rx(r);
@@ -126,6 +129,14 @@ export function nodeLines(r: Ruleset, node: TreeNode, level: number): string[] {
   return (node.modifiers ?? []).map((m) => modifierLabel(r, { stat: m.stat, value: m.value * (node.tune ?? 1) }, level));
 }
 
+/** What one attribute point gives; amounts too small to show per point read "+1 X per 4 points". */
+export function perPointLabel(r: Ruleset, m: Modifier, level: number): string {
+  const v = modifierAmount(r, m, level);
+  if (pctStat(m.stat) || m.stat === 'hpPct' || m.stat === 'move' || v === 0 || Math.abs(v) >= 1) return modifierLabel(r, m, level);
+  const n = Math.ceil(1 / Math.abs(v) - 1e-9);
+  return `${v > 0 ? '+' : '-'}1 ${statName(r, m.stat)} per ${n} points`;
+}
+
 // ------------------------------------------------------------------------------------ items
 
 export interface ItemNaming {
@@ -140,8 +151,14 @@ export function itemDisplayName(r: Ruleset, item: ItemLike & { uniqueId?: string
   const order = ix.rarityOrder.get(item.rarityId) ?? 0;
   const a1 = item.affixes[0] ? ix.affix.get(item.affixes[0].affixId) : undefined;
   const a2 = item.affixes[1] ? ix.affix.get(item.affixes[1].affixId) : undefined;
-  if (a1) name = `${a1.prefix} ${name}`;
-  if (a2 && order >= 2) name = `${name} ${a2.suffix}`;
+  // Skip a prefix or suffix that repeats a word of the name ("Grounding Grounding Clamp").
+  const echoes = (word: string) => {
+    const stem = (x: string) => x.toLowerCase().replace(/[^a-z]/g, '').slice(0, 5);
+    const have = new Set(name.split(/\s+/).map(stem));
+    return word.split(/\s+/).some((w) => w.length > 3 && have.has(stem(w)));
+  };
+  if (a1 && !echoes(a1.prefix)) name = `${a1.prefix} ${name}`;
+  if (a2 && order >= 2 && !echoes(a2.suffix)) name = `${name} ${a2.suffix}`;
   if (item.upgrade) name = `${name} +${item.upgrade}`;
   return name.trim();
 }
@@ -160,12 +177,20 @@ export function itemLines(r: Ruleset, item: ItemLike, base: ItemBaseDef | undefi
   if (base.defense) {
     for (const [typeId, c] of Object.entries(base.defense)) if (c > 0) lines.push(modifierLabel(r, { stat: `mit:${typeId}`, value: c * Math.sqrt(ix.rarity.get(item.rarityId)?.budget ?? 1) * (1 + (item.upgrade ?? 0) * r.crafting.upgrades.perLevel) }, item.level));
   }
-  for (const m of base.implicit ?? []) lines.push(modifierLabel(r, m, item.level));
+  // One line per stat: a base bonus and an affix on the same stat read as their total.
+  const mods: Modifier[] = [];
+  const add = (m: Modifier) => {
+    const same = mods.find((x) => x.stat === m.stat);
+    if (same) same.value += m.value;
+    else mods.push({ ...m });
+  };
+  for (const m of base.implicit ?? []) add(m);
   for (const a of item.affixes) {
     const def = ix.affix.get(a.affixId);
-    if (def) lines.push(modifierLabel(r, { stat: def.stat, value: a.value }, item.level));
+    if (def) add({ stat: def.stat, value: a.value });
   }
-  for (const m of item.uniqueMods ?? []) lines.push(modifierLabel(r, m, item.level));
+  for (const m of item.uniqueMods ?? []) add(m);
+  for (const m of mods) lines.push(modifierLabel(r, m, item.level));
   if (base.use) {
     const fake: SkillDef = { id: '', name: '', description: '', owner: '', targeting: base.use.targeting, range: 8, ap: base.use.ap, cooldown: 0, effects: base.use.effects, rankBonus: 0, maxRank: 1, tags: [], fx: 'none', tune: 1 };
     const pseudo = { dpa: refDpa(r, item.level), pct: {} } as unknown as StatBlock;

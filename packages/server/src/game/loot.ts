@@ -32,7 +32,9 @@ export function makeItem(r: Ruleset, rng: Rng, baseId: string, level: number, ra
     const [lo, hi] = ix.rarity.get(rid)?.affixes ?? [0, 0];
     const n = rng.int(lo, hi);
     const pool = r.affixes.filter((a) => kind && a.slotKinds.includes(kind));
-    const taken = new Set<string>();
+    // A stat the base already grants is never rolled again as an affix (it would read as a duplicate line).
+    const taken = new Set<string>((base.implicit ?? []).map((m) => m.stat));
+    if (base.defense) for (const t of Object.keys(base.defense)) taken.add(`mit:${t}`);
     for (let i = 0; i < n && pool.length; i++) {
       const choices = pool.filter((p) => !taken.has(p.stat));
       if (!choices.length) break;

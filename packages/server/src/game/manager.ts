@@ -31,7 +31,6 @@ class InstanceManager {
     const world = loadWorld(state.worldId);
     if (!world || world.status !== 'ready' || incompatibility(state, world)) return null;
     const inst = this.wire(new GameInstance(state, world));
-    if (state.keepRunning && state.lastActiveAt) inst.catchUp(Date.now() - state.lastActiveAt);
     this.live.set(id, inst);
     return inst;
   }
@@ -78,7 +77,6 @@ class InstanceManager {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       clock: 8 * 60,
-      keepRunning: false,
       open: false,
       players: {},
       npcs: {},
@@ -113,7 +111,6 @@ class InstanceManager {
     copy.snapshotOf = inst.state.id;
     copy.ownerId = by.userId;
     copy.createdAt = Date.now();
-    copy.keepRunning = false;
     copy.open = false;
     saveInstance(copy);
     return copy;
@@ -133,7 +130,6 @@ class InstanceManager {
       createdAt: state.createdAt,
       snapshotOf: state.snapshotOf,
       open: state.open,
-      keepRunning: state.keepRunning,
       day: Math.floor(state.clock / 1440) + 1,
       players: Object.values(state.players).map((p) => ({ userId: p.userId, name: p.name, level: Math.max(...p.party.map((c) => c.level)), zone: p.zoneId })),
       online: live?.onlineUsers().length ?? 0,

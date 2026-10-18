@@ -50,6 +50,7 @@ export function PartyFrames() {
               <div className="name">
                 <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ch.name}</span>
                 <span className="lvl">{ch.level}</span>
+                {ch.treePoints > 0 && <span className="pts" title="Unspent talent points (K)">+{ch.treePoints}</span>}
               </div>
               <Bar value={ch.hp} max={stats.maxHp} color={`linear-gradient(90deg, color-mix(in srgb, ${r.health.color} 55%, #000), ${r.health.color})`} label={`${Math.round(ch.hp)} / ${stats.maxHp}`} extra={ch.barrier} />
               {r.pools.length > 0 && (
@@ -61,7 +62,6 @@ export function PartyFrames() {
               )}
               <Bar thin value={maxed ? 1 : ch.xp - xpLo} max={maxed ? 1 : xpHi - xpLo} color="rgba(217,181,106,.7)" />
             </div>
-            {ch.treePoints > 0 && <div className="points">+{ch.treePoints}</div>}
             {ent?.statuses.length ? (
               <div style={{ position: 'absolute', bottom: -5, left: 60, display: 'flex', gap: 2 }}>
                 {ent.statuses.slice(0, 6).map((st) => (

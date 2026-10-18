@@ -353,6 +353,10 @@ export function loadWorld(id: string): WorldDefinition | null {
   if (c && c.stamp === stamp) return c.world;
   const world = readJson<WorldDefinition>(worldFile(id));
   if (!world) return null;
+  // Rulesets compiled before armour affixes had proper names called them "<Mitigation>ed".
+  world.ruleset?.affixes.forEach((a, i) => {
+    if (a.stat.startsWith('mit:') && / of /.test(a.suffix) && a.prefix === `${a.suffix.replace(/^of /, '')}ed`) a.prefix = ['Reinforced', 'Hardened', 'Warded', 'Braced', 'Tempered'][i % 5]!;
+  });
   worldCache.set(id, { stamp, world });
   return world;
 }

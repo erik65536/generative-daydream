@@ -60,9 +60,11 @@ export const LayoutPlanSchema = z.object({
 });
 export type LayoutPlanOut = z.infer<typeof LayoutPlanSchema>;
 
-export function atlasSchema(slotIds: string[]) {
+/** One entry per region and per place (exact counts, so a strict model cannot leave one out). */
+export function atlasSchema(slotIds: string[], regionCount?: number) {
+  const regions = z.array(z.object({ index: z.coerce.number().int(), name: str(60), description: str(400) }));
   return z.object({
-    regions: z.array(z.object({ index: z.coerce.number().int(), name: str(60), description: str(400) })),
+    regions: regionCount ? regions.min(regionCount).max(regionCount) : regions,
     zones: z.array(
       z.object({
         slotId: z.enum(slotIds as [string, ...string[]]),
@@ -72,7 +74,7 @@ export function atlasSchema(slotIds: string[]) {
         layout: LayoutPlanSchema.optional(),
         lore: str(600).optional(),
       }),
-    ),
+    ).min(slotIds.length).max(slotIds.length),
   });
 }
 export type AtlasOut = z.infer<ReturnType<typeof atlasSchema>>;

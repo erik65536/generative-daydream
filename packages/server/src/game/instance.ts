@@ -1,7 +1,7 @@
 /** One running save-state of a world: authoritative simulation for every connected player. */
 import {
   BitSet, DIFFICULTIES, GAME_MINUTES_PER_DAY, MAX_PARTY_SIZE, REAL_MS_PER_GAME_MINUTE, RESPAWN_GAME_MINUTES, ROLE_VISUAL, RULESET_VERSION, Rng,
-  bagUpgradeCost, canAllocate, characterStats, curve, enchantCost, findPath, upgradeCost, hashFloat, itemPrice, knownSkills, refMit, rx, sampleMotion, skillRange, smoothPath, standPoint, tilesInRadius, uid,
+  bagUpgradeCost, canAllocate, characterStats, curve, enchantCost, findPath, upgradeCost, hashFloat, itemPrice, knownSkills, refMit, rx, sampleMotion, skillAp, skillRange, smoothPath, standPoint, tilesInRadius, uid,
   type CharacterSpec, type ClientMessage, type DialogState, type DifficultyId, type EntityView, type FeatureDef, type FeatureState, type FxEvent, type InstanceState, type ItemInstance,
   type JournalEntry, type LootPile, type Memory, type NpcRuntime, type PlayerState, type PlayerView, type QuestDef, type Ruleset, type ServerMessage, type Surface,
   type TradeState, type MonsterRuntime, type SpawnDef, type Vec2, type WorldDefinition, type ZoneRuntime, type CharacterState, type MonsterArchetype, type SlotKind,
@@ -10,7 +10,7 @@ import { Actor, CharActor, MonsterActor, NpcActor, WALK_SPEED } from './actors';
 import { fitPack } from '../rules/encounters';
 import { WorldCtx, type ZoneMap } from './worldctx';
 import { Combat, type CombatHost } from './combat';
-import { addStatus, checkItemUse, checkSkill, executeSkill, isHostileTo, springTrap, useConsumable, applySurface } from './effects';
+import { addStatus, checkItemUse, checkSkill, executeSkill, isHarmful, isHostileTo, springTrap, useConsumable, applySurface } from './effects';
 import { QuestEngine, objectivesOf, currentObjectiveIndex } from './quests';
 import { DialogueEngine } from './dialogue';
 import { addToInventory, affixValue, fitsInInventory, inventoryCapacity, normalizeInventory, makeItem, makeUnique, merchantStock, mergeStacks, removeFromInventory, rollLoot, rollRandomItem } from './loot';
@@ -118,18 +118,12 @@ export class GameInstance implements CombatHost {
     this.dirtySince = 0;
   }
 
-  /** Advance the clock for time that passed while nobody was connected (keepRunning instances). */
-  catchUp(realMs: number) {
-    const minutes = Math.min(3 * GAME_MINUTES_PER_DAY, realMs / REAL_MS_PER_GAME_MINUTE);
-    if (minutes > 1) this.state.clock += minutes;
-  }
-
   onlineUsers(): string[] {
     return [...this.conns.keys()];
   }
 
   isPaused() {
-    return this.conns.size === 0 && !this.state.keepRunning;
+    return this.conns.size === 0;
   }
 
   day() {
@@ -216,7 +210,6 @@ export class GameInstance implements CombatHost {
       instanceName: this.state.name,
       userId: conn.userId,
       serverTime: Date.now(),
-      keepRunning: this.state.keepRunning,
       open: this.state.open,
       isOwner: this.state.ownerId === conn.userId,
     });
@@ -1014,7 +1007,8 @@ export class GameInstance implements CombatHost {
       const spot = this.nearestFree(z.id, { x: Math.round(a.x), y: Math.round(a.y) }, a.id);
       a.x = spot.x;
       a.y = spot.y;
-      combat.add(a, playersFirst && a.team() === 'players' ? 100 : 0);
+      // Whoever opened the fight already acted (and pays for it on their first turn); everyone rolls initiative.
+      combat.add(a);
       if (a instanceof CharActor) {
         this.dialogue.close(a.userId);
         this.closeTrade(a.userId);
@@ -1325,7 +1319,6 @@ export class GameInstance implements CombatHost {
         case 'fast_travel': return this.cmdFastTravel(p, msg.zoneId);
         case 'hard_save': return this.hardSave?.(p, msg.name);
         case 'set_options': {
-          if (msg.keepRunning !== undefined && this.state.ownerId === userId) this.state.keepRunning = msg.keepRunning;
           if (msg.open !== undefined && this.state.ownerId === userId) this.state.open = msg.open;
           if (msg.commandCompanions !== undefined) p.commandCompanions = msg.commandCompanions;
           this.markDirty();
@@ -1731,9 +1724,12 @@ export class GameInstance implements CombatHost {
     a.x = Math.round(a.x);
     a.y = Math.round(a.y);
     const hostileUse = target && isHostileTo(a, target);
+    // An opening shot is part of the attacker's first turn, not a free one: it is paid from that turn's AP.
+    // (Otherwise ranged characters get a free hit before initiative that melee ones never do.)
+    if (hostileUse || (skill.targeting === 'ground' && isHarmful(this.r, skill.effects))) a.openerAp = skillAp(skill, a.stats());
     executeSkill(this, use, false);
+    if (!a.combatId) a.openerAp = 0;
     if (!hostileUse) this.markPlayer(p.userId);
-    // Damage on an enemy started combat via onDamaged; give the attacker's side the first turn.
   }
 
   private pendingSkill = new Map<string, { skillId: string; targetId: string }>();
@@ -2440,7 +2436,29 @@ export class GameInstance implements CombatHost {
         this.state.events.push({ id: uid('ev'), day, kind: 'gathering', zoneId: town, x: wp.x - 2, y: wp.y + 2, about, reason, npcIds });
       },
       playerChanged: (p: PlayerState) => this.markPlayer(p.userId),
-      journal: (p: PlayerState, kind: 'social' | 'quest', text: string) => this.journal(p, kind, text),
+      journal: (p: PlayerState, kind: JournalEntry['kind'], text: string) => this.journal(p, kind, text),
+      rollGift: (u: string, kind: 'supplies' | 'gear' | 'material' | 'keepsake', generous: boolean) => {
+        const p = this.state.players[u];
+        if (!p) return null;
+        const level = Math.max(...p.party.map((c) => c.level));
+        const of = (cat: string, filter: (b: { category: string; use?: unknown }) => boolean = () => true) => this.r.items.filter((b) => b.category === cat && b.price > 0 && filter(b));
+        if (kind === 'gear') {
+          // Equipment a person could spare: never better than uncommon, or rare from someone who is fond of you.
+          for (let i = 0; i < 8; i++) {
+            const it = rollRandomItem(this.r, this.rng, level, 0, { minRarity: generous ? 2 : 1 });
+            if (rx(this.r).item.get(it.baseId)?.category === 'equipment') return it;
+          }
+          return null;
+        }
+        const pool = kind === 'supplies' ? [...of('potion'), ...of('tool')] : kind === 'material' ? of('material') : of('valuable');
+        if (!pool.length) return null;
+        const base = this.rng.pick(pool);
+        return makeItem(this.r, this.rng, base.id, level, this.r.rarities[0]!.id, base.stackable ? (generous ? 3 : this.rng.int(1, 2)) : 1);
+      },
+      grantXp: (u: string, amount: number) => {
+        const p = this.state.players[u];
+        if (p) this.grantPartyXp(p, amount);
+      },
       partySummary: (u: string) => {
         const p = this.state.players[u];
         if (!p) return '';

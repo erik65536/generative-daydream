@@ -1,13 +1,14 @@
 import { readable } from './theme';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  DIFFICULTIES, bagUpgradeCost, branchSpent, canAllocate, codexSections, enchantCost, inventoryCapacity, inventoryUsed, itemPrice, knownSkills, modifierLabel, nodeLines,
+  DIFFICULTIES, bagUpgradeCost, branchSpent, canAllocate, codexSections, enchantCost, inventoryCapacity, inventoryUsed, itemPrice, knownSkills, modifierLabel, nodeLines, perPointLabel,
   rx, skillRank, upgradeCost, xpForLevel,
   type CharacterState, type ItemInstance, type QuestDef, type QuestObjective, type Ruleset, type TreeNode,
 } from '@gd/shared';
 import { client, useGame } from '../net/game';
 import { ItemIcon, ItemTooltip, Portrait, SkillIcon, SkillTooltip, Window, hideTip, tip } from './common';
 import { navigate } from '../App';
+import { MAP_W, WorldMapView } from './worldmap';
 
 const iconUrl = (baseId: string) => client().assetUrl(`icon_${baseId}`);
 
@@ -109,8 +110,6 @@ export function DialogWindow() {
     setOffer(false);
   };
   const close = () => c.send({ t: 'end_dialog' });
-  const disp = dialog.disposition;
-  const dispLabel = disp > 60 ? 'Devoted' : disp > 25 ? 'Friendly' : disp > -10 ? 'Neutral' : disp > -40 ? 'Wary' : 'Hostile';
   const actives = knownSkills(r, leader).filter((id) => id !== r.basicAttackId);
   const lastNpc = dialog.messages.map((m) => m.speaker).lastIndexOf('npc');
   const animateFrom = seen.current;
@@ -129,10 +128,6 @@ export function DialogWindow() {
         </div>
         <div className="display gold dlg-name">{dialog.npcName}</div>
         <div className="serif muted dlg-title">{dialog.npcTitle}</div>
-        <div className="dlg-disp" title={`Disposition ${disp}`}>
-          <div className="bar"><div style={{ width: `${(disp + 100) / 2}%`, background: disp >= 0 ? 'linear-gradient(90deg,#8a7a40,#9fe07a)' : 'linear-gradient(90deg,#e0604a,#8a5a40)' }} /></div>
-          <span className="tiny muted">{dispLabel}</span>
-        </div>
         <div className="spacer" />
         {dialog.canTrade && <button className="btn sm" disabled={dialog.thinking} onClick={() => c.send({ t: 'request_trade' })}>Trade</button>}
         <button className="btn sm ghost" onClick={close} title="Leave (Esc) — or just walk away">Leave</button>
@@ -431,7 +426,7 @@ export function CharacterWindow({ onClose }: { onClose: () => void }) {
           <div className="ornament" />
           <div className="label">Attributes</div>
           {r.attributes.map((a) => (
-            <div key={a.id} className="attr" {...tip(<div><div className="tname gold">{a.name}</div><div className="tdesc" style={{ marginTop: 0 }}>{a.description}</div><div className="tsub">Each point above {r.attributeBase}:</div>{a.perPoint.map((m, i) => <div key={i} className="tline">{modifierLabel(r, m, ch.level)}</div>)}</div>)}>
+            <div key={a.id} className="attr" {...tip(<div><div className="tname gold">{a.name}</div><div className="tdesc" style={{ marginTop: 0 }}>{a.description}</div><div className="tsub">Each point above {r.attributeBase}:</div>{a.perPoint.map((m, i) => <div key={i} className="tline">{perPointLabel(r, m, ch.level)}</div>)}</div>)}>
               <span className="n">{a.name}</span>
               <span className="val">{s.attributes[a.id]}</span>
             </div>
@@ -719,44 +714,16 @@ export function MapWindow({ onClose }: { onClose: () => void }) {
   const c = client();
   if (!player || !world || !zone) return null;
   const t = world.ruleset.terminology;
-  const outer = zone.kind === 'interior' ? zone.parentZoneId : zone.id;
-  const known = world.zones.filter((z) => z.kind !== 'interior' && player.knownZones.includes(z.id));
-  const W = 720, H = 440;
-  const pos = (z: { mapPos: { x: number; y: number } }) => ({ x: 40 + z.mapPos.x * (W - 80), y: 30 + z.mapPos.y * (H - 60) });
+  const outer = zone.kind === 'interior' ? zone.parentZoneId ?? zone.id : zone.id;
   const leader = c.leaderEntity();
   const nearWaypoint = zone.features.some((f) => f.kind === 'waypoint' && leader && Math.hypot(f.x - leader.x, f.y - leader.y) < 3);
-  const color = (k: string) => (k === 'town' ? '#ffd890' : k === 'dungeon' ? '#ff8a70' : '#9fd88a');
+  const canTravelTo = (id: string) => nearWaypoint && id !== outer && world.zones.find((z) => z.id === id)?.kind === 'town' && player.waypoints.some((w) => w.zoneId === id);
   return (
-    <Window title="Map" onClose={onClose} style={{ left: '50%', top: 70, transform: 'translateX(-50%)', width: W + 34 }}>
-      <div className="panel-body">
-        <svg width={W} height={H} className="worldmap">
-          <defs>
-            <filter id="glow"><feGaussianBlur stdDeviation="3" result="b" /><feMerge><feMergeNode in="b" /><feMergeNode in="SourceGraphic" /></feMerge></filter>
-          </defs>
-          {known.flatMap((z) =>
-            z.links.filter((l) => known.some((k) => k.id === l) && z.id < l).map((l) => {
-              const a = pos(z), b = pos(world.zones.find((x) => x.id === l)!);
-              const visited = player.visitedZones.includes(z.id) && player.visitedZones.includes(l);
-              return <line key={`${z.id}-${l}`} x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke={visited ? 'rgba(241,216,152,.55)' : 'rgba(241,216,152,.18)'} strokeWidth={2} strokeDasharray={visited ? undefined : '5 5'} />;
-            }),
-          )}
-          {known.map((z) => {
-            const p = pos(z);
-            const visited = player.visitedZones.includes(z.id);
-            const here = z.id === outer;
-            const wp = z.kind === 'town' && player.waypoints.some((w) => w.zoneId === z.id);
-            const canTravel = wp && nearWaypoint && !here;
-            return (
-              <g key={z.id} style={{ cursor: canTravel ? 'pointer' : 'default' }} onClick={() => canTravel && (c.send({ t: 'fast_travel', zoneId: z.id }), onClose())}>
-                <circle cx={p.x} cy={p.y} r={here ? 11 : z.kind === 'town' ? 9 : 7} fill={visited ? color(z.kind) : 'rgba(255,255,255,.12)'} stroke={here ? '#fff' : 'rgba(0,0,0,.6)'} strokeWidth={here ? 2.5 : 1.5} filter={here ? 'url(#glow)' : undefined} opacity={visited ? 1 : 0.7} />
-                {wp && <circle cx={p.x} cy={p.y} r={15} fill="none" stroke="#8fd8ff" strokeWidth={1.5} strokeDasharray="3 3" />}
-                <text x={p.x} y={p.y + 24} textAnchor="middle" fill={visited ? '#f1e6cc' : '#9a9080'} fontSize={12} style={{ fontFamily: 'var(--font-display)' }}>{z.name}</text>
-                <text x={p.x} y={p.y + 37} textAnchor="middle" fill="#7a7060" fontSize={10}>{t[z.kind === 'town' ? 'town' : z.kind === 'dungeon' ? 'dungeon' : 'wilderness']} · {t.level} {z.levelRange[0]}{z.levelRange[1] !== z.levelRange[0] ? `–${z.levelRange[1]}` : ''}</text>
-              </g>
-            );
-          })}
-        </svg>
-        <div className="hint" style={{ marginTop: 8 }}>{nearWaypoint ? 'Click a waypoint (dashed ring) to travel there.' : `Stand by a waypoint in a ${t.town.toLowerCase()} to fast-travel between visited ${t.town.toLowerCase()}s.`}</div>
+    <Window title={world.concept.title} onClose={onClose} className="map-window" style={{ left: '50%', top: 60, transform: 'translateX(-50%)', width: MAP_W + 26 }}>
+      <div className="panel-body" style={{ padding: 12 }}>
+        <WorldMapView world={world} player={player} here={outer} canTravelTo={canTravelTo} onTravel={(id) => (c.send({ t: 'fast_travel', zoneId: id }), onClose())}
+          terms={{ town: t.town, dungeon: t.dungeon, wilderness: t.wilderness, level: t.level }} />
+        <div className="hint" style={{ marginTop: 8 }}>{nearWaypoint ? 'Click a place with a waypoint ring to travel there.' : `Stand by a waypoint in a ${t.town.toLowerCase()} to travel between visited ${t.town.toLowerCase()}s.`}</div>
       </div>
     </Window>
   );
@@ -907,7 +874,7 @@ export function CraftWindow({ onClose }: { onClose: () => void }) {
 // =================================================================================== menu
 
 export function MenuWindow({ onClose, onHelp, onCodex }: { onClose: () => void; onHelp: () => void; onCodex: () => void }) {
-  const { player, keepRunning, open, isOwner, instanceName, world } = useGame((s) => ({ player: s.player, keepRunning: s.keepRunning, open: s.open, isOwner: s.isOwner, instanceName: s.instanceName, world: s.world }));
+  const { player, open, isOwner, instanceName, world } = useGame((s) => ({ player: s.player, open: s.open, isOwner: s.isOwner, instanceName: s.instanceName, world: s.world }));
   const c = client();
   const [name, setName] = useState('');
   const [saved, setSaved] = useState('');
@@ -931,10 +898,6 @@ export function MenuWindow({ onClose, onHelp, onCodex }: { onClose: () => void; 
         </div>
         <div className="hint">{isOwner ? 'Changes your foes from the next fight on. See the codex for details.' : 'Only the owner of this reverie can change it.'}</div>
         <div className="ornament" />
-        <label className="row small" style={{ cursor: isOwner ? 'pointer' : 'default', opacity: isOwner ? 1 : 0.5 }}>
-          <input type="checkbox" disabled={!isOwner} checked={keepRunning} onChange={(e) => { c.send({ t: 'set_options', keepRunning: e.target.checked }); c.update({ keepRunning: e.target.checked }); }} />
-          Keep this reverie running while I’m away (time and events continue)
-        </label>
         <label className="row small" style={{ cursor: isOwner ? 'pointer' : 'default', opacity: isOwner ? 1 : 0.5 }}>
           <input type="checkbox" disabled={!isOwner} checked={open} onChange={(e) => { c.send({ t: 'set_options', open: e.target.checked }); c.update({ open: e.target.checked }); }} />
           Let other dreamers join this reverie (experimental)

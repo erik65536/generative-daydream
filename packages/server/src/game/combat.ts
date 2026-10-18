@@ -51,7 +51,8 @@ function apModel(r: Ruleset): TurnModel {
     },
     beginTurn(a, first) {
       const s = a.stats();
-      a.ap = first ? Math.min(s.apMax, s.apStart) : Math.min(s.apMax, a.ap + s.apPerTurn);
+      a.ap = first ? Math.max(0, Math.min(s.apMax, s.apStart) - a.openerAp) : Math.min(s.apMax, a.ap + s.apPerTurn);
+      a.openerAp = 0;
       a.movementLeft = 0;
     },
     moveBudget(a) {
@@ -377,7 +378,7 @@ export class Combat {
     this.host.after(this.delay(ms), () => {
       if (a.motion?.t0 !== undefined && a.motion.path === path) a.motion = null;
     });
-    this.checkEnd();
+    if (!this.checkEnd()) this.endIfSpent(a, ms + 200);
     return { ms };
   }
 
@@ -392,8 +393,18 @@ export class Combat {
     if (!this.model.canAfford(a, skillAp(skill, a.stats()))) return `Not enough ${this.host.r.terminology.actionPoints}.`;
     executeSkill(this.host, use, true);
     this.host.broadcastCombat(this);
-    this.checkEnd();
+    if (!this.checkEnd()) this.endIfSpent(a, 900);
     return null;
+  }
+
+  /** A player's turn ends by itself once nothing is left to spend (after the action has played out). */
+  private endIfSpent(a: Actor, afterMs: number) {
+    const spent = () => a.ap <= 0 && a.movementLeft < 1;
+    if (!this.isHumanControlled(a) || !spent()) return;
+    const token = this.turnToken;
+    this.host.after(this.delay(afterMs), () => {
+      if (token === this.turnToken && !this.ended && this.active === a && spent()) this.advance();
+    });
   }
 
   /** Attack-move: walk to the cheapest reachable spot in range (with line of sight) that leaves enough to act, then act. */
@@ -444,7 +455,7 @@ export class Combat {
     useConsumable(this.host, a, item, true, target, point);
     consume?.();
     this.host.broadcastCombat(this);
-    this.checkEnd();
+    if (!this.checkEnd()) this.endIfSpent(a, 900);
     return null;
   }
 

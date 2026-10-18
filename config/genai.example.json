@@ -100,6 +100,17 @@
       "concurrency": 8,
       "timeoutMs": 120000,
       "_comment": "OpenAI decisions endpoint (/v1/decisions), e.g. for image.check."
+    },
+    "openai-live": {
+      "type": "openai-responses",
+      "apiKey": "env:OPENAI_API_KEY",
+      "model": "gpt-6-luna",
+      "structured": "strict",
+      "vision": true,
+      "concurrency": 8,
+      "timeoutMs": 60000,
+      "reasoningTokens": 2000,
+      "_comment": "Play-time calls (NPC conversations): the standard tier, for low latency."
     }
   },
   "purposes": {

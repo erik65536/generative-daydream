@@ -43,7 +43,6 @@ export interface GameState {
   instanceId?: string;
   instanceName?: string;
   isOwner: boolean;
-  keepRunning: boolean;
   open: boolean;
   zone?: ZoneData;
   entities: Map<string, EntityView>;
@@ -76,7 +75,7 @@ let toastId = 1;
 
 export class GameClient {
   state: GameState = {
-    status: 'connecting', isOwner: false, keepRunning: false, open: false, entities: new Map(), features: new Map(), surfaces: [], lootPiles: [], combat: null, dialog: null, trade: null, loot: null,
+    status: 'connecting', isOwner: false, open: false, entities: new Map(), features: new Map(), surfaces: [], lootPiles: [], combat: null, dialog: null, trade: null, loot: null,
     toasts: [], log: [], narrations: [], chat: [], panel: null, targeting: null, version: 0, zoneVersion: 0,
   };
   private ws: WebSocket | null = null;
@@ -177,7 +176,6 @@ export class GameClient {
         s.instanceId = m.instanceId;
         s.instanceName = m.instanceName;
         s.isOwner = m.isOwner;
-        s.keepRunning = m.keepRunning;
         s.open = m.open;
         s.status = 'connected';
         // A (re)connection starts from a clean slate; the server re-sends what is active.

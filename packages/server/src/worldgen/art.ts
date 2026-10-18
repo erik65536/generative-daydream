@@ -66,6 +66,24 @@ Every object element stands on the floor of the map and is seen from above at an
 
 For every element give a short name, 1-3 hex colours, and a prompt of 12-30 words describing only the physical thing: its shape, materials, colours, wear and details. Prompts never mention lighting, weather, fog, mist, smoke, glows, auras, surroundings or art style. Surfaces (floor, floorAlt, path, wall, water, roof) describe only their own material.`;
 
+/**
+ * A model call that must succeed: tried again after a wait when it fails, and after the last try the job stops
+ * (to be resumed once the model service works). There is no made-up stand-in.
+ */
+async function tries<T>(label: string, report: (msg: string) => void, fn: () => Promise<T>): Promise<T> {
+  const waits = [5_000, 30_000, 120_000].map((ms) => ms * Number(process.env.GD_RETRY_WAIT_SCALE ?? 1));
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await fn();
+    } catch (e) {
+      const msg = (e as Error).message.slice(0, 160);
+      if (attempt > waits.length) throw new Error(`${label} failed ${attempt} times (last: ${msg}). Resume once the model service is working.`);
+      report(`${label}: try ${attempt} failed (${msg}); trying again in ${waits[attempt - 1]! / 1000}s`);
+      await new Promise((r) => setTimeout(r, waits[attempt - 1]));
+    }
+  }
+}
+
 /** Run tasks with at most `n` in flight. */
 async function pool<T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
@@ -104,7 +122,7 @@ export async function directTilesets(w: WorldDefinition, report: (msg: string) =
     // Surfaces are listed by name only: their old descriptions often draw shapes (pools, patches) that do not tile.
     const current = DIRECTED_ROLES.map((r) => (TEXTURE_ROLES.includes(r) ? `${r}: ${ts.roles[r].name}` : `${r}: ${ts.roles[r].name} (${ts.roles[r].prompt})`)).join('\n');
     try {
-      const out = await g.structured('world.design', {
+      const out = await tries(`Art direction for ${z.name}`, report, () => g.structured('world.design', {
         system: DIRECTION_SYSTEM,
         prompt: `${conceptSummary(w.concept as never)}\n\nPLACE: ${place}\n\nCurrent elements (keep what already fits and follows the rules above, replace anything generic, remove atmosphere words):\n${current}\n\nGive all elements${z.kind === 'town' && !z.indoor && z.layout?.structures !== 'walled' ? ', plus "roof" (the roofing of its buildings, seen from above)' : ''}, plus "craft" (the workbench or station where people make things here).${opts?.guidance ? `
 
@@ -112,16 +130,15 @@ THE OWNER'S DIRECTION FOR THIS PLACE (follow it, within the rules above): ${opts
         schema: DirectionSchema,
         name: 'art_direction',
         maxTokens: 3000,
-      });
+      }));
       const role = (v: { name: string; colors: string[]; prompt: string }, prev?: TileRoleDef): TileRoleDef => ({ name: v.name, colors: normColors(v.colors).length ? normColors(v.colors) : prev?.colors ?? ['#808080'], prompt: v.prompt, asset: prev?.asset });
       for (const r of DIRECTED_ROLES) if (out.roles[r]) ts.roles[r] = role(out.roles[r], ts.roles[r]);
       ts.extras = { ...(ts.extras ?? {}), ...(out.roof ? { roof: role(out.roof, ts.extras?.roof) } : {}), ...(out.craft ? { craft: role(out.craft, ts.extras?.craft) } : {}) };
       ts.directed = true;
       report(`Art direction for ${z.kind === 'interior' ? `${outer?.name ?? z.name} interiors` : z.name}: ${DIRECTED_ROLES.slice(5, 11).map((r) => ts.roles[r].name).join(', ')}`);
-    } catch (e) {
-      report(`Art direction for ${z.name} failed (${(e as Error).message.slice(0, 100)}); keeping its current look`);
+    } finally {
+      onCount?.(++n, todo.length);
     }
-    onCount?.(++n, todo.length);
   });
 }
 
@@ -264,13 +281,13 @@ export async function writeImagePrompts(w: WorldDefinition, plan: AssetRecord[],
     const keys = batch.map((r) => r.key) as [string, ...string[]];
     const schema = z.object({ prompts: z.array(z.object({ key: z.enum(keys), prompt: z.string().min(40).max(2400) })).min(batch.length).max(batch.length) });
     try {
-      const out = await genai().structured('image.prompt', {
+      const out = await tries('Image prompts', report, () => genai().structured('image.prompt', {
         system,
         prompt: `World: ${w.concept.title}: ${w.concept.pitch}\nPalette: ${Object.values(w.concept.palette).join(', ')}.\nWrite one prompt per brief below. Return each with the key shown in brackets.\n\n${briefs}`,
         schema,
         name: 'image_prompts',
         maxTokens: 380 * batch.length + 200,
-      });
+      }));
       for (const p of out.prompts) {
         const rec = batch.find((r) => r.key === p.key);
         if (!rec) continue;
@@ -278,10 +295,9 @@ export async function writeImagePrompts(w: WorldDefinition, plan: AssetRecord[],
         w.assets[rec.key] = { ...(w.assets[rec.key] ?? rec), prompt: rec.prompt, imagePrompt: rec.imagePrompt };
         written++;
       }
-    } catch (e) {
-      report(`Image prompts batch failed (${(e as Error).message.slice(0, 120)}); using template prompts`);
+    } finally {
+      onCount?.(Math.min(todo.length, ++finished * BATCH), todo.length);
     }
-    onCount?.(Math.min(todo.length, ++finished * BATCH), todo.length);
     report(`Wrote ${written}/${todo.length} image prompts`);
   });
   for (const r of plan) if (r.imagePrompt) w.assets[r.key] = { ...(w.assets[r.key] ?? r), prompt: r.prompt, imagePrompt: r.imagePrompt };

@@ -1,7 +1,7 @@
 /**
  * Runs world generation and NPC dialogue through the real OpenAI-compatible provider against a mock server that
  * answers with schema-valid (but semantically random) JSON — and sometimes with junk — to prove the pipeline,
- * validation, retries and fallbacks hold up with weak models.
+ * validation and retries hold up with weak models.
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -81,7 +81,23 @@ beforeAll(async () => {
       } else if (name === 'main_story' && seen.filter((s) => s.name === name).length === 0) {
         // First attempt at the story: junk, to exercise the retry path.
         content = 'Sure! Here is the story: {"arcs": [ oops';
-      } else content = '```json\n' + JSON.stringify(fake(rf.json_schema.schema, rf.json_schema.schema, name)) + '\n```';
+      } else {
+        const out = fake(rf.json_schema.schema, rf.json_schema.schema, name) as Json;
+        // Towns are checked for the services the game needs; random roles would be rejected every time.
+        // The atlas names each slot once (a real model follows the slot list; random enum picks repeat).
+        if (name === 'world_atlas') {
+          const ids = (((rf.json_schema.schema as Json).properties as Record<string, Json>).zones!.items as Json);
+          const slotEnum = ((ids.properties as Record<string, Json>).slotId!.enum as string[]);
+          (out.zones as Json[]).forEach((z, i) => (z.slotId = slotEnum[i]));
+          (out.regions as Json[]).forEach((r, i) => (r.index = i));
+        }
+        if (name === 'town_content') {
+          const npcs = out.npcs as Json[];
+          const roles: [string, string | null][] = [['innkeeper', null], ['merchant', 'general'], ['merchant', 'weapons'], ['trainer', null], ['guard', null], ['companion', null]];
+          roles.forEach(([role, kind], i) => (npcs[i] = { ...(npcs[i % npcs.length] ?? npcs[0]), role, merchantKind: kind }));
+        }
+        content = '```json\n' + JSON.stringify(out) + '\n```';
+      }
       seen.push({ name, ok: true });
       res.setHeader('content-type', 'application/json');
       res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }));

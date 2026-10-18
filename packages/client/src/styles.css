@@ -672,3 +672,30 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 
 /* Minimap: no box, a light sketch over the world with a dark outline so it reads on bright floors. */
 .minimap { background: none; border: 0; border-radius: 50%; box-shadow: none; filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.95)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.7)); }
+
+/* Unspent talent points sit beside the level, not over it. */
+.pcard .pts { margin-left: 4px; font-family: var(--sans); font-size: 10px; font-weight: 700; color: var(--quest); text-shadow: var(--float-text); flex: none; }
+
+/* World map: a painted chart with crisp markers on top. */
+.wmap { position: relative; border-radius: 6px; overflow: hidden; background: #08090b; box-shadow: inset 0 0 0 1px var(--hair); }
+.wmap canvas, .wmap-marks { position: absolute; inset: 0; }
+.wmark { cursor: default; }
+.wmark.travel { cursor: pointer; }
+.wmark .glyph path { fill: rgba(16, 13, 10, 0.92); stroke: rgba(236, 222, 190, 0.55); stroke-width: 1.2; stroke-linejoin: round; }
+.wmark.visited .glyph path { fill: #1c1813; stroke: #e9d7ae; }
+.wmark.visited .g-town path { stroke: #f0cf86; }
+.wmark.visited .g-dungeon path { stroke: #e58e72; }
+.wmark.visited .g-wilderness path { stroke: #a9cf8e; }
+.wmark:hover .glyph path { stroke: #fff; }
+.wmark .wname { font-family: var(--font-display); font-size: 12.5px; letter-spacing: 0.06em; fill: #efe4cb; paint-order: stroke; stroke: rgba(6, 5, 4, 0.9); stroke-width: 3.5px; stroke-linejoin: round; }
+.wmark:not(.visited) .wname { fill: #b4aa96; font-style: italic; }
+.wmark .wsub { font-family: var(--sans); font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; fill: #a49a86; paint-order: stroke; stroke: rgba(6, 5, 4, 0.85); stroke-width: 3px; }
+.wmark .here-ring { fill: none; stroke: #fff; stroke-width: 1.5; animation: here-pulse 1.8s ease-out infinite; transform-origin: center; }
+.wmark .wp-ring { fill: none; stroke: #8fd0ec; stroke-width: 1.2; stroke-dasharray: 3 3; }
+.wmark.travel .wp-ring { stroke: #bfeaff; stroke-width: 1.6; }
+@keyframes here-pulse { 0% { opacity: 0.9; r: 11; } 100% { opacity: 0; r: 22; } }
+.wmap-card { position: absolute; width: 240px; pointer-events: none; background: rgba(10, 9, 11, 0.9); border: 1px solid var(--hair-strong); border-radius: 6px; padding: 9px 11px; backdrop-filter: blur(6px); }
+.wmap-card .wc-name { font-family: var(--font-display); font-size: 14px; color: var(--gold-2); }
+.wmap-card .wc-sub { font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); margin: 2px 0 6px; }
+.wmap-card .wc-desc { font-size: 12px; line-height: 1.45; color: var(--text); }
+.wmap-card .wc-act { margin-top: 6px; font-size: 11px; color: #9fd8f0; }

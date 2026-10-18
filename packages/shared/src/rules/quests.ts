@@ -80,6 +80,7 @@ export const NPC_ACTIONS = [
   'none', 'give_item', 'give_gold', 'accept_gift', 'refuse_gift', 'offer_quest', 'complete_objective', 'modify_objective',
   'add_objective', 'complete_quest', 'fail_quest', 'open_trade', 'attack', 'join_party', 'leave_party', 'change_disposition',
   'remember', 'reveal_location', 'heal_player', 'teach_skill', 'create_quest', 'end_conversation', 'flee', 'call_guards',
+  'give_gift', 'share_secret', 'share_lead',
 ] as const;
 export type NpcActionType = (typeof NPC_ACTIONS)[number];
 
@@ -108,7 +109,13 @@ export const NPC_ACTION_INFO: Record<NpcActionType, string> = {
   end_conversation: 'End the conversation.',
   flee: 'Run away from the player.',
   call_guards: 'Call the guards on the player.',
+  give_gift: 'Give the player something useful you can spare (gift: supplies, gear, material or keepsake).',
+  share_secret: 'Tell the player one of your secrets (secretRef); it goes in their journal.',
+  share_lead: 'Tell the player something important they should act on: a rumour, a warning, where to look (lead: one sentence for their journal).',
 };
+
+export const NPC_GIFTS = ['supplies', 'gear', 'material', 'keepsake'] as const;
+export type NpcGift = (typeof NPC_GIFTS)[number];
 
 export interface NewObjectiveSpec {
   type: ObjectiveType;
@@ -132,6 +139,9 @@ export interface NpcAction {
   gathering?: boolean;
   newObjective?: NewObjectiveSpec;
   newQuest?: { title: string; summary: string; objectives: NewObjectiveSpec[]; rewardGold?: number };
+  gift?: NpcGift;
+  secretRef?: string;
+  lead?: string;
 }
 
 export const EMOTIONS = ['neutral', 'happy', 'amused', 'sad', 'angry', 'afraid', 'surprised', 'suspicious', 'grateful', 'thoughtful'] as const;

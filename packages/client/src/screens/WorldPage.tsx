@@ -125,7 +125,13 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
           </div>
         )}
 
-        {w.status === 'failed' && <div className="panel panel-body error-text" style={{ marginTop: 18 }}>Generation failed. Check the server log for details.</div>}
+        {w.status === 'failed' && (
+          <div className="panel panel-body" style={{ marginTop: 18 }}>
+            <div className="error-text">Dreaming stopped{w.job?.error ? `: ${w.job.error}` : '.'}</div>
+            <div className="hint" style={{ margin: '6px 0 10px' }}>Everything finished so far is kept. Resume once the model service is working again.</div>
+            {(w.ownerId === me?.id || me?.isAdmin) && <button className="btn primary" onClick={() => api.resumeWorld(w.id).catch((e) => setError((e as Error).message))}>Resume dreaming</button>}
+          </div>
+        )}
         {w.status === 'ready' && !generating && w.job?.status === 'failed' && <div className="panel panel-body error-text" style={{ marginTop: 18 }}>The last job failed: {w.job.error ?? 'unknown error'}.</div>}
 
         {view && ruleset && (
@@ -155,7 +161,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
                 {mine.map((s) => (
                   <div key={s.id} className="row" style={{ padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 10 }}>
                     <div className="grow">
-                      <div style={{ fontWeight: 600 }}>{s.name} {s.snapshotOf && <span className="badge gray">memory</span>} {s.open && <span className="badge green">open</span>} {s.keepRunning && <span className="badge">keeps running</span>} <span className="badge gray">{ruleset?.difficulty[s.difficulty]?.name ?? s.difficulty}</span></div>
+                      <div style={{ fontWeight: 600 }}>{s.name} {s.snapshotOf && <span className="badge gray">memory</span>} {s.open && <span className="badge green">open</span>} <span className="badge gray">{ruleset?.difficulty[s.difficulty]?.name ?? s.difficulty}</span></div>
                       <div className="small muted">
                         Day {s.day} · {s.players.map((p) => `${p.name} (lv ${p.level})`).join(', ')} · {new Date(s.updatedAt).toLocaleString()}
                         {s.online ? ` · ${s.online} online` : ''}

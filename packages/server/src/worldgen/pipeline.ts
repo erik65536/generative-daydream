@@ -7,7 +7,7 @@ import type { Purpose } from '../genai/types';
 import fs from 'node:fs';
 import path from 'node:path';
 import { loadWorld, saveWorld, worldDir, writeJsonAtomic } from '../storage';
-import { enqueue } from '../jobs/queue';
+import { enqueue, latestJob } from '../jobs/queue';
 import { BANKS, detectGenre, fallbackTileset } from './genres';
 import { buildSkeleton, type ZoneSlot } from './structure';
 import * as S from './schemas';
@@ -21,7 +21,7 @@ import { balanceRuleset } from '../rules/balance';
 import { bindWorld } from '../rules/bind';
 import type { RulesetIntent } from '../rules/intent';
 
-import { Job as WorldGenJob, workerState, type JobPhase } from '../jobs/job';
+import { Job as WorldGenJob, JobYield, workerState, type JobPhase } from '../jobs/job';
 export { WorldGenJob };
 export type { JobPhase, GenLogEntry } from '../jobs/job';
 
@@ -33,6 +33,18 @@ export function startWorldGeneration(input: WorldInput, owner: { id: string; nam
   enqueue('world', id, owner, { input, seed }, { priority: 5, maxPerOwner: opts.maxPerOwner });
   saveWorld(placeholderWorld(id, input, owner));
   return { worldId: id };
+}
+
+/**
+ * Start a failed build again from where it stopped: same input and seed, and every step that finished is kept
+ * (its checkpoint). For when a model or service was down and is back.
+ */
+export function resumeWorldGeneration(w: WorldDefinition): void {
+  const last = latestJob(w.id);
+  const params = last?.kind === 'world' ? (last.params as { input: WorldInput; seed: string }) : { input: w.input, seed: w.seed || crypto.randomBytes(6).toString('hex') };
+  enqueue('world', w.id, { id: w.ownerId, name: w.ownerName }, params, { priority: 5 });
+  w.status = 'generating';
+  saveWorld(w);
 }
 
 /** Saved output of each finished step of a build, so a resumed build skips it. */
@@ -68,19 +80,62 @@ export function placeholderWorld(id: string, input: WorldInput, owner: { id: str
   };
 }
 
-/** Run one structured step, falling back to procedural content on any failure. */
-async function step<T extends z.ZodType>(job: WorldGenJob, purpose: Purpose, label: string, opts: { prompt: string; schema: T; name: string; maxTokens?: number; system?: string }, fallback: () => z.infer<T>): Promise<z.infer<T>> {
+/** Tests shorten the waits between tries (GD_RETRY_WAIT_SCALE=0). */
+export const RETRY_WAIT_SCALE = Number(process.env.GD_RETRY_WAIT_SCALE ?? 1);
+
+/** Tries per step before the build stops (it can be resumed later from its checkpoints), and the waits between. */
+const STEP_TRIES = 4;
+const STEP_BACKOFF_MS = [5_000, 30_000, 120_000].map((ms) => ms * RETRY_WAIT_SCALE);
+
+/** A build step the models could not do after every try. The build stops here and can be resumed. */
+export class StepFailed extends Error {}
+
+/**
+ * Run one structured step. There is no made-up stand-in when a model fails: the step is tried again (told what
+ * was wrong with the last answer, when `check` found something), and after the last try the build stops.
+ * `procedural` is only for a purpose explicitly configured without a model (tests, offline development).
+ */
+async function step<T extends z.ZodType>(job: WorldGenJob, purpose: Purpose, label: string, opts: StepOpts<T>, procedural: () => z.infer<T>): Promise<z.infer<T>> {
   const g = genai();
-  if (g.isProcedural(purpose)) return fallback();
-  const t0 = Date.now();
-  try {
-    const out = await g.structured(purpose, { system: opts.system ?? P.SYSTEM, prompt: opts.prompt, schema: opts.schema, name: opts.name, maxTokens: opts.maxTokens });
-    job.push(`${label}: done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
-    return out;
-  } catch (e) {
-    job.push(`${label}: model output unusable (${(e as Error).message.slice(0, 200)}); using procedural content`, 'warn');
-    return fallback();
+  if (g.isProcedural(purpose)) return procedural();
+  let problem = '';
+  for (let attempt = 1; ; attempt++) {
+    const t0 = Date.now();
+    try {
+      const prompt = problem ? `${opts.prompt}\n\nAN EARLIER ANSWER TO THIS WAS REJECTED: ${problem}\nAnswer again in full, fixing that.` : opts.prompt;
+      const out = await g.structured(purpose, { system: opts.system ?? P.SYSTEM, prompt, schema: opts.schema, name: opts.name, maxTokens: opts.maxTokens });
+      const bad = opts.check?.(out);
+      if (bad) throw new Error(bad);
+      job.push(`${label}: done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+      return out;
+    } catch (e) {
+      const msg = (e as Error).message;
+      if (job.cancelled) throw new Error('cancelled');
+      if (e instanceof JobYield) throw e;
+      if (attempt >= STEP_TRIES) throw new StepFailed(`${label} failed ${STEP_TRIES} times (last: ${msg.slice(0, 200)}). Resume the build once the model service is working.`);
+      problem = msg.slice(0, 600);
+      const wait = STEP_BACKOFF_MS[attempt - 1] ?? 120_000;
+      job.push(`${label}: try ${attempt} failed (${msg.slice(0, 200)}); trying again in ${Math.round(wait / 1000)}s`, 'warn');
+      await new Promise((r) => setTimeout(r, wait));
+      job.yieldPoint();
+    }
   }
+}
+
+type StepOpts<T extends z.ZodType> = { prompt: string; schema: T; name: string; maxTokens?: number; system?: string; check?: (out: z.infer<T>) => string | null };
+
+/** Town content must staff the town: the services the game relies on (and a companion when the party recruits). */
+function missingTownRoles(npcs: { role: string; merchantKind?: string | null }[], companions: boolean): string | null {
+  const has = (role: string, kinds?: string[]) => npcs.some((n) => n.role === role && (!kinds || kinds.includes(n.merchantKind ?? '')));
+  const missing = [
+    !has('innkeeper') && 'an innkeeper',
+    !has('merchant') && 'a merchant',
+    !has('merchant', ['weapons', 'armor']) && 'a weapons or armor merchant',
+    !has('trainer') && 'a trainer',
+    !has('guard') && 'a guard',
+    companions && !has('companion') && 'a companion who can join the party',
+  ].filter(Boolean);
+  return missing.length ? `the town has no ${missing.join(', ')}; every town needs these among its people` : null;
 }
 
 export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
@@ -138,14 +193,18 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
   const slotIds = sk.slots.map((s) => s.slotId);
   const biomeFor = (s: ZoneSlot) => rng.fork(s.slotId).pick(bank.styles[s.kind]);
   const atlasFallback = () => F.fallbackAtlas(genre, sk, rng.fork('atlas'), biomeFor);
-  let atlas = await cp.get('atlas', () => step(job, 'world.design', 'Atlas', { prompt: P.atlasPrompt(input, concept, sk), schema: S.atlasSchema(slotIds), name: 'world_atlas', maxTokens: 5000 }, atlasFallback), () => resumed('Places'));
-  // Backfill zones the model skipped and de-duplicate names.
-  const fbAtlas = atlasFallback();
+  const atlasCheck = (a: { regions: { index: number }[]; zones: { slotId: string }[] }) => {
+    const missing = sk.slots.filter((s) => !a.zones.some((z) => z.slotId === s.slotId)).map((s) => s.slotId);
+    const regions = sk.regions.filter((r) => !a.regions.some((x) => x.index === r.index)).map((r) => r.index);
+    return missing.length || regions.length ? `missing ${[missing.length ? `places for slots ${missing.join(', ')}` : '', regions.length ? `regions ${regions.join(', ')}` : ''].filter(Boolean).join(' and ')}; every slot and region needs an entry` : null;
+  };
+  let atlas = await cp.get('atlas', () => step(job, 'world.design', 'Atlas', { prompt: P.atlasPrompt(input, concept, sk), schema: S.atlasSchema(slotIds, sk.regions.length), name: 'world_atlas', maxTokens: 5000, check: atlasCheck }, atlasFallback), () => resumed('Places'));
+  // De-duplicate names.
   const seen = new Set<string>();
   atlas = {
-    regions: sk.regions.map((r) => atlas.regions.find((x) => x.index === r.index) ?? fbAtlas.regions[r.index]!),
+    regions: sk.regions.map((r) => atlas.regions.find((x) => x.index === r.index)!),
     zones: sk.slots.map((s) => {
-      const z = atlas.zones.find((x) => x.slotId === s.slotId) ?? fbAtlas.zones.find((x) => x.slotId === s.slotId)!;
+      const z = atlas.zones.find((x) => x.slotId === s.slotId)!;
       let name = z.name;
       while (seen.has(name.toLowerCase())) name = `${name} ${['East', 'Deep', 'Upper', 'Lower', 'Far'][seen.size % 5]}`;
       seen.add(name.toLowerCase());
@@ -159,8 +218,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
   job.phase('families');
   const famCount = SIZE_PROFILES[input.size].monsterFamilies;
   const damageKinds = [...ruleset.subtypes.map((x) => x.name), ...ruleset.damageTypes.map((x) => x.name)];
-  const families = await cp.get('families', () => step(job, 'world.design', 'Monster families', { prompt: P.familiesPrompt(input, concept, famCount, damageKinds), schema: S.FamiliesSchema, name: 'monster_families', maxTokens: 5000 }, () => F.fallbackFamilies(genre, famCount, rng.fork('fam'))), () => resumed('Creatures'));
-  if (families.families.length < 2) families.families.push(...F.fallbackFamilies(genre, 2, rng.fork('fam2')).families);
+  const families = await cp.get('families', () => step(job, 'world.design', 'Monster families', { prompt: P.familiesPrompt(input, concept, famCount, damageKinds), schema: S.FamiliesSchema, name: 'monster_families', maxTokens: 5000, check: (f) => (f.families.length < Math.min(2, famCount) ? `only ${f.families.length} families; ${famCount} are needed` : null) }, () => F.fallbackFamilies(genre, famCount, rng.fork('fam'))), () => resumed('Creatures'));
   job.push(`Creatures: ${families.families.map((f) => f.name).join(', ')}`, 'preview');
 
   setStep('Writing the main story', 0.3);
@@ -168,12 +226,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
   const townSlots = sk.slots.filter((s) => s.kind === 'town').map((s) => s.slotId);
   const dungeonSlots = sk.slots.filter((s) => s.kind === 'dungeon').map((s) => s.slotId);
   const storyFallback = () => F.fallbackStory(genre, sk, atlas, concept, rng.fork('story'));
-  let story = await cp.get('story', () => step(job, 'world.design', 'Main story', { prompt: P.storyPrompt(input, concept, atlas, sk, families.families.map((f) => f.name)), schema: S.storySchema(townSlots, dungeonSlots, slotIds), name: 'main_story', maxTokens: 8000 }, storyFallback), () => resumed('Main story'));
-  if (story.arcs.length < sk.arcs) {
-    const fb = storyFallback();
-    job.push(`Story had ${story.arcs.length}/${sk.arcs} arcs; extending with procedural arcs`, 'warn');
-    story = { ...story, arcs: [...story.arcs, ...fb.arcs.slice(story.arcs.length)], keyNpcs: [...story.keyNpcs, ...fb.keyNpcs.filter((k) => !story.keyNpcs.some((x) => x.key === k.key))], bosses: [...story.bosses, ...fb.bosses.slice(story.bosses.length)], keyItems: [...story.keyItems, ...fb.keyItems.filter((k) => !story.keyItems.some((x) => x.key === k.key))] };
-  }
+  const story = await cp.get('story', () => step(job, 'world.design', 'Main story', { prompt: P.storyPrompt(input, concept, atlas, sk, families.families.map((f) => f.name)), schema: S.storySchema(townSlots, dungeonSlots, slotIds), name: 'main_story', maxTokens: 8000, check: (st) => (st.arcs.length < sk.arcs ? `the story has ${st.arcs.length} arcs; it needs ${sk.arcs}` : null) }, storyFallback), () => resumed('Main story'));
   job.preview.arcs = story.arcs.map((a) => a.title);
   job.preview.npcs = story.keyNpcs.map((n) => `${n.name}, ${n.title}`);
   job.push(`Arcs: ${story.arcs.map((a) => a.title).join(' → ')}`, 'preview');
@@ -193,7 +246,8 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
     const zr = rng.fork(`content:${s.slotId}`);
     if (s.kind === 'town') {
       const keyHere = story.keyNpcs.filter((k) => k.townSlot === s.slotId);
-      const npcCount = Math.max(3, zr.int(size.npcsPerTown[0], size.npcsPerTown[1]) - keyHere.length);
+      // Room for every service the town needs (and a companion) plus a few ordinary people.
+      const npcCount = Math.max(input.combatMode === 'party_npc' ? 8 : 7, zr.int(size.npcsPerTown[0], size.npcsPerTown[1]) - keyHere.length);
       const sideQuests = zr.int(size.sideQuestsPerTown[0], size.sideQuestsPerTown[1]);
       const nearbyZones = s.links.map((l) => zoneInfo(l).name);
       const fbTs = fallbackTileset(`ts_${s.slotId}`, zi.name, zi.biome, 'town', genre);
@@ -213,6 +267,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
             schema: S.TownContentSchema,
             name: 'town_content',
             maxTokens: 9000,
+            check: (t) => missingTownRoles(t.npcs, input.combatMode === 'party_npc'),
           },
           fb,
         ));
