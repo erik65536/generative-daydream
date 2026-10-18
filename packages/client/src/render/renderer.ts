@@ -173,6 +173,13 @@ export class Renderer {
 
   // ---------------------------------------------------------------------------- input
 
+  /**
+   * Controller walking: the stick's direction (tile space) while held. The leader is then moved here every frame
+   * (client-side prediction) and only eased toward the server's position, so its path renewals never show.
+   */
+  steer: { x: number; y: number } | null = null;
+  private predicted: { x: number; y: number } | null = null;
+
   /** Hover set by a controller (a tile cursor or a focused target). Moving the mouse takes over again. */
   padHover: HoverInfo | null = null;
 
@@ -195,8 +202,8 @@ export class Renderer {
     return { x: vx / len, y: vy / len };
   }
 
-  canStand(x: number, y: number, ignoreId?: string): boolean {
-    return this.passable(Math.round(x), Math.round(y), ignoreId);
+  canStand(x: number, y: number, ignoreId?: string, ignoreEntities = false): boolean {
+    return this.passable(Math.round(x), Math.round(y), ignoreId, ignoreEntities);
   }
 
   zoomBy(f: number) {
@@ -1109,6 +1116,38 @@ export class Renderer {
 
   // ---------------------------------------------------------------------------- entities
 
+  /** The steered leader's position this frame: walked locally, pulled gently toward where the server has it. */
+  private predict(id: string, server: { x: number; y: number; moving: boolean; facing: number }, a: Anim, dt: number) {
+    if (!this.steer) {
+      this.predicted = null;
+      return server;
+    }
+    const p = (this.predicted ??= { x: a.px, y: a.py });
+    const step = 4.2 * Math.min(dt, 0.05);
+    const d = this.steer;
+    // Walk on, sliding along walls the way the server does.
+    for (const [mx, my] of [[d.x, d.y], [d.x, 0], [0, d.y]] as const) {
+      const len = Math.hypot(mx, my);
+      if (len < 0.2) continue;
+      const nx = p.x + (mx / len) * step, ny = p.y + (my / len) * step;
+      if (this.canStand(nx, ny, id, true)) {
+        p.x = nx;
+        p.y = ny;
+        break;
+      }
+    }
+    const gap = Math.hypot(server.x - p.x, server.y - p.y);
+    if (gap > 2) {
+      p.x = server.x;
+      p.y = server.y;
+    } else {
+      const k = Math.min(1, dt * 1.6);
+      p.x += (server.x - p.x) * k;
+      p.y += (server.y - p.y) * k;
+    }
+    return { x: p.x, y: p.y, moving: true, facing: Math.atan2(d.y, d.x) };
+  }
+
   private anim(e: EntityView): Anim {
     let a = this.anims.get(e.id);
     if (!a) {
@@ -1124,20 +1163,25 @@ export class Renderer {
     const ts = this.tileset()!;
     const combat = st.combat;
     const markers = st.player?.npcMarkers ?? {};
+    const leadId = st.player?.leaderId;
     for (const e of st.entities.values()) {
-      const target = this.client.entityPos(e);
+      let target = this.client.entityPos(e);
       const a = this.anim(e);
+      if (e.id === leadId && !combat) target = this.predict(e.id, target, a, dt);
       const gap = Math.hypot(target.x - a.px, target.y - a.py);
       // Small discrepancies (a new path, server correction) are eased out; big ones (teleport, zone entry) snap.
       const k = gap > 2.5 ? 1 : 1 - Math.exp(-dt * (target.moving ? 18 : 12));
       const nx = a.px + (target.x - a.px) * k, ny = a.py + (target.y - a.py) * k;
       const moved = Math.hypot(nx - a.px, ny - a.py);
+      // Legs keep pace with how far the figure travels on screen: a tile up or down the screen is half the
+      // distance of a tile across it, so stepping by tiles made vertical and diagonal walks look hurried.
+      const screenMoved = Math.hypot((nx - a.px - (ny - a.py)) * HW, (nx - a.px + (ny - a.py)) * HH) / (Math.SQRT2 * HW);
       a.px = nx;
       a.py = ny;
       a.moving = target.moving || moved > 0.004;
       a.amt = Math.max(0, Math.min(1, a.amt + (a.moving ? dt * 7 : -dt * 5)));
       // Stride length ~0.9 tiles per cycle; keep the phase running while easing out so legs settle.
-      if (a.amt > 0) a.walk += (gap > 2.5 ? 0 : moved) * 7 + (a.moving ? 0 : dt * 2);
+      if (a.amt > 0) a.walk += (gap > 2.5 ? 0 : screenMoved) * 7 + (a.moving ? 0 : dt * 2);
       // Turn smoothly toward the direction of travel.
       const dFace = Math.atan2(Math.sin(target.facing - a.face), Math.cos(target.facing - a.face));
       a.face += dFace * Math.min(1, dt * 14);
@@ -1152,6 +1196,8 @@ export class Renderer {
       const sdx = fx - fy, sdy = (fx + fy) / 2;
       if (sdx < -0.3) a.dir = -1;
       else if (sdx > 0.3) a.dir = 1;
+      // Walking mostly up or down the screen: a painted side-on stride would look wrong, so the standing figure bobs.
+      const vertical = Math.abs(sdy) > Math.abs(sdx) * 1.2;
       const dir = a.dir;
       const back = sdy < -0.25;
       const depth = pos.x + pos.y + 0.1;
@@ -1195,7 +1241,7 @@ export class Renderer {
             ctx.restore();
           }
           const walk = a.amt > 0.02 ? a.walk : NaN;
-          if (img) drawImageSprite(ctx, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames: this.poseFrames(e.sprite) });
+          if (img) drawImageSprite(ctx, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames: this.poseFrames(e.sprite), vertical });
           else
             drawFigure(ctx, {
               shape: e.shape, colors: e.colors.length ? e.colors : this.defaultColors(e, ts), scale: e.scale * 1.15, dir, back, walk, t: this.t, weapon: e.weapon, archetype: e.archetype,

@@ -525,3 +525,29 @@ export class LlamaDecisionProvider implements DecisionProvider {
     return data.answers as Record<string, DecisionAnswer>;
   }
 }
+
+// ---------------------------------------------------------------------------- speech to text
+
+/** OpenAI transcription (POST /v1/audio/transcriptions): a recorded utterance in, its words out. */
+export class OpenAITranscribeProvider {
+  constructor(private cfg: ProviderConfig) {}
+  async transcribe(audio: Buffer, mime: string, model?: string, language?: string): Promise<string> {
+    const key = resolveSecret(this.cfg.apiKey) ?? process.env.OPENAI_API_KEY;
+    const form = new FormData();
+    const ext = mime.includes('ogg') ? 'ogg' : mime.includes('mp4') ? 'mp4' : mime.includes('wav') ? 'wav' : 'webm';
+    form.append('file', new Blob([new Uint8Array(audio)], { type: mime }), `speech.${ext}`);
+    form.append('model', model ?? this.cfg.model ?? 'gpt-4o-mini-transcribe');
+    if (language) form.append('language', language);
+    const res = await fetch(`${trimSlash(this.cfg.baseUrl ?? 'https://api.openai.com/v1')}/audio/transcriptions`, {
+      method: 'POST',
+      headers: { ...(key ? { authorization: `Bearer ${key}` } : {}), ...(this.cfg.headers ?? {}) },
+      body: form,
+      signal: AbortSignal.timeout(this.cfg.timeoutMs ?? 30_000),
+    });
+    const data = (await res.json().catch(() => ({}))) as { text?: string; error?: { message?: string }; usage?: { type?: string; seconds?: number; input_tokens?: number; output_tokens?: number } };
+    if (!res.ok) throw new GenAIError(`Transcription failed (${res.status}): ${data.error?.message ?? 'unknown error'}`, res.status === 429 || res.status >= 500);
+    const u = data.usage;
+    if (u) chargeUsage(this.cfg, u.type === 'duration' ? { seconds: u.seconds ?? 0 } : { input: u.input_tokens, output: u.output_tokens });
+    return (data.text ?? '').trim();
+  }
+}

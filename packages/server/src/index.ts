@@ -14,6 +14,8 @@ import { resumeWorldGeneration, startWorldGeneration } from './worldgen/pipeline
 import { activeJob, ACTIVE, enqueue, JobConflict, latestJob, logSince, logTail, queuePosition, requestCancel, type JobKind } from './jobs/queue';
 import { startWorker } from './jobs/worker';
 import { dailyLimitFor, installSpendLedger } from './spending';
+import { withCallContext } from './genai/context';
+import { BudgetExceeded } from './genai/spend';
 import { applyEdit, EditSchema, studioView, TaskSchema } from './worldgen/studio';
 import { incompatibility, instances } from './game/manager';
 
@@ -97,6 +99,25 @@ app.post('/api/auth/logout', (req, res) => {
   if (t) store.deleteSession(t);
   res.setHeader('Set-Cookie', 'gd_session=; Path=/; Max-Age=0');
   res.json({ ok: true });
+});
+
+/** Speech to text for conversations: a short recording in, its words out (charged to the speaker's AI budget). */
+app.get('/api/voice', auth, (_req, res) => {
+  res.json({ speechInput: !genai().isProcedural('speech.input') });
+});
+
+app.post('/api/voice/transcribe', auth, express.raw({ type: ['audio/*', 'application/octet-stream'], limit: '6mb' }), async (req, res) => {
+  const u = (req as AuthedRequest).user;
+  if (genai().isProcedural('speech.input')) return void res.status(404).json({ error: 'No speech model is configured.' });
+  const audio = req.body as Buffer;
+  if (!Buffer.isBuffer(audio) || audio.length < 400) return void res.status(400).json({ error: 'No audio received.' });
+  try {
+    const lang = typeof req.query.lang === 'string' ? req.query.lang.slice(0, 2) : undefined;
+    const text = await withCallContext({ priority: 'interactive', userId: u.id }, () => genai().transcribe('speech.input', audio, String(req.headers['content-type'] ?? 'audio/webm'), lang));
+    res.json({ text });
+  } catch (e) {
+    res.status(e instanceof BudgetExceeded ? 402 : 502).json({ error: (e as Error).message });
+  }
 });
 
 app.get('/api/me', authPending, (req, res) => {

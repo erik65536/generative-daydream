@@ -480,7 +480,7 @@ export interface PoseFrames {
 /** Painted walk-cycle speed relative to the gait phase. */
 const STRIP_PACE = 0.3;
 
-export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; amt?: number; t: number; downed?: boolean; hurt?: number; attack?: number; frames?: PoseFrames }) {
+export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; amt?: number; t: number; downed?: boolean; hurt?: number; attack?: number; frames?: PoseFrames; vertical?: boolean }) {
   const walking = !Number.isNaN(opts.walk);
   const m = walking ? opts.amt ?? 1 : 0;
   // Pick the painted frame: a four-beat walk (stride, pass, other stride, pass) and the attack pose.
@@ -489,7 +489,7 @@ export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageEl
   let src: [number, number, number, number] | null = null;
   const f = opts.frames;
   const striking = !!opts.attack && opts.attack > 0.08 && opts.attack < 0.92;
-  const cycle = walking && m > 0.3 && f?.walk && f.walk.img.complete && f.walk.img.naturalWidth > 0;
+  const cycle = walking && m > 0.3 && !opts.vertical && f?.walk && f.walk.img.complete && f.walk.img.naturalWidth > 0;
   const strikeReady = !!f?.strike && f.strike.img.complete && f.strike.img.naturalWidth > 0;
   if (strikeReady && opts.attack && opts.attack > 0.02 && opts.attack < 0.98) {
     // Hold each key a moment: ready, then the wind-up, the blow (longest), the follow-through.
@@ -512,7 +512,7 @@ export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageEl
     rel = f!.walk!.rel;
     const fw = img.naturalWidth / n;
     src = [i * fw, 0, fw, img.naturalHeight];
-  } else if (walking && m > 0.3 && f?.walk_a && f.walk_b) {
+  } else if (walking && m > 0.3 && !opts.vertical && f?.walk_a && f.walk_b) {
     const s = Math.sin(opts.walk);
     if (s > 0.38) ({ img, rel } = f.walk_a);
     else if (s < -0.38) ({ img, rel } = f.walk_b);

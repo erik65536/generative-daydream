@@ -11,10 +11,11 @@ export const PURPOSES = [
   'image.icon', // item icons
   'image.check', // vision model judging generated images
   'image.prompt', // LLM that turns asset briefs into prompts in the image model's preferred style
+  'speech.input', // speech-to-text: what a player says to the people of the world
 ] as const;
 export type Purpose = (typeof PURPOSES)[number];
 
-export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'google' | 'comfyui' | 'openai-image' | 'google-image' | 'llamacpp-decision' | 'openai-decision';
+export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'google' | 'comfyui' | 'openai-image' | 'google-image' | 'llamacpp-decision' | 'openai-decision' | 'openai-transcribe';
 
 export interface ProviderConfig {
   type: ProviderType;
@@ -30,7 +31,7 @@ export interface ProviderConfig {
   /** OpenAI: processing tier ("flex" is half price and slower; busy flex capacity is waited out, not billed). */
   serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
   /** Prices in dollars per million tokens (cached input defaults to a tenth, output to five times input). Paid providers are metered against users' daily budgets. */
-  pricing?: { inputPerM: number; cachedPerM?: number; outputPerM?: number };
+  pricing?: { inputPerM: number; cachedPerM?: number; outputPerM?: number; perMinute?: number };
   /** Reasoning models: output tokens added to every request's limit for the model's thinking (billed only when used). */
   reasoningTokens?: number;
   /** Extra body parameters merged into every request (e.g. top_p, reasoning settings). */

@@ -4,7 +4,7 @@ import { checkBudget } from './spend';
 import path from 'node:path';
 import { z } from 'zod';
 import { CONFIG_DIR, DATA_DIR } from '../paths';
-import { AnthropicProvider, ComfyUIProvider, GoogleProvider, LlamaDecisionProvider, OpenAIChatProvider, OpenAIDecisionProvider, OpenAIImageProvider, OpenAIResponsesProvider } from './providers';
+import { AnthropicProvider, ComfyUIProvider, GoogleProvider, LlamaDecisionProvider, OpenAIChatProvider, OpenAIDecisionProvider, OpenAIImageProvider, OpenAIResponsesProvider, OpenAITranscribeProvider } from './providers';
 import { GpuScheduler } from './gpu';
 import { callContext, priorityOf, PRIORITY_RANK } from './context';
 import { clampToSchema, findLimitViolations, parseModelJson, restoreOptional, pathLabel, resolveRefs, setAtPath, type LimitViolation } from './json';
@@ -331,6 +331,18 @@ Return a JSON object with the rewritten f0, f1, ... only.` }],
       }
     }
     throw lastErr ?? new Error('structured generation failed');
+  }
+
+  /** Speech to text (the 'speech.input' purpose): returns what was said. */
+  async transcribe(p: Purpose, audio: Buffer, mime: string, language?: string): Promise<string> {
+    const pc = this.purpose(p);
+    const cfg = this.providerConfig(pc.provider);
+    if (cfg.type !== 'openai-transcribe') throw new GenAIError(`Provider "${pc.provider}" does not transcribe speech`, false);
+    const prov = new OpenAITranscribeProvider(cfg);
+    const t0 = Date.now();
+    const text = await this.exec(p, pc.provider, pc.model, () => prov.transcribe(audio, mime, pc.model, language));
+    this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: true, attempt: 1, promptChars: audio.length, preview: text.slice(0, 160) });
+    return text;
   }
 
   async image(p: Purpose, req: Omit<ImageRequest, 'width' | 'height'> & Partial<Pick<ImageRequest, 'width' | 'height'>>): Promise<Buffer> {

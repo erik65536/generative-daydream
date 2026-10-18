@@ -121,8 +121,11 @@ export class PadInput {
     if (pressed(B.RT)) return this.openSkills();
     if (pressed(B.LT)) return c.update({ wheel: { kind: 'panels', items: PANELS.filter((p) => p.id !== 'craft' || this.crafting()).map((p) => ({ id: p.id!, label: p.label, icon: p.id! })), sel: 0 } });
 
-    if (st.combat) this.combat(pressed, s);
-    else this.explore(pressed, s);
+    if (st.combat) {
+      this.r.steer = null;
+      this.moving = false;
+      this.combat(pressed, s);
+    } else this.explore(pressed, s);
   }
 
   // ---------------------------------------------------------------------------- exploring
@@ -138,6 +141,7 @@ export class PadInput {
       // (and now and then, so it knows the stick is still held).
       const d = this.r.screenDirToTile(s.lx, s.ly);
       this.heading = d;
+      this.r.steer = d;
       const now = performance.now();
       const turned = d.x * this.sentDir.x + d.y * this.sentDir.y < 0.99;
       if (!this.moving || (turned && now - this.lastMove > 60) || now - this.lastMove > 250) {
@@ -169,6 +173,7 @@ export class PadInput {
   }
 
   private stopWalking() {
+    this.r.steer = null;
     if (!this.moving) return;
     this.moving = false;
     this.c.send({ t: 'steer', dx: 0, dy: 0 });

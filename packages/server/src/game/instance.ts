@@ -1418,7 +1418,7 @@ export class GameInstance implements CombatHost {
   }
 
   /** Controller walking: direction per player, refreshed by the client while the stick is held. */
-  private steering = new Map<string, { dx: number; dy: number; at: number; follow: number }>();
+  private steering = new Map<string, { dx: number; dy: number; at: number; follow: number; legDir?: { x: number; y: number } }>();
 
   private cmdSteer(p: PlayerState, dx: number, dy: number) {
     const len = Math.hypot(dx, dy);
@@ -1428,7 +1428,7 @@ export class GameInstance implements CombatHost {
       return this.stopSteering(p);
     }
     const prev = this.steering.get(p.userId);
-    this.steering.set(p.userId, { dx: dx / len, dy: dy / len, at: Date.now(), follow: prev?.follow ?? 0 });
+    this.steering.set(p.userId, { dx: dx / len, dy: dy / len, at: Date.now(), follow: prev?.follow ?? 0, legDir: prev?.legDir });
     this.pending.delete(p.userId);
     this.pendingSkill.delete(p.userId);
     this.closeDialogOnMove(p);
@@ -1446,22 +1446,24 @@ export class GameInstance implements CombatHost {
    * direction changes, so motion never restarts from a standstill. Walls are slid along. Companions follow a
    * trail behind the leader instead of being re-planned on every update.
    */
-  private steerStep(p: PlayerState, s: { dx: number; dy: number; at: number; follow: number }, now: number) {
+  private steerStep(p: PlayerState, s: { dx: number; dy: number; at: number; follow: number; legDir?: { x: number; y: number } }, now: number) {
     const lead = this.leader(p);
     const z = this.zones.get(p.zoneId);
     if (!lead || !z || lead.combatId) return;
     const m = lead.motion;
     const end = m?.path[m.path.length - 1];
     const left = end ? Math.hypot(end.x - lead.x, end.y - lead.y) : 0;
-    const cur = end && left > 0.01 ? { x: (end.x - lead.x) / left, y: (end.y - lead.y) / left } : null;
-    const turned = !cur || cur.x * s.dx + cur.y * s.dy < 0.985;
-    if (!m || left < 0.9 || turned) {
+    // A new leg only when the stick's direction changed (not when a wall slide bent the last one) or the leg is
+    // running out: every new leg is a small correction the client has to smooth over.
+    const turned = !s.legDir || s.legDir.x * s.dx + s.legDir.y * s.dy < 0.985;
+    if (!m || left < 1.6 || turned) {
+      s.legDir = { x: s.dx, y: s.dy };
       const from = { x: lead.x, y: lead.y };
       const base = Math.atan2(s.dy, s.dx);
       let target: Vec2 | null = null;
       for (const turn of [0, 0.35, -0.35, 0.75, -0.75, 1.2, -1.2]) {
         const a = base + turn;
-        for (const len of [1.8, 1.0, 0.5]) {
+        for (const len of [4, 2.5, 1.2, 0.5]) {
           const t = { x: from.x + Math.cos(a) * len, y: from.y + Math.sin(a) * len };
           if (this.lineClear(z.id, from, t)) {
             target = t;

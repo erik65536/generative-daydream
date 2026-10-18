@@ -117,8 +117,90 @@ class BrowserVoiceIn implements VoiceIn {
   }
 }
 
+/**
+ * Speech to text on the server (a transcription model): records one utterance with the microphone, stops after
+ * a second of silence (or when stopped), and sends it to be transcribed. Works in any browser with a microphone.
+ */
+class ServerVoiceIn implements VoiceIn {
+  private stopNow: (() => void) | null = null;
+  /** Whether the server has a speech model (null until asked). */
+  enabled: boolean | null = null;
+  async probe(): Promise<boolean> {
+    if (this.enabled === null) {
+      const v = await fetch('/api/voice', { credentials: 'include' }).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+      if (v) this.enabled = !!(v as { speechInput?: boolean }).speechInput;
+    }
+    return !!this.enabled;
+  }
+  available() {
+    return this.enabled !== false && typeof navigator !== 'undefined' && !!navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== 'undefined';
+  }
+  async listen(onPartial?: (text: string) => void): Promise<string> {
+    this.stop();
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch {
+      onPartial?.('');
+      throw new Error('The microphone is blocked. Allow it in the browser to speak.');
+    }
+    const mime = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus', 'audio/mp4'].find((m) => MediaRecorder.isTypeSupported(m)) ?? '';
+    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const chunks: Blob[] = [];
+    rec.ondataavailable = (e) => e.data.size && chunks.push(e.data);
+    // Silence detection: stop once speech has started and the room has been quiet for a moment.
+    const ac = new AudioContext();
+    const an = ac.createAnalyser();
+    an.fftSize = 1024;
+    ac.createMediaStreamSource(stream).connect(an);
+    const buf = new Float32Array(an.fftSize);
+    let spoke = false, quietSince = performance.now();
+    const started = performance.now();
+    const done = new Promise<void>((resolve) => (rec.onstop = () => resolve()));
+    const finish = () => {
+      if (rec.state === 'recording') rec.stop();
+    };
+    this.stopNow = finish;
+    const watch = setInterval(() => {
+      an.getFloatTimeDomainData(buf);
+      let sum = 0;
+      for (const v of buf) sum += v * v;
+      const level = Math.sqrt(sum / buf.length);
+      const now = performance.now();
+      if (level > 0.025) {
+        spoke = true;
+        quietSince = now;
+      }
+      if ((spoke && now - quietSince > 1100) || (!spoke && now - started > 6000) || now - started > 20000) finish();
+    }, 60);
+    rec.start(250);
+    await done;
+    clearInterval(watch);
+    stream.getTracks().forEach((t) => t.stop());
+    void ac.close();
+    this.stopNow = null;
+    if (!spoke || !chunks.length) return '';
+    onPartial?.('…');
+    const blob = new Blob(chunks, { type: rec.mimeType || 'audio/webm' });
+    const res = await fetch(`/api/voice/transcribe?lang=${encodeURIComponent((navigator.language || 'en').slice(0, 2))}`, { method: 'POST', headers: { 'content-type': blob.type.split(';')[0]! }, body: blob, credentials: 'include' });
+    const data = (await res.json().catch(() => ({}))) as { text?: string; error?: string };
+    if (!res.ok) throw new Error(data.error ?? 'Could not understand that.');
+    return data.text ?? '';
+  }
+  stop() {
+    this.stopNow?.();
+  }
+}
+
 export const voiceOut: VoiceOut = new BrowserVoiceOut();
-export const voiceIn: VoiceIn = new BrowserVoiceIn();
+const serverIn = new ServerVoiceIn();
+const browserIn = new BrowserVoiceIn();
+/** The server's transcription when it has a speech model (reliable everywhere), else the browser's own. */
+export const voiceIn: VoiceIn = {
+  available: () => serverIn.available() || browserIn.available(),
+  listen: async (onPartial) => ((await serverIn.probe()) && serverIn.available() ? serverIn.listen(onPartial) : browserIn.listen(onPartial)),
+  stop: () => (serverIn.stop(), browserIn.stop()),
+};
 
 /** Read people's lines aloud (a per-player preference kept in this browser). */
 export function readAloud(): boolean {

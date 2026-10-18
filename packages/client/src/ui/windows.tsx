@@ -239,9 +239,15 @@ export function DialogWindow() {
                   if (listening) return voiceIn.stop();
                   voiceOut.stop();
                   setListening(true);
-                  const said = await voiceIn.listen((t) => setText(t));
-                  setListening(false);
-                  if (said) send(said);
+                  try {
+                    const said = await voiceIn.listen((t) => setText(t));
+                    if (said) send(said);
+                    else c.toast("Didn't catch that — try again.", 'info');
+                  } catch (e) {
+                    c.toast((e as Error).message, 'bad');
+                  } finally {
+                    setListening(false);
+                  }
                 }}
               >
                 {listening ? '● Listening' : '🎙'}

@@ -7,7 +7,7 @@ import { callContext } from './context';
 import type { ProviderConfig } from './types';
 import { GenAIError } from './types';
 
-export interface Usage { input?: number; cached?: number; output?: number }
+export interface Usage { input?: number; cached?: number; output?: number; seconds?: number }
 
 export interface SpendLedger {
   record(userId: string, usd: number): void;
@@ -22,6 +22,8 @@ export const setSpendLedger = (l: SpendLedger | null) => (ledger = l);
 export function pricesOf(cfg: ProviderConfig): { input: number; cached: number; output: number } | null {
   if (cfg.pricing) return { input: cfg.pricing.inputPerM, cached: cfg.pricing.cachedPerM ?? cfg.pricing.inputPerM / 10, output: cfg.pricing.outputPerM ?? cfg.pricing.inputPerM * 5 };
   if (cfg.type === 'openai-responses' || cfg.type === 'openai-decision') return { input: 0.1, cached: 0.01, output: 0.5 };
+  // Transcription: audio input tokens and text output (gpt-4o-mini-transcribe list prices).
+  if (cfg.type === 'openai-transcribe') return { input: 3, cached: 3, output: 5 };
   return null;
 }
 
@@ -30,6 +32,8 @@ export const isMetered = (cfg: ProviderConfig) => !!pricesOf(cfg) && (cfg.pricin
 export function costOf(cfg: ProviderConfig, u: Usage): number {
   const p = pricesOf(cfg);
   if (!p) return 0;
+  // Audio billed by the minute (some transcription models report duration instead of tokens).
+  if (u.seconds !== undefined) return (u.seconds / 60) * (cfg.pricing?.perMinute ?? 0.006);
   const tier = cfg.serviceTier === 'flex' ? 0.5 : 1;
   const input = u.input ?? 0, cached = Math.min(input, u.cached ?? 0);
   return (tier * ((input - cached) * p.input + cached * p.cached + (u.output ?? 0) * p.output)) / 1e6;

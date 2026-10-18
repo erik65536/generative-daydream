@@ -111,6 +111,13 @@
       "timeoutMs": 60000,
       "reasoningTokens": 2000,
       "_comment": "Play-time calls (NPC conversations): the standard tier, for low latency."
+    },
+    "openai-stt": {
+      "type": "openai-transcribe",
+      "model": "gpt-4o-mini-transcribe",
+      "concurrency": 4,
+      "timeoutMs": 30000,
+      "_comment": "Speech to text for talking to people (OPENAI_API_KEY from .env). gpt-transcribe also works."
     }
   },
   "purposes": {
@@ -169,6 +176,9 @@
     "image.check": {
       "provider": "decider",
       "minScore": 6
+    },
+    "speech.input": {
+      "provider": "openai-stt"
     }
   },
   "combineNpcDecisionAndDialogue": true,
