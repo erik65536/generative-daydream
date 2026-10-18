@@ -133,7 +133,7 @@ export function DialogWindow() {
           <span className="tiny muted">{dispLabel}</span>
         </div>
         <div className="spacer" />
-        {dialog.canTrade && <button className="btn sm" onClick={() => send('Show me your wares.')}>Trade</button>}
+        {dialog.canTrade && <button className="btn sm" disabled={dialog.thinking} onClick={() => c.send({ t: 'request_trade' })}>Trade</button>}
         <button className="btn sm ghost" onClick={close} title="Leave (Esc) — or just walk away">Leave</button>
       </div>
       <div className="dlg-main">

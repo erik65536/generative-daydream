@@ -1,4 +1,5 @@
 /** Concrete GenAI provider adapters. */
+import crypto from 'node:crypto';
 import { Agent, fetch as undiciFetch } from 'undici';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -333,9 +334,29 @@ export class OpenAIImageProvider implements ImageProvider {
 
 export class ComfyUIProvider implements ImageProvider {
   private template: unknown;
+  private editTemplate: unknown;
   constructor(private cfg: ProviderConfig) {
     const wf = cfg.workflow ? path.resolve(ROOT_DIR, cfg.workflow) : path.join(ROOT_DIR, 'config', 'comfyui', 'sdxl_txt2img.json');
     this.template = JSON.parse(fs.readFileSync(wf, 'utf8'));
+    if (cfg.editWorkflow) this.editTemplate = JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, cfg.editWorkflow), 'utf8'));
+  }
+
+  /** Whether this provider can condition on reference images. */
+  get supportsReferences() {
+    return !!this.editTemplate;
+  }
+
+  /** Upload a reference image into ComfyUI's input folder; returns the name LoadImage expects. */
+  private async upload(base: string, png: Buffer): Promise<string> {
+    const name = `ref_${crypto.createHash('sha1').update(png).digest('hex').slice(0, 16)}.png`;
+    const form = new FormData();
+    form.append('image', new Blob([new Uint8Array(png)], { type: 'image/png' }), name);
+    form.append('subfolder', 'gd_refs');
+    form.append('overwrite', 'true');
+    const res = await fetch(`${base}/upload/image`, { method: 'POST', body: form });
+    if (!res.ok) throw new GenAIError(`ComfyUI upload failed: ${res.status} ${await res.text().catch(() => '')}`);
+    const out = (await res.json()) as { name: string; subfolder?: string };
+    return out.subfolder ? `${out.subfolder}/${out.name}` : out.name;
   }
 
   private fill(node: unknown, vars: Record<string, string | number>): unknown {
@@ -351,7 +372,13 @@ export class ComfyUIProvider implements ImageProvider {
 
   async generate(req: ImageRequest, model?: string): Promise<Buffer> {
     const base = trimSlash(this.cfg.baseUrl ?? 'http://127.0.0.1:8188');
-    const workflow = this.fill(this.template, {
+    const refs: Record<string, string> = {};
+    if (req.references?.length) {
+      if (!this.editTemplate) throw new GenAIError('This image provider has no editWorkflow for reference images.', false);
+      for (let i = 0; i < req.references.length; i++) refs[`ref_${i + 1}`] = await this.upload(base, req.references[i]!);
+    }
+    const workflow = this.fill(req.references?.length ? this.editTemplate : this.template, {
+      ...refs,
       prompt: req.prompt,
       negative: req.negativePrompt ?? '',
       seed: req.seed,

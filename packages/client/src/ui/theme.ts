@@ -30,7 +30,18 @@ interface Fonts {
   serif: string;
 }
 
-/** Typefaces by genre keywords (all loaded in index.html). */
+/** Font pairs for each lettering style the rules designer can choose (all loaded in index.html). */
+const TYPEFACES: Record<string, Fonts> = {
+  engraved: { display: "'Cinzel', 'Trajan Pro', Georgia, serif", serif: "'EB Garamond', Georgia, serif" },
+  classic: { display: "'EB Garamond', Georgia, serif", serif: "'Lora', Georgia, serif" },
+  modern: { display: "'Inter', system-ui, sans-serif", serif: "'Inter', system-ui, sans-serif" },
+  condensed: { display: "'Oswald', 'Inter', sans-serif", serif: "'Inter', system-ui, sans-serif" },
+  storybook: { display: "'Fraunces', Georgia, serif", serif: "'Lora', Georgia, serif" },
+  gothic: { display: "'IM Fell English SC', Georgia, serif", serif: "'IM Fell English', Georgia, serif" },
+  technical: { display: "'Exo 2', 'Inter', sans-serif", serif: "'Inter', system-ui, sans-serif" },
+};
+
+/** Older worlds without a chosen lettering style: a guess from the concept's wording. */
 function fontsFor(text: string): Fonts {
   const t = text.toLowerCase();
   if (/sci|space|cyber|star|android|robot|galac|future|mech/.test(t)) return { display: "'Exo 2', 'Inter', sans-serif", serif: "'Inter', system-ui, sans-serif" };
@@ -91,7 +102,10 @@ export function applyWorldTheme(world: ThemeSource | null | undefined): () => vo
     root.setProperty('--panel-2', hsl({ ...base, l: base.l + 0.05 }, 0.92));
     root.setProperty('--bg', hsl({ ...base, l: 0.05 }));
   }
-  const f = fontsFor(`${world.concept.genre} ${world.concept.tone} ${world.concept.artStyle ?? ''}`);
+  // The rules designer's lettering choice; for rulesets made before it existed, the one that suits their material.
+  const byMaterial: Record<string, string> = { parchment: 'engraved', wood: 'classic', stone: 'engraved', metal: 'condensed', glass: 'modern', organic: 'storybook', paper: 'classic', neon: 'technical' };
+  const chosen = world.ruleset ? world.ruleset.ui.typeface ?? byMaterial[world.ruleset.ui.material] : undefined;
+  const f = (chosen && TYPEFACES[chosen]) || fontsFor(`${world.concept.genre} ${world.concept.tone} ${world.concept.artStyle ?? ''}`);
   root.setProperty('--display', f.display);
   root.setProperty('--serif', f.serif);
   if (world.ruleset) {

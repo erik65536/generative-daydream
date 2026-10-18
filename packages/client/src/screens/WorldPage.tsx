@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { InstanceSummary, Ruleset } from '@gd/shared';
-import { api, type JobStatus, type Me, type WorldSummary } from '../api';
+import { api, jobActive, type JobPhase, type JobStatus, type Me, type WorldSummary } from '../api';
 import { CodexView } from '../ui/windows';
 import { setRules } from '../rules';
 import { Backdrop, WorldArt } from '../ui/Backdrop';
@@ -27,7 +27,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
         const ws = await api.world(worldId);
         if (!alive) return;
         setW(ws);
-        if (ws.status === 'generating' || ws.job?.status === 'running') {
+        if (ws.status === 'generating' || jobActive(ws.job?.status)) {
           const j = await api.job(worldId, since.current);
           if (!alive) return;
           setJob(j);
@@ -68,7 +68,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
   }, [log.length]);
 
   if (!w) return <div className="page"><Backdrop /><TopBar me={me} /><div className="page-inner">{error || <div className="spinner" />}</div></div>;
-  const generating = w.status === 'generating' || job?.status === 'running';
+  const generating = w.status === 'generating' || jobActive(job?.status);
   const mine = saves.filter((s) => s.ownerId === me.id || s.players.some((p) => p.userId === me.id));
   const joinable = saves.filter((s) => s.open && !s.players.some((p) => p.userId === me.id));
   return (
@@ -100,12 +100,16 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
           <div className="panel panel-body col" style={{ marginTop: 18, gap: 12 }}>
             <div className="row">
               <div className="spinner" style={{ width: 22, height: 22 }} />
-              <div className="display gold" style={{ fontSize: 16 }}>{job.step || 'Dreaming…'}</div>
+              <div className="display gold" style={{ fontSize: 16 }}>
+                {job.status === 'queued' ? (job.queuePosition ? `Queued: ${job.queuePosition} ahead` : 'Starting soon…') : job.step || 'Dreaming…'}
+              </div>
+              {job.status === 'waiting' && <span className="badge">waiting for a model</span>}
               <div className="spacer" />
               <span className="muted small">{Math.round(job.progress * 100)}%</span>
               {w.ownerId === me.id && <button className="btn sm danger" onClick={() => api.cancelJob(worldId)}>Stop</button>}
             </div>
             <div className="progress"><div style={{ width: `${job.progress * 100}%` }} /></div>
+            {job.phases && job.phases.length > 0 && <PhaseList phases={job.phases} />}
             {job.preview.zones && (
               <div className="row wrap" style={{ gap: 6 }}>
                 {job.preview.zones.slice(0, 24).map((z) => <span key={z} className="badge gray">{z}</span>)}
@@ -117,12 +121,12 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
                 <div key={i} className={l.kind}>{l.msg}</div>
               ))}
             </div>
-            <div className="hint">Generation keeps running if you leave this page. With local models this can take a while — each place, character and quest is written individually.</div>
+            <div className="hint">Generation keeps running if you leave this page. With local models this can take a while: each place, character, quest and image is made individually.</div>
           </div>
         )}
 
         {w.status === 'failed' && <div className="panel panel-body error-text" style={{ marginTop: 18 }}>Generation failed. Check the server log for details.</div>}
-        {w.status === 'ready' && w.job?.status === 'failed' && <div className="panel panel-body error-text" style={{ marginTop: 18 }}>The last job failed: {w.job.error ?? 'unknown error'}.</div>}
+        {w.status === 'ready' && !generating && w.job?.status === 'failed' && <div className="panel panel-body error-text" style={{ marginTop: 18 }}>The last job failed: {w.job.error ?? 'unknown error'}.</div>}
 
         {view && ruleset && (
           <div className="modal-wrap" onClick={() => setView(null)}>
@@ -187,10 +191,12 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
                   <div className="panel-body col">
                     <div className="small muted">{w.artProgress.total ? `${w.artProgress.ok} of ${w.artProgress.total} images generated.` : 'Using procedural art.'}</div>
                     <div className="row">
-                      <button className="btn sm" onClick={() => api.regenArt(w.id, 'essential').catch((e) => alert(e.message))}>Generate art</button>
-                      <button className="btn sm" onClick={() => api.regenArt(w.id, 'full', true).catch((e) => alert(e.message))}>Everything + retry failed</button>
+                      <button className="btn sm primary" onClick={() => api.regenArt(w.id, 'full', true).catch((e) => alert(e.message))}>Paint everything</button>
+                      <button className="btn sm" onClick={() => api.regenArt(w.id, 'essential').catch((e) => alert(e.message))}>Places & characters only</button>
                     </div>
-                    <div className="hint">Requires an image model in config/genai.json.</div>
+                    <div className="hint">Only paints what is missing, failed, out of date or changed. Requires an image model in config/genai.json.</div>
+                    <button className="btn sm" onClick={() => navigate(`#/world/${w.id}/studio`)}>Open the world studio</button>
+                    <div className="hint">See every place, person, quest and image with the prompts behind them; edit them and regenerate any piece.</div>
                   </div>
                 </div>
               )}
@@ -309,5 +315,34 @@ function BalanceReport({ r }: { r: Ruleset }) {
         </div>
       ) : null}
     </div>
+  );
+}
+
+
+/** The job's stages as a checklist: finished (with time taken), the current one (with counts), and what is next. */
+export function PhaseList({ phases }: { phases: JobPhase[] }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => tick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const dur = (ms: number) => (ms < 60_000 ? `${Math.max(1, Math.round(ms / 1000))}s` : `${Math.floor(ms / 60_000)}m ${Math.round((ms % 60_000) / 1000)}s`);
+  return (
+    <ol className="phases">
+      {phases.filter((p) => p.status !== 'skipped').map((p) => (
+        <li key={p.id} className={p.status}>
+          <span className="mark">{p.status === 'done' ? '✓' : p.status === 'active' ? <span className="spinner" /> : ''}</span>
+          <div className="grow">
+            <div className="pl">
+              {p.label}
+              {p.total ? <span className="count">{p.done ?? 0}/{p.total}</span> : null}
+            </div>
+            {p.status !== 'done' && <div className="pd">{p.detail}</div>}
+            {p.status === 'active' && p.total ? <div className="progress thin"><div style={{ width: `${((p.done ?? 0) / p.total) * 100}%` }} /></div> : null}
+          </div>
+          <span className="pt">{p.status === 'done' && p.startedAt && p.endedAt ? dur(p.endedAt - p.startedAt) : p.status === 'active' && p.startedAt ? dur(Date.now() - p.startedAt) : ''}</span>
+        </li>
+      ))}
+    </ol>
   );
 }

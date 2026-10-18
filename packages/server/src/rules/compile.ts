@@ -281,7 +281,7 @@ function compileCore(r: Ruleset, ctx: Ctx, core: CoreIntent) {
   r.inventory = { slots: clamp(core.inventory.slots, 20, 200), upgrades: clamp(core.inventory.upgrades, 0, 10), slotsPerUpgrade: 8, upgradeCost: 150 };
   // UI
   const g = { warm: [1.05, 1.03, 0.35, 0.03], cold: [0.9, 1.05, 0.35, 0.02], bleak: [0.7, 1.1, 0.55, 0.08], vivid: [1.2, 1.04, 0.25, 0.0], muted: [0.8, 1.0, 0.4, 0.04], neon: [1.3, 1.1, 0.4, 0.03] }[core.ui.mood] ?? [1, 1, 0.35, 0.02];
-  r.ui = { material: core.ui.material, ornament: core.ui.ornament, grading: { tint: color(core.ui.tint, '#ffffff'), saturation: g[0]!, contrast: g[1]!, vignette: g[2]!, grain: g[3]! } };
+  r.ui = { material: core.ui.material, ornament: core.ui.ornament, typeface: core.ui.typeface, grading: { tint: color(core.ui.tint, '#ffffff'), saturation: g[0]!, contrast: g[1]!, vignette: g[2]!, grain: g[3]! } };
   r.name = core.name.slice(0, 60) || 'Rules';
   r.intro = core.intro.slice(0, 400);
 }

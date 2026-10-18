@@ -39,7 +39,7 @@ export function validateWorld(w: WorldDefinition) {
       if (o.itemUniqueId && !w.uniqueItems[o.itemUniqueId]) errors.push(`quest ${q.id} item ${o.itemUniqueId}`);
       if (o.targetId && !w.bosses.some((b) => b.id === o.targetId)) errors.push(`quest ${q.id} boss ${o.targetId}`);
       if (o.type === 'collect') {
-        const placed = w.zones.some((z) => z.features.some((f) => f.items?.includes(o.itemUniqueId!))) || w.bosses.some((b) => b.drops.includes(o.itemUniqueId!)) || q.grantsOnStart?.includes(o.itemUniqueId!);
+        const placed = w.zones.some((z) => z.features.some((f) => f.items?.includes(o.itemUniqueId!))) || w.bosses.some((b) => b.drops.includes(o.itemUniqueId!)) || w.quests.some((qq) => qq.grantsOnStart?.includes(o.itemUniqueId!));
         if (!placed) errors.push(`quest ${q.id} collect item ${o.itemUniqueId} not placed`);
       }
       if (o.type === 'interact' && !w.zones.some((z) => z.features.some((f) => f.id === o.featureId))) errors.push(`quest ${q.id} interact feature missing`);

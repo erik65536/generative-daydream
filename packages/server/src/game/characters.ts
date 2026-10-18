@@ -20,7 +20,7 @@ export function createCharacter(r: Ruleset, w: WorldDefinition | null, spec: Cha
     kinId: kin.id,
     presentation: spec.presentation ?? 'androgynous',
     pronouns: (spec.pronouns ?? 'they/them').slice(0, 24),
-    sprite: spec.sprite ?? `spr_origin_${cls.id}`,
+    sprite: spec.sprite ?? `spr_origin_${cls.id}_${spec.presentation}`,
     colors: spec.colors ?? [],
     level: 1,
     xp: 0,

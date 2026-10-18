@@ -3,7 +3,7 @@
  * modest local models can satisfy them. Everything optional is backfilled from procedural content.
  */
 import { z } from 'zod';
-import { MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES, TILE_ROLES } from '@gd/shared';
+import { MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES, TILE_ROLES, LAYOUT_STRUCTURES } from '@gd/shared';
 
 const str = (max: number, min = 1) => z.string().trim().min(min).max(max);
 /** Lenient color: models may answer '#a1b2c3', 'a1b2c3', '#abc' or a color name; normalized later by normColor(). */
@@ -49,6 +49,17 @@ export const ConceptSchema = z.object({
 });
 export type ConceptOut = z.infer<typeof ConceptSchema>;
 
+/** A zone's level design in neutral terms (every field optional; the engine fills gaps per zone kind). */
+export const LayoutPlanSchema = z.object({
+  structure: z.enum(LAYOUT_STRUCTURES).optional(),
+  enclosed: z.boolean().optional(),
+  blockers: z.object({ amount: z.enum(['sparse', 'some', 'dense']).optional(), arrangement: z.enum(['scattered', 'clusters', 'rows', 'edges']).optional() }).optional(),
+  hazard: z.enum(['none', 'pools', 'river', 'channels']).optional(),
+  structures: z.enum(['roofed', 'walled']).optional(),
+  clutter: z.enum(['sparse', 'some', 'dense']).optional(),
+});
+export type LayoutPlanOut = z.infer<typeof LayoutPlanSchema>;
+
 export function atlasSchema(slotIds: string[]) {
   return z.object({
     regions: z.array(z.object({ index: z.coerce.number().int(), name: str(60), description: str(400) })),
@@ -58,6 +69,7 @@ export function atlasSchema(slotIds: string[]) {
         name: str(60),
         description: str(500, 10),
         biome: z.enum(TILESET_STYLES),
+        layout: LayoutPlanSchema.optional(),
         lore: str(600).optional(),
       }),
     ),
@@ -153,6 +165,7 @@ export const FamiliesSchema = z.object({
 export type FamiliesOut = z.infer<typeof FamiliesSchema>;
 
 const roleDef = z.object({ name: str(40), colors: z.array(hex).min(1).max(3), prompt: str(200) });
+export const RoleDefSchema = roleDef;
 export const TilesetSchema = z.object({
   name: str(60),
   style: z.enum(TILESET_STYLES),

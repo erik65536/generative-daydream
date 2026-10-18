@@ -47,6 +47,10 @@ export interface ProviderConfig {
   alpha?: 'native' | 'cutout';
   /** Text wrapped around sprite prompts to request transparency, with {prompt} as the placeholder. */
   alphaPrompt?: string;
+  /** ComfyUI: workflow used when a request carries reference images ({{ref_1}}.. placeholders on LoadImage nodes). */
+  editWorkflow?: string;
+  /** Prompt profile id (wording tuned per model family); defaults by checkpoint name. */
+  promptProfile?: string;
   /** Supports image inputs (for image.check). */
   vision?: boolean;
   /**
@@ -82,6 +86,10 @@ export interface GenAIConfig {
   worldGenParallelism: number;
   /** Unload a GPU-group model after this long without use (ms). 0 = keep loaded. */
   gpuIdleUnloadMs?: number;
+  /** Jobs (world builds, painting, studio tasks) one worker runs at once. Default 1: a single local GPU. */
+  jobConcurrency?: number;
+  /** How long background work waits for a busy, rate-limited or unreachable model before failing (ms). */
+  waitForModelsMs?: number;
 }
 
 // ------------------------------------------------------------------------------- decision models
@@ -134,6 +142,8 @@ export interface ImageRequest {
   seed: number;
   /** Hint for providers that support transparent backgrounds. */
   transparent?: boolean;
+  /** Reference images (PNG) for models that can condition on them (pose variants, consistent characters). */
+  references?: Buffer[];
 }
 
 export interface TextProvider {

@@ -56,6 +56,56 @@ function blob(ctx: CanvasRenderingContext2D, x: number, y: number, r: number, c:
   ctx.fill();
 }
 
+/**
+ * The large blocker for built or enclosed places without generated art: a plain isometric block in the
+ * role's colours (whatever it stands for there: shelving, machinery, partitions), rather than a tree.
+ */
+export function blockSprite(ts: TilesetDef, variant: number): Sprite {
+  const key = `block:${ts.id}:${variant}`;
+  let s = cache.get(key);
+  if (s) return s;
+  const rnd = prng(strHash(key));
+  const c = col(ts, 'tree', 0, '#6a6a72');
+  const h = 34 + rnd() * 30, w = 26, d = 13;
+  s = make(80, 120, 40, 100, (ctx) => {
+    shadow(ctx, 30, 12, 0.35);
+    // Left face, right face, top.
+    ctx.fillStyle = rgb(shade(c, 0.72));
+    ctx.beginPath();
+    ctx.moveTo(-w, 0);
+    ctx.lineTo(0, d);
+    ctx.lineTo(0, d - h);
+    ctx.lineTo(-w, -h);
+    ctx.fill();
+    ctx.fillStyle = rgb(shade(c, 0.55));
+    ctx.beginPath();
+    ctx.moveTo(w, 0);
+    ctx.lineTo(0, d);
+    ctx.lineTo(0, d - h);
+    ctx.lineTo(w, -h);
+    ctx.fill();
+    ctx.fillStyle = rgb(shade(c, 1.05));
+    ctx.beginPath();
+    ctx.moveTo(-w, -h);
+    ctx.lineTo(0, d - h);
+    ctx.lineTo(w, -h);
+    ctx.lineTo(0, -d - h);
+    ctx.fill();
+    // A few panel lines so it reads as something made.
+    ctx.strokeStyle = rgb(shade(c, 0.45));
+    ctx.lineWidth = 1;
+    for (let i = 1; i < 3; i++) {
+      ctx.beginPath();
+      ctx.moveTo(-w, -h * (i / 3));
+      ctx.lineTo(0, d - h * (i / 3));
+      ctx.lineTo(w, -h * (i / 3));
+      ctx.stroke();
+    }
+  });
+  cache.set(key, s);
+  return s;
+}
+
 export function treeSprite(ts: TilesetDef, variant: number): Sprite {
   const key = `tree:${ts.id}:${variant}`;
   let s = cache.get(key);
@@ -867,3 +917,35 @@ export function featureSprite(kind: string, ts: TilesetDef, state: { opened?: bo
 export function clearPropCache() {
   cache.clear();
 }
+
+// ---------------------------------------------------------------------------------------- generated art
+
+const imageCache = new Map<string, Sprite>();
+
+/**
+ * A generated image as a map sprite: scaled to fit a height and width, anchored at its base, with a soft
+ * contact shadow baked under it (generated art has no ground). Mirroring gives repeated props variety.
+ */
+export function imageSprite(img: HTMLImageElement, key: string, maxH: number, maxW: number, mirror = false): Sprite {
+  const k = `${key}:${maxH}:${maxW}:${mirror}`;
+  const hit = imageCache.get(k);
+  if (hit) return hit;
+  const sc = Math.min(maxH / img.naturalHeight, maxW / img.naturalWidth);
+  const w = Math.max(1, Math.round(img.naturalWidth * sc)), h = Math.max(1, Math.round(img.naturalHeight * sc));
+  const padX = Math.round(w * 0.15) + 4, padB = Math.round(Math.max(6, w * 0.08));
+  const s2 = make(w + padX * 2, h + padB, padX + w / 2, h, (ctx) => {
+    shadow(ctx, Math.max(8, w * 0.42), Math.max(4, w * 0.13), 0.42);
+    ctx.save();
+    if (mirror) ctx.scale(-1, 1);
+    ctx.drawImage(img, -w / 2, -h + 2, w, h);
+    ctx.restore();
+  });
+  imageCache.set(k, s2);
+  return s2;
+}
+
+/** Size limits (height, width) for generated features and props on the map, in pixels at zoom 1. */
+export const ART_SIZE: Record<string, [number, number]> = {
+  tree: [150, 130], pillar: [125, 70], light: [92, 50], furniture: [74, 96], rock: [52, 64], plant: [38, 48], rubble: [30, 52],
+  chest: [40, 50], shrine: [76, 70], sign: [56, 46], lever: [42, 38], bed: [46, 72], craft_station: [64, 78],
+};

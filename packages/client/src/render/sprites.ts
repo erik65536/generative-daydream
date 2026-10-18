@@ -22,6 +22,8 @@ export interface FigureOpts {
   /** Visual role hints. */
   role?: string;
   kind?: string;
+  /** Player heroes: hair length follows the chosen presentation. */
+  presentation?: string;
 }
 
 const SKIN: [number, number, number][] = [[238, 205, 170], [214, 170, 128], [176, 126, 88], [130, 88, 60], [96, 64, 44]];
@@ -224,6 +226,17 @@ function humanoid(ctx: CanvasRenderingContext2D, o: FigureOpts, big = false) {
     ctx.fill();
   } else {
     ctx.fillStyle = rgb(hair);
+    // Longer hair falls behind the shoulders (feminine) or to the jaw (androgynous).
+    const len = o.presentation === 'feminine' ? 9 : o.presentation === 'androgynous' ? 4 : 0;
+    if (len) {
+      ctx.beginPath();
+      ctx.moveTo(-6.6, -46);
+      ctx.quadraticCurveTo(-8.2, -44 + len * 0.6, -6.2, -40 + len);
+      ctx.lineTo(6.2, -40 + len);
+      ctx.quadraticCurveTo(8.2, -44 + len * 0.6, 6.6, -46);
+      ctx.closePath();
+      ctx.fill();
+    }
     ctx.beginPath();
     if (o.back) ctx.arc(0, -44.5, 6.6, 0, Math.PI * 2);
     else {
@@ -424,15 +437,58 @@ export function loadImage(url: string | undefined): HTMLImageElement | null {
   const img = new Image();
   img.src = url;
   images.set(url, img);
-  img.onerror = () => images.set(url, null);
+  img.onerror = () => {
+    images.set(url, null);
+    flushWaiters(url);
+  };
+  img.onload = () => flushWaiters(url);
   return null;
 }
 
-export function drawImageSprite(ctx: CanvasRenderingContext2D, img: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; amt?: number; t: number; downed?: boolean; hurt?: number; attack?: number }) {
-  const h = opts.height;
-  const w = (img.naturalWidth / img.naturalHeight) * h;
+const waiters = new Map<string, (() => void)[]>();
+function flushWaiters(url: string) {
+  for (const cb of waiters.get(url) ?? []) cb();
+  waiters.delete(url);
+}
+
+/** 'ok' once decoded, 'error' if it failed (draw the procedural figure), 'loading' meanwhile. */
+export function imageState(url: string | undefined): 'none' | 'loading' | 'ok' | 'error' {
+  if (!url) return 'none';
+  if (!images.has(url)) loadImage(url);
+  const img = images.get(url);
+  if (img === null) return 'error';
+  return img && img.complete && img.naturalWidth > 0 ? 'ok' : 'loading';
+}
+
+/** Call `cb` once the image finishes loading (or fails). */
+export function onImageSettled(url: string, cb: () => void) {
+  if (imageState(url) !== 'loading') return cb();
+  waiters.set(url, [...(waiters.get(url) ?? []), cb]);
+}
+
+/** Painted pose frames of a generated character (each with its height relative to the standing pose). */
+export interface PoseFrames {
+  walk_a?: { img: HTMLImageElement; rel: number };
+  walk_b?: { img: HTMLImageElement; rel: number };
+  attack?: { img: HTMLImageElement; rel: number };
+}
+
+export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; amt?: number; t: number; downed?: boolean; hurt?: number; attack?: number; frames?: PoseFrames }) {
   const walking = !Number.isNaN(opts.walk);
   const m = walking ? opts.amt ?? 1 : 0;
+  // Pick the painted frame: a four-beat walk (stride, pass, other stride, pass) and the attack pose.
+  let img = base, rel = 1;
+  const f = opts.frames;
+  const striking = !!opts.attack && opts.attack > 0.08 && opts.attack < 0.92;
+  if (f?.attack && striking) ({ img, rel } = f.attack);
+  else if (walking && m > 0.3 && f?.walk_a && f.walk_b) {
+    const s = Math.sin(opts.walk);
+    if (s > 0.38) ({ img, rel } = f.walk_a);
+    else if (s < -0.38) ({ img, rel } = f.walk_b);
+  }
+  const framed = img !== base;
+  const h = opts.height * rel;
+  const w = (img.naturalWidth / img.naturalHeight) * h;
   // Idle breathing blended with a walking gait: a rise on each step, a slight compression at foot-fall.
   const idleBob = Math.sin(opts.t * 2) * 0.6, idleSq = 1 + Math.sin(opts.t * 2) * 0.008;
   const stepBob = walking ? Math.abs(Math.sin(opts.walk)) * 2.6 : 0;
@@ -445,8 +501,10 @@ export function drawImageSprite(ctx: CanvasRenderingContext2D, img: HTMLImageEle
     ctx.globalAlpha *= 0.85;
   }
   if (opts.hurt && opts.hurt > 0) ctx.translate(Math.sin(opts.hurt * 40) * 2.5, 0);
-  // Lean into the direction of travel plus a gentle side-to-side sway per step.
-  const lean = opts.attack ? Math.sin(opts.attack * Math.PI) * 0.18 : walking ? (0.05 + Math.sin(opts.walk) * 0.025) * m : 0;
+  // Lean into the direction of travel plus a gentle side-to-side sway per step (painted poses lean less: the pose does it).
+  const lean = opts.attack ? Math.sin(opts.attack * Math.PI) * (framed ? 0.05 : 0.18) : walking ? (framed ? 0.02 : 0.05 + Math.sin(opts.walk) * 0.025) * m : 0;
+  // A painted strike lunges forward a little.
+  if (framed && striking) ctx.translate(Math.sin(opts.attack! * Math.PI) * 6 * opts.dir, 0);
   ctx.rotate(lean * opts.dir);
   ctx.scale(opts.dir, 1);
   // Widen slightly as it squashes, so the volume reads as constant.

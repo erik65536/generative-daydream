@@ -43,7 +43,7 @@ export function PartyFrames() {
             )}
           >
             <div className="portrait">
-              <Portrait size={52} sprite={c.assetUrl(ch.sprite)} colors={ch.colors} seed={ch.id} archetype={ch.archetype} weapon={weaponVisual(ch)} />
+              <Portrait size={52} sprite={c.assetUrl(ch.sprite)} colors={ch.colors} seed={ch.id} archetype={ch.archetype} weapon={weaponVisual(ch)} presentation={ch.presentation} />
             </div>
             <div className="grow" style={{ minWidth: 0 }}>
               <div className="name">
@@ -254,6 +254,7 @@ export function ActionBar() {
             <div
               key={i}
               className={`slot ${targeting?.skillId === id && targeting.charId === ch.id ? 'on' : ''} ${cd > 0 ? 'cd' : ''} ${lacking ? 'na' : ''}`}
+              style={cd > 0 ? ({ '--cdf': Math.min(1, cd / Math.max(1, s.cooldown)) } as React.CSSProperties) : undefined}
               onClick={() => startSkill(ch.id, id)}
               {...tip(<SkillTooltip id={id} r={r} stats={stats} cooldown={cd} rank={skillRank(r, ch, id)} />)}
             >

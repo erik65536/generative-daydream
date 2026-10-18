@@ -86,9 +86,35 @@ export interface TilesetDef {
   outdoor: boolean;
   /** Ambient particles. */
   weather?: 'none' | 'rain' | 'snow' | 'ash' | 'spores' | 'embers' | 'dust' | 'fireflies';
+  /** Set once the art-direction pass has made every element specific to its place. */
+  directed?: boolean;
+  /** Elements outside the fixed roles: building roofs (towns) and the crafting station. */
+  extras?: { roof?: TileRoleDef; craft?: TileRoleDef };
 }
 
 export type ZoneKind = 'town' | 'wilderness' | 'dungeon' | 'interior';
+
+/**
+ * How a zone is laid out, in environment-neutral terms the level designer (the LLM) picks per zone and the
+ * engine turns into a map. The art direction then decides what each element looks like in that place.
+ */
+export interface ZoneLayoutPlan {
+  /** open: free-form ground; grid: blocks between straight lanes; hub: a centre with enterable structures around it;
+   *  rooms: chambers joined by corridors; caves: irregular connected hollows. */
+  structure: 'open' | 'grid' | 'hub' | 'rooms' | 'caves';
+  /** Under a roof or ceiling: no sky, day/night, rain or snow. */
+  enclosed: boolean;
+  /** The large impassable elements (the "tree" role). */
+  blockers: { amount: 'sparse' | 'some' | 'dense'; arrangement: 'scattered' | 'clusters' | 'rows' | 'edges' };
+  /** Impassable liquid, chasm or void (the "water" role). */
+  hazard: 'none' | 'pools' | 'river' | 'channels';
+  /** How enterable structures look from outside: roofed buildings, or walled rooms seen from above. */
+  structures: 'roofed' | 'walled';
+  /** Small walkable or minor clutter (the "rock", "plant" and "rubble" roles). */
+  clutter: 'sparse' | 'some' | 'dense';
+}
+
+export const LAYOUT_STRUCTURES = ['open', 'grid', 'hub', 'rooms', 'caves'] as const;
 
 export type FeatureKind = 'door' | 'exit' | 'chest' | 'trap' | 'shrine' | 'sign' | 'lever' | 'gate' | 'lore' | 'bed' | 'craft_station' | 'waypoint';
 
@@ -154,6 +180,10 @@ export interface ZoneDef {
   spawns: SpawnDef[];
   /** Interior parent (for buildings). */
   parentZoneId?: string;
+  /** Inside a structure (no sky, no day/night, no pitched roofs). */
+  indoor?: boolean;
+  /** The level design this zone was built from. */
+  layout?: ZoneLayoutPlan;
   /** Position on the world map (0..1). Interiors share their parent's. */
   mapPos: { x: number; y: number };
   /** Zones directly connected (for the world map). */
@@ -291,13 +321,33 @@ export interface AssetRecord {
   /** Anchor (0..1) of the feet within the image for sprites. */
   anchorY?: number;
   error?: string;
+  /** Variants (pose frames, an open chest) are painted from this base asset's image. */
+  ref?: string;
+  /** Which variant this is (walk_a, walk_b, attack, open). */
+  variant?: string;
+  /** Variant height relative to its base (a lunge is shorter than a standing pose). */
+  relHeight?: number;
+  /** Art pipeline version that painted it (older art is repainted when the pipeline improves). */
+  gen?: number;
+  /** Re-roll count: each owner-requested repaint uses fresh seeds. */
+  roll?: number;
+}
+
+/** The owner's changes to one asset: a custom brief or image prompt, and how often it was re-rolled. */
+export interface ArtOverride {
+  brief?: string;
+  imagePrompt?: string;
+  roll?: number;
 }
 
 export interface OriginFlavor {
   id: string;
   name: string;
   description: string;
+  /** Legacy single sprite (used when no per-presentation sprite exists). */
   asset?: string;
+  /** Sprite per chosen presentation. */
+  assets?: Partial<Record<'feminine' | 'masculine' | 'androgynous', string>>;
   appearance: string;
 }
 
@@ -337,6 +387,8 @@ export interface WorldDefinition {
   worldFacts: string[];
   factions: { id: string; name: string; description: string }[];
   generationLog?: string[];
+  /** Owner edits to asset prompts (keyed by asset key), applied whenever art is planned. */
+  artOverrides?: Record<string, ArtOverride>;
 }
 
 /** World data that is safe to send to a client (spoilers removed). */

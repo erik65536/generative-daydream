@@ -47,3 +47,21 @@ export function enchantCost(r: Ruleset, item: { baseId: string; level: number; u
   if (!en.enabled || item.uniqueId || base?.category !== 'equipment' || !base.slotId) return null;
   return { gold: Math.round(en.gold * (1 + item.level * 0.2)), material: enchantMaterial(r), qty: 1 };
 }
+
+// ------------------------------------------------------------------------------------ stacks
+
+/** Default maximum stack size per category (an item base can override it with `maxStack`). */
+export const MAX_STACK: Partial<Record<ItemBaseDef['category'], number>> = { potion: 20, tool: 10, material: 50, valuable: 25 };
+
+/** How many fit in one inventory slot (1 for gear, story items and uniques). */
+export function maxStack(r: Ruleset, item: { baseId: string; uniqueId?: string; bound?: boolean }): number {
+  if (item.uniqueId || item.bound) return 1;
+  const base = rx(r).item.get(item.baseId);
+  if (!base?.stackable) return 1;
+  return Math.max(1, base.maxStack ?? MAX_STACK[base.category] ?? 20);
+}
+
+/** Two items share a stack when they are the same stackable thing (level does not matter for stackables). */
+export function sameStack(r: Ruleset, a: { baseId: string; uniqueId?: string; bound?: boolean }, b: { baseId: string; uniqueId?: string; bound?: boolean }): boolean {
+  return a.baseId === b.baseId && maxStack(r, a) > 1 && maxStack(r, b) > 1;
+}

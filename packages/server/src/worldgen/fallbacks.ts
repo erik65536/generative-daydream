@@ -1,6 +1,7 @@
 /** Procedural producers matching each LLM step's output shape. */
 import { MONSTER_ARCHETYPES, Rng, type MonsterArchetype, type NpcRole, type TilesetDef, type TileRole } from '@gd/shared';
 import { BANKS, fallbackTileset, syllableName, type Genre, type GenreBank } from './genres';
+import { NPC_FLAVOR, type NpcSlot } from './npcflavor';
 import { normColor, normColors, type AreaContentOut, type AtlasOut, type ConceptOut, type FamiliesOut, type NpcOut, type StoryOut, type TilesetOut, type TownContentOut } from './schemas';
 import type { WorldSkeleton, ZoneSlot } from './structure';
 
@@ -65,6 +66,8 @@ export function fallbackAtlas(genre: Genre, sk: WorldSkeleton, rng: Rng, biomeFo
             ? 'Wild country where the roads grow thin and danger grows thick.'
             : 'A dark place few return from.',
       biome: biomeFor(s),
+      // Without a model, the genre suggests a layout; the engine fills in the rest per zone kind.
+      layout: genre === 'scifi' ? { enclosed: true, structure: s.kind === 'dungeon' ? 'rooms' : 'grid', blockers: { arrangement: 'rows' } } : genre === 'modern' ? { structure: s.kind === 'dungeon' ? 'rooms' : 'grid' } : undefined,
     })),
   };
 }
@@ -175,52 +178,51 @@ export function tilesetFromOut(id: string, out: TilesetOut | undefined, fb: Tile
   return { ...fb, id, name: out.name || fb.name, style: out.style ?? fb.style, ambient: out.ambient ?? fb.ambient, weather: out.weather ?? fb.weather, lightColor: normColor(out.lightColor) ?? fb.lightColor, roles };
 }
 
-const ROLE_PLAN: { role: NpcRole; merchantKind?: NpcOut['merchantKind']; title: string }[] = [
-  { role: 'innkeeper', title: 'Innkeeper' },
-  { role: 'merchant', merchantKind: 'general', title: 'Trader' },
-  { role: 'merchant', merchantKind: 'weapons', title: 'Smith' },
-  { role: 'trainer', title: 'Trainer' },
-  { role: 'guard', title: 'Guard' },
-  { role: 'merchant', merchantKind: 'alchemy', title: 'Alchemist' },
-  { role: 'commoner', title: 'Local' },
-  { role: 'merchant', merchantKind: 'armor', title: 'Armorer' },
-  { role: 'companion', title: 'Wandering Adventurer' },
-  { role: 'commoner', title: 'Farmer' },
-  { role: 'merchant', merchantKind: 'magic', title: 'Curio Dealer' },
-  { role: 'crafter', title: 'Tinker' },
-  { role: 'guard', title: 'Gate Warden' },
-  { role: 'commoner', title: 'Gossip' },
+export interface NpcPlan {
+  role: NpcRole;
+  merchantKind?: NpcOut['merchantKind'];
+  slot: NpcSlot;
+}
+
+const ROLE_PLAN: NpcPlan[] = [
+  { role: 'innkeeper', slot: 'innkeeper' },
+  { role: 'merchant', merchantKind: 'general', slot: 'trader' },
+  { role: 'merchant', merchantKind: 'weapons', slot: 'weapons' },
+  { role: 'trainer', slot: 'trainer' },
+  { role: 'guard', slot: 'guard' },
+  { role: 'merchant', merchantKind: 'alchemy', slot: 'alchemist' },
+  { role: 'commoner', slot: 'local' },
+  { role: 'merchant', merchantKind: 'armor', slot: 'armor' },
+  { role: 'companion', slot: 'companion' },
+  { role: 'commoner', slot: 'worker' },
+  { role: 'merchant', merchantKind: 'magic', slot: 'curios' },
+  { role: 'crafter', slot: 'tinker' },
+  { role: 'guard', slot: 'warden' },
+  { role: 'commoner', slot: 'gossip' },
 ];
 
-export function fallbackNpc(b: GenreBank, rng: Rng, plan: { role: NpcRole; merchantKind?: NpcOut['merchantKind']; title: string }, townName: string): NpcOut {
+/** An NPC written from genre templates (when the model did not provide one for a needed role). */
+export function fallbackNpc(genre: Genre, rng: Rng, plan: NpcPlan, townName: string): NpcOut {
+  const b = BANKS[genre];
+  const f = NPC_FLAVOR[genre];
+  const title = f.titles[plan.slot];
   const name = `${pick(rng, b.firstNames)} ${pick(rng, b.lastNames)}`;
   const personality = pick(rng, ['cheerful and talkative', 'gruff but fair', 'nervous and kind', 'proud of their work', 'suspicious of outsiders', 'dreamy and distracted', 'blunt and practical']);
-  const greetings: Record<string, string[]> = {
-    innkeeper: ['Come in, come in! A bed and a hot meal won\'t cost you much.', 'Rooms upstairs, ale down here. What\'ll it be?'],
-    merchant: ['Looking to buy? Everything here is honest work.', 'Coin talks. What are you after?'],
-    trainer: ['You have the look of someone who could learn a thing or two.', 'Skill is earned, not given. Want to earn some?'],
-    guard: ['Keep your weapons sheathed in town.', 'Move along, traveler. Unless you have business.'],
-    companion: ['Heading out? Could use the company, and you look like you could use a sword arm.', 'The road is lonely. I\'m not picky about whose side I\'m on — as long as it\'s the winning one.'],
-    commoner: [`Welcome to ${townName}. Mind the mud.`, 'Strange times. Strange times.'],
-    crafter: ['If it\'s broken, I can fix it. If it isn\'t, I can improve it.'],
-    questgiver: ['Ah, you came. Good.'],
-    noble: ['You may approach.'],
-    mystic: ['I dreamed you would come.'],
-  };
+  const town = (t: string) => t.replace('{town}', townName);
   return {
     name,
-    title: plan.title,
+    title,
     role: plan.role,
     merchantKind: plan.merchantKind,
     pronouns: pick(rng, ['she/her', 'he/him', 'they/them']),
     personality,
-    appearance: `${pick(rng, ['weathered', 'young', 'elderly', 'stout', 'lanky'])} ${plan.title.toLowerCase()} in ${pick(rng, ['simple work clothes', 'a stained apron', 'well-kept finery', 'travel-worn leathers'])}`,
-    backstory: `Has lived in ${townName} ${pick(rng, ['all their life', 'for a few uneasy years', 'since the last war'])}.`,
-    knowledge: [`Things have been odd around ${townName} lately.`],
+    appearance: `${pick(rng, f.builds)} ${title.toLowerCase()} in ${pick(rng, f.clothes)}`,
+    backstory: `Has lived in ${townName} ${pick(rng, f.history)}.`,
+    knowledge: [town(f.rumor)],
     secrets: [],
     voice: personality,
-    greeting: pick(rng, greetings[plan.role] ?? greetings.commoner!),
-    barks: [pick(rng, ['Fine weather, if it lasts.', 'Heard wolves again last night.', 'Prices keep going up.', 'Did you see those lights?']), pick(rng, ['Watch yourself out there.', 'Busy day.', 'Hm.'])],
+    greeting: town(pick(rng, f.greetings[plan.role] ?? f.greetings.commoner)),
+    barks: [pick(rng, f.barks), pick(rng, f.shortBarks)],
     canJoinParty: plan.role === 'companion',
   };
 }
@@ -228,7 +230,7 @@ export function fallbackNpc(b: GenreBank, rng: Rng, plan: { role: NpcRole; merch
 export function fallbackTownContent(genre: Genre, rng: Rng, townName: string, npcCount: number, fbTileset: TilesetDef, fbInterior: TilesetDef, nearby: { families: string[]; zones: string[] }, sideQuests: number): TownContentOut {
   const b = BANKS[genre];
   const npcs: NpcOut[] = [];
-  for (let i = 0; i < npcCount; i++) npcs.push(fallbackNpc(b, rng, ROLE_PLAN[i % ROLE_PLAN.length]!, townName));
+  for (let i = 0; i < npcCount; i++) npcs.push(fallbackNpc(genre, rng, ROLE_PLAN[i % ROLE_PLAN.length]!, townName));
   const sq: TownContentOut['sideQuests'] = [];
   for (let i = 0; i < sideQuests; i++) {
     const giver = npcs[(i * 3 + 6) % npcs.length]!;

@@ -27,9 +27,12 @@
     "comfy-qwen": {
       "type": "comfyui",
       "baseUrl": "http://127.0.0.1:8188",
+      "_comment": "editWorkflow paints variants (walking and attack poses, an opened chest) from an approved image as a reference, so they stay the same character. promptProfile picks the prompt wording for this model family (qwen-image-2, flux, sdxl); override any field in config/prompt-profiles/<id>.json.",
       "workflow": "config/comfyui/qwen_image_2_1_turbo_t2i.json",
+      "editWorkflow": "config/comfyui/qwen_image_2_1_turbo_edit.json",
       "checkpoint": "qwen_image_2.1_turbo_int8_convrot.safetensors",
       "promptStyle": "descriptive",
+      "promptProfile": "qwen-image-2",
       "alpha": "native",
       "concurrency": 1,
       "timeoutMs": 300000,
@@ -144,5 +147,7 @@
   },
   "combineNpcDecisionAndDialogue": true,
   "worldGenParallelism": 1,
-  "gpuIdleUnloadMs": 120000
+  "gpuIdleUnloadMs": 120000,
+  "jobConcurrency": 1,
+  "waitForModelsMs": 1800000
 }

@@ -8,8 +8,8 @@ import { bindWorld, resolveElement, uniqueBase } from '../rules/bind';
 import { buildPack } from '../rules/encounters';
 import type { RulesetIntent } from '../rules/intent';
 import { BANKS, fallbackTileset, type Genre } from './genres';
-import { fallbackNpc, tilesetFromOut } from './fallbacks';
-import { generateDungeon, generateInterior, generateTown, generateWilderness, type EdgeDir, type LayoutResult } from './layout';
+import { fallbackNpc, tilesetFromOut, type NpcPlan } from './fallbacks';
+import { generateDungeon, generateInterior, generateTown, generateWilderness, resolvePlan, type EdgeDir, type LayoutResult } from './layout';
 import { normColor, normColors, type AreaContentOut, type AtlasOut, type ConceptOut, type FamiliesOut, type NpcOut, type StoryOut, type TownContentOut } from './schemas';
 import type { WorldSkeleton, ZoneSlot } from './structure';
 
@@ -34,7 +34,7 @@ const zid = (slot: string) => `z_${slot}`;
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 
 /** Best fuzzy match of a free-text reference against named things. */
-function fuzzy<T>(ref: string | undefined, items: T[], name: (t: T) => string): T | undefined {
+export function fuzzy<T>(ref: string | undefined, items: T[], name: (t: T) => string): T | undefined {
   if (!ref) return undefined;
   const r = norm(ref);
   if (!r) return undefined;
@@ -132,8 +132,10 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       tilesets[fb.id] = tilesetFromOut(fb.id, d.areas[s.slotId]?.tileset, fb);
     }
     const t = tilesets[fb.id]!;
-    t.outdoor = s.kind !== 'dungeon';
+    const indoor = resolvePlan(s.kind as 'town' | 'wilderness' | 'dungeon', zi.layout, t.style).enclosed;
+    t.outdoor = !indoor;
     if (s.kind === 'dungeon') t.ambient = Math.min(0.5, t.ambient);
+    else if (indoor) t.ambient = Math.min(0.92, Math.max(0.7, t.ambient));
     else t.ambient = Math.max(0.85, t.ambient);
   }
 
@@ -231,19 +233,18 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   for (const t of townSlots) {
     const content = d.towns[t.slotId];
     const residents = content?.npcs ?? [];
-    const required: { role: NpcRole; merchantKind?: NpcOut['merchantKind']; title: string }[] = [
-      { role: 'innkeeper', title: 'Innkeeper' },
-      { role: 'merchant', merchantKind: 'general', title: 'Trader' },
-      { role: 'merchant', merchantKind: 'weapons', title: 'Smith' },
-      { role: 'trainer', title: 'Trainer' },
-      { role: 'guard', title: 'Guard' },
+    const required: NpcPlan[] = [
+      { role: 'innkeeper', slot: 'innkeeper' },
+      { role: 'merchant', merchantKind: 'general', slot: 'trader' },
+      { role: 'merchant', merchantKind: 'weapons', slot: 'weapons' },
+      { role: 'trainer', slot: 'trainer' },
+      { role: 'guard', slot: 'guard' },
     ];
-    if (companionsAllowed) required.push({ role: 'companion', title: 'Wandering Adventurer' });
+    if (companionsAllowed) required.push({ role: 'companion', slot: 'companion' });
     const list = [...residents];
-    for (const req of required) {
-      const has = list.some((n) => n.role === req.role && (!req.merchantKind || n.merchantKind === req.merchantKind || req.merchantKind === 'general'));
-      if (!has) list.push(fallbackNpc(bank, rng, req, zoneInfo(t.slotId)!.name));
-    }
+    // Any merchant covers the general store; weapons or armor covers the gear shop.
+    const covers = (n: NpcOut, req: NpcPlan) => n.role === req.role && (req.merchantKind === undefined || req.merchantKind === 'general' || (req.merchantKind === 'weapons' && (n.merchantKind === 'weapons' || n.merchantKind === 'armor')) || n.merchantKind === req.merchantKind);
+    for (const req of required) if (!list.some((n) => covers(n, req))) list.push(fallbackNpc(d.genre, rng, req, zoneInfo(t.slotId)!.name));
     list.forEach((o, i) => npcs.push(makeNpc(o, t.slotId, 100 + npcs.length + i)));
   }
   // Relations: friends by name + same town.
@@ -477,14 +478,15 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     const id = zid(s.slotId);
     let lay: LayoutResult;
     const edges = edgeMaps.get(s.slotId);
+    const plan = resolvePlan(s.kind as 'town' | 'wilderness' | 'dungeon', zi.layout, tileset.style);
     if (s.kind === 'town') {
       const indoorRoles = npcs.filter((n) => n.zoneId === id && ['merchant', 'innkeeper', 'trainer', 'crafter', 'mystic', 'noble'].includes(n.role)).length;
-      lay = generateTown(zrng, { size: 50 + sizeBoost, buildingCount: indoorRoles + 2, edges: [...(edges?.values() ?? [])], outdoor: tileset.style !== 'metal' });
+      lay = generateTown(zrng, { size: 50 + sizeBoost, buildingCount: indoorRoles + 2, edges: [...(edges?.values() ?? [])], plan });
     } else if (s.kind === 'wilderness') {
       const dungeonsHere = s.links.filter((l) => slotById.get(l)?.kind === 'dungeon').length;
-      lay = generateWilderness(zrng, { size: 62 + sizeBoost, edges: [...(edges?.values() ?? [])], internalExits: dungeonsHere, style: tileset.style });
+      lay = generateWilderness(zrng, { size: 62 + sizeBoost, edges: [...(edges?.values() ?? [])], internalExits: dungeonsHere, style: tileset.style, plan });
     } else {
-      lay = generateDungeon(zrng, { size: 54 + sizeBoost, caves: tileset.style === 'dirt' || tileset.style === 'crystal' || tileset.style === 'flesh' });
+      lay = generateDungeon(zrng, { size: 54 + sizeBoost, caves: plan.structure === 'caves' });
     }
     layouts.set(id, lay);
     zones.push({
@@ -493,6 +495,8 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       kind: s.kind,
       description: zi.description,
       regionIndex: s.regionIndex,
+      indoor: plan.enclosed || undefined,
+      layout: plan,
       levelRange: s.levelRange,
       tilesetId: tileset.id,
       width: lay.map.w,

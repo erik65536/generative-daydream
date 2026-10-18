@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { CONFIG_DIR, DATA_DIR } from '../paths';
 import { AnthropicProvider, ComfyUIProvider, GoogleProvider, LlamaDecisionProvider, OpenAIChatProvider, OpenAIImageProvider, OpenAIResponsesProvider } from './providers';
 import { GpuScheduler } from './gpu';
+import { callContext, priorityOf, PRIORITY_RANK } from './context';
 import { parseModelJson } from './json';
 import {
   GenAIError, PURPOSES, ProceduralOnly,
@@ -119,8 +120,13 @@ export class GenAI {
     return l;
   }
 
-  /** Run a provider call, serialized through its exclusive GPU group when it has one. */
-  private exec<T>(providerName: string, model: string | undefined, fn: () => Promise<T>): Promise<T> {
+  /**
+   * Run a provider call: through its exclusive GPU group when it has one (most urgent first), within the
+   * provider's concurrency limit, and retried while the provider is busy, rate-limited or unreachable. A
+   * player-facing call gives up after a few seconds (the game falls back); background work waits much longer
+   * and tells its job why it is waiting instead of failing.
+   */
+  private async exec<T>(purpose: Purpose, providerName: string, model: string | undefined, fn: () => Promise<T>): Promise<T> {
     const cfg = this.providerConfig(providerName);
     const m = model ?? cfg.model ?? cfg.checkpoint ?? providerName;
     if (cfg.gpu && !this.gpuMembersRegistered) {
@@ -128,8 +134,28 @@ export class GenAI {
       this.gpuMembersRegistered = true;
       for (const [n, c] of Object.entries(this.config.providers)) if (c.gpu) this.gpu.group(c.gpu).members.set(n, c);
     }
-    if (cfg.gpu) return this.gpu.group(cfg.gpu).run(providerName, m, cfg, () => this.limiter(providerName).run(fn));
-    return this.limiter(providerName).run(fn);
+    const priority = priorityOf(purpose);
+    const onWait = callContext()?.onWait;
+    const once = () => (cfg.gpu ? this.gpu.group(cfg.gpu).run(providerName, m, cfg, () => this.limiter(providerName).run(fn), PRIORITY_RANK[priority], onWait) : this.limiter(providerName).run(fn));
+    const deadline = Date.now() + (priority === 'interactive' ? 12_000 : (this.config.waitForModelsMs ?? 30 * 60_000));
+    let delay = priority === 'interactive' ? 1000 : 3000;
+    let waiting = false;
+    for (;;) {
+      try {
+        const out = await once();
+        if (waiting) onWait?.(null);
+        return out;
+      } catch (e) {
+        if (!isTransient(e) || Date.now() + delay > deadline) {
+          if (waiting) onWait?.(null);
+          throw e;
+        }
+        waiting = true;
+        onWait?.(`Waiting for ${providerName}: ${(e as Error).message.slice(0, 80)} (retrying in ${Math.round(delay / 1000)}s)`);
+        await new Promise((r) => setTimeout(r, delay));
+        delay = Math.min(60_000, delay * 2);
+      }
+    }
   }
 
   /** Unload every local model (call after a batch of work such as world generation). */
@@ -154,7 +180,7 @@ export class GenAI {
     }
     const t0 = Date.now();
     try {
-      const out = await this.exec(pc.provider, pc.model, () => prov!.decide(req, pc.model));
+      const out = await this.exec(p, pc.provider, pc.model, () => prov!.decide(req, pc.model));
       this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: true, attempt: 1, promptChars: JSON.stringify(req.state).length, preview: Object.entries(out).map(([k, v]) => `${k}=${v.type === 'choice' ? v.choice : v.type === 'score' ? v.score.toFixed(2) : v.noul.toFixed(2)}`).join(' ').slice(0, 160) });
       return out;
     } catch (e) {
@@ -207,7 +233,7 @@ export class GenAI {
     const provider = this.text_(pc.provider);
     const t0 = Date.now();
     try {
-      const out = await this.exec(pc.provider, pc.model, () =>
+      const out = await this.exec(p, pc.provider, pc.model, () =>
         provider.text({ ...req, temperature: req.temperature ?? pc.temperature, maxTokens: req.maxTokens ?? pc.maxTokens }, pc.model, pc.extraBody),
       );
       const cleaned = out.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
@@ -232,7 +258,7 @@ export class GenAI {
       const t0 = Date.now();
       let raw = '';
       try {
-        raw = await this.exec(pc.provider, pc.model, () =>
+        raw = await this.exec(p, pc.provider, pc.model, () =>
           provider.structured(
             { system: opts.system, messages, schema: jsonSchema, schemaName: opts.name, temperature: opts.temperature ?? pc.temperature, maxTokens: opts.maxTokens ?? pc.maxTokens, images: opts.images },
             pc.model,
@@ -271,7 +297,7 @@ export class GenAI {
       negativePrompt: [req.negativePrompt, pc.negativePrompt].filter(Boolean).join(', '),
     };
     try {
-      const buf = await this.exec(pc.provider, pc.model, () => provider.generate(full, pc.model, pc.extraBody));
+      const buf = await this.exec(p, pc.provider, pc.model, () => provider.generate(full, pc.model, pc.extraBody));
       this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: true, attempt: 1, promptChars: req.prompt.length, responseChars: buf.length });
       return buf;
     } catch (e) {
@@ -279,6 +305,15 @@ export class GenAI {
       throw e;
     }
   }
+}
+
+/** Worth retrying: the provider is busy, rate-limited, overloaded or unreachable (not a bad request). */
+export function isTransient(e: unknown): boolean {
+  if (e instanceof ProceduralOnly) return false;
+  if (e instanceof GenAIError && !e.retryable) return false;
+  const err = e as { message?: string; code?: string; cause?: { code?: string; message?: string }; status?: number };
+  const text = `${err.message ?? ''} ${err.code ?? ''} ${err.cause?.code ?? ''} ${err.cause?.message ?? ''} ${err.status ?? ''}`;
+  return /fetch failed|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EPIPE|EAI_AGAIN|UND_ERR|socket hang up|network|timed? ?out|(408|409|425|429|500|502|503|504|529)|overloaded|rate.?limit|too many requests|temporarily|unavailable|loading model/i.test(text);
 }
 
 let instance: GenAI | null = null;

@@ -5,7 +5,7 @@
  */
 import {
   ROLE_VISUAL, Rng, curve, rx,
-  type Modifier, type Ruleset, type SlotKind, type UniqueItemDef, type WorldDefinition,
+  type Modifier, type QuestDef, type Ruleset, type SlotKind, type UniqueItemDef, type WorldDefinition,
 } from '@gd/shared';
 import { affixValue } from '../game/loot';
 import type { ClassesIntent } from './intent';
@@ -106,10 +106,8 @@ export function solveProgression(r: Ruleset, w: WorldDefinition) {
   const lv = (l: number) => Math.max(1, Math.min(max, Math.round(l)));
   for (const z of w.zones) for (const s of z.spawns) byLevel[lv(s.level)]! += killXpFor(r, lv(s.level), s.archetype, s.bossId ? 'boss' : s.elite ? 'elite' : 'normal');
   for (const q of w.quests) {
-    const L = lv(q.level);
-    q.rewards.xp = Math.round(curve(r.progression.killXp, L) * (q.main ? 9 : 5));
-    q.rewards.gold = Math.round(curve(r.economy.goldPerKill, L) * (q.main ? 14 : 8));
-    byLevel[L]! += q.rewards.xp;
+    questRewards(r, q);
+    byLevel[lv(q.level)]! += q.rewards.xp;
   }
   const xp = [0, 0];
   for (let L = 1; L < max; L++) {
@@ -118,6 +116,13 @@ export function solveProgression(r: Ruleset, w: WorldDefinition) {
     xp.push(Math.round(xp[L]! + span));
   }
   r.progression.xp = xp;
+}
+
+/** A quest's experience and gold, from its level. */
+export function questRewards(r: Ruleset, q: QuestDef) {
+  const L = Math.max(1, Math.min(r.progression.maxLevel, Math.round(q.level)));
+  q.rewards.xp = Math.round(curve(r.progression.killXp, L) * (q.main ? 9 : 5));
+  q.rewards.gold = Math.round(curve(r.economy.goldPerKill, L) * (q.main ? 14 : 8));
 }
 
 /** Bind the world's content to `r` (mutates the world). */
@@ -129,7 +134,7 @@ export function bindWorld(w: WorldDefinition, r: Ruleset, classes?: ClassesInten
   const looks = new Map((classes?.classes ?? []).map((c) => [norm(c.name), (c as { appearance?: string }).appearance]));
   w.origins = r.classes.map((c) => {
     const prev = w.origins.find((o) => o.id === c.id) ?? w.origins.find((o) => norm(o.name) === norm(c.name));
-    return { id: c.id, name: c.name, description: c.description, appearance: looks.get(norm(c.name)) ?? prev?.appearance ?? `${c.name}, ${c.description}`, asset: prev?.id === c.id ? prev.asset : undefined };
+    return { id: c.id, name: c.name, description: c.description, appearance: looks.get(norm(c.name)) ?? prev?.appearance ?? `${c.name}, ${c.description}`, asset: prev?.id === c.id ? prev.asset : undefined, assets: prev?.id === c.id ? prev.assets : undefined };
   });
   // Uniques: find level from where they appear (boss / chest), default mid.
   const levelOf = new Map<string, number>();

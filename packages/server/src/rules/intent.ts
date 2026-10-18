@@ -54,6 +54,7 @@ export const CoreIntentSchema = z.object({
     ornament: z.enum(['none', 'filigree', 'runes', 'rivets', 'circuit', 'vines']),
     tint: color.describe('Colour grading tint for the game view'),
     mood: z.enum(['warm', 'cold', 'bleak', 'vivid', 'muted', 'neon']),
+    typeface: z.enum(['engraved', 'classic', 'modern', 'condensed', 'storybook', 'gothic', 'technical']).optional().describe('Lettering style of the interface'),
   }),
 });
 export type CoreIntent = z.infer<typeof CoreIntentSchema>;

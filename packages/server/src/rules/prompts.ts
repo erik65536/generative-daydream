@@ -42,7 +42,7 @@ Design the CORE RULES for this world.${overrideLines(input.rules)}
 - "systems": which optional systems fit (traps, locks, surfaces, crafting, upgrades, enchanting, buffPotions, damagePotions, control).
 - "rules": crit and dodge on/off, how swingy damage is (variance), and how downed allies come back (heal = any healing revives, special = only revive effects, after_combat = only when the fight ends).
 - "inventory": bag slots (20-200) and how many bag upgrades can be bought (0-10).
-- "ui": the interface's material and ornament style, a colour grading tint and mood for the game view.`;
+- "ui": the interface's material and ornament style, its lettering ("typeface": engraved, classic, modern, condensed, storybook, gothic or technical), and a colour grading tint and mood for the game view. Match the world's feel, not its genre label.`;
 }
 
 export function coreSummary(c: CoreIntent): string {
@@ -80,7 +80,7 @@ ${coreSummary(core)}
 Weapons: ${gear.weapons.map((w) => `${w.name} (${w.style})`).join(', ')}. Off-hands: ${gear.offhands.map((o) => `${o.name} (${o.style})`).join(', ') || 'none'}.
 
 Design ${count[0]}-${count[1]} player CLASSES. Each needs a clear role (tank, melee, ranged, caster, support, hybrid) so a party feels complete; cover at least a front-liner, a damage dealer and a healer/support.
-For each: name, description, role, 1-2 primary attributes (from the list), the pool its skills spend, its starting weapon (exact name), armor weight, optional off-hand, "appearance" (a visual description used to draw them), and three themed upgrade-tree "branches".`;
+For each: name, description, role, 1-2 primary attributes (from the list), the pool its skills spend, its starting weapon (exact name), armor weight, optional off-hand, "appearance" (a visual description of their outfit, gear and bearing used to draw them; gender-neutral, because players choose a feminine, masculine or androgynous hero: no he/she, man/woman, beards or other gendered traits), and three themed upgrade-tree "branches".`;
 }
 
 export function treePrompt(world: string, core: CoreIntent, cls: ClassesIntent['classes'][number]): string {

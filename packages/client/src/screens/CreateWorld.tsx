@@ -72,7 +72,7 @@ export function CreateWorld({ me }: { me: Me }) {
   const [length, setLength] = useState<'short' | 'medium' | 'long' | 'epic'>('short');
   const [communication, setCommunication] = useState(2);
   const [combatMode, setCombatMode] = useState<'solo' | 'party_manual' | 'party_npc'>('party_npc');
-  const [art, setArt] = useState<'none' | 'essential' | 'full'>('essential');
+  const [art, setArt] = useState<'none' | 'essential' | 'full'>('full');
   const [seed, setSeed] = useState('');
   const [difficulty, setDifficulty] = useState<DifficultyId>('normal');
   const [advanced, setAdvanced] = useState(false);
@@ -199,9 +199,9 @@ export function CreateWorld({ me }: { me: Me }) {
               <label>Generated art</label>
               <div className="choice-grid">
                 {([
-                  ['none', 'Painted by engine', 'Procedural art only (fast).'],
-                  ['essential', 'Textures & characters', 'Image model paints ground, walls and every character.'],
-                  ['full', 'Everything', 'Also props and item icons. Slowest.'],
+                  ['none', 'Painted by engine', 'Procedural art only. Fast.'],
+                  ['essential', 'Places & characters', 'Surfaces, props and landmarks for every place, and every character.'],
+                  ['full', 'Everything', 'Also walking and attack poses for every character, and item icons. Slowest, and worth it.'],
                 ] as const).map(([v, t, d]) => (
                   <div key={v} className={`choice ${art === v ? 'on' : ''}`} onClick={() => setArt(v)}>
                     <div className="t">{t}</div>

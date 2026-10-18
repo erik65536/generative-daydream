@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { itemDisplayName, itemLines, itemPrice, rx, skillCostLine, skillLines, type ItemInstance, type Ruleset, type StatBlock } from '@gd/shared';
+import { itemDisplayName, itemLines, itemPrice, maxStack, rx, skillCostLine, skillLines, type ItemInstance, type Ruleset, type StatBlock } from '@gd/shared';
 import { drawItemIcon, drawSkillIcon } from '../render/icons';
-import { drawFigure, drawShadow, loadImage } from '../render/sprites';
+import { drawFigure, drawShadow, imageState, loadImage, onImageSettled } from '../render/sprites';
 
 export function CanvasDraw({ size, draw, deps, className }: { size: number; draw: (ctx: CanvasRenderingContext2D, s: number) => void; deps: unknown[]; className?: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -40,10 +40,11 @@ export interface PortraitProps {
   kind?: string;
   /** Show the whole figure instead of head and shoulders. */
   full?: boolean;
+  presentation?: string;
 }
 
 /** Head-and-shoulders view of a figure (procedural or generated). */
-export function Portrait({ sprite, colors, shape = 'humanoid', archetype, weapon, seed, size, kind, full }: PortraitProps) {
+export function Portrait({ sprite, colors, shape = 'humanoid', archetype, weapon, seed, size, kind, full, presentation }: PortraitProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -55,11 +56,16 @@ export function Portrait({ sprite, colors, shape = 'humanoid', archetype, weapon
     const ctx = c.getContext('2d')!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, size, size);
-    const img = loadImage(sprite);
-    if (sprite && !img) {
-      const t = setTimeout(() => setTick((x) => x + 1), 400);
-      if (tick > 12) clearTimeout(t);
+    const state = imageState(sprite);
+    // Wait for generated art instead of flashing the procedural figure first.
+    if (state === 'loading') {
+      let live = true;
+      onImageSettled(sprite!, () => live && setTick((x) => x + 1));
+      return () => {
+        live = false;
+      };
     }
+    const img = state === 'ok' ? loadImage(sprite) : null;
     if (img) {
       const h = full ? size * 0.92 : size * 2.1;
       const w = (img.naturalWidth / img.naturalHeight) * h;
@@ -70,10 +76,10 @@ export function Portrait({ sprite, colors, shape = 'humanoid', archetype, weapon
       const k = full ? size / 75 : size / (humanoid ? 40 : 44);
       ctx.translate(size / 2, full ? size * 0.9 : size * (humanoid ? 1.3 : 0.95));
       drawShadow(ctx, 12 * k);
-      drawFigure(ctx, { shape, colors: colors.length ? colors : ['#4a6a9a', '#2a3448', '#e0c060'], scale: k, dir: 1, back: false, walk: NaN, t: 0.4, weapon, archetype, seed, kind });
+      drawFigure(ctx, { shape, colors: colors.length ? colors : ['#4a6a9a', '#2a3448', '#e0c060'], scale: k, dir: 1, back: false, walk: NaN, t: 0.4, weapon, archetype, seed, kind, presentation });
       ctx.restore();
     }
-  }, [sprite, colors.join(','), shape, size, seed, tick, archetype, weapon, kind, full]);
+  }, [sprite, colors.join(','), shape, size, seed, tick, archetype, weapon, kind, full, presentation]);
   return <canvas ref={ref} style={{ width: size, height: size }} />;
 }
 
@@ -136,7 +142,7 @@ export function ItemTooltip({ item, r, uniques, price, compare }: { item: ItemIn
       <div className="tname" style={{ color }}>{itemDisplayName(r, item, uniques)}</div>
       <div className="tsub">
         {base?.category === 'equipment' ? `${item.uniqueId ? 'Unique' : rarity?.name ?? ''}${slot ? ` ${slot.toLowerCase()}` : ''} · ${r.terminology.level} ${item.level}` : base?.category === 'quest' || item.bound ? 'Story item' : base?.category}
-        {item.qty > 1 ? ` · ×${item.qty}` : ''}
+        {maxStack(r, item) > 1 ? ` · stack ${item.qty}/${maxStack(r, item)}` : ''}
       </div>
       <div style={{ marginTop: 6 }}>
         {lines.map((l, i) => (

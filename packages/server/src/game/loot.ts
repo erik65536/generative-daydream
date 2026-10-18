@@ -102,42 +102,79 @@ export function merchantStock(r: Ruleset, rng: Rng, kind: MerchantKind, level: n
 
 export function mergeStacks(r: Ruleset, items: ItemInstance[]): ItemInstance[] {
   const out: ItemInstance[] = [];
-  const ix = rx(r);
-  for (const it of items) {
-    const base = ix.item.get(it.baseId);
-    const same = base?.stackable ? out.find((o) => o.baseId === it.baseId && o.level === it.level && !o.uniqueId && !it.uniqueId) : undefined;
-    if (same) same.qty += it.qty;
-    else out.push(it);
-  }
+  addToInventory(r, out, items);
   return out;
 }
 
-import { inventoryCapacity } from '@gd/shared';
+import { inventoryCapacity, maxStack, sameStack } from '@gd/shared';
 export { inventoryCapacity };
 
-/** How many of `items` fit (stacking onto existing stacks is free; quest items always fit). */
-export function fitsInInventory(r: Ruleset, p: Pick<PlayerState, 'inventory' | 'inventoryUpgrades'>, items: ItemInstance[]): boolean {
-  const ix = rx(r);
-  let used = p.inventory.filter((i) => !i.bound).length;
-  const cap = inventoryCapacity(r, p);
+/** Stacks `items` would add to `inv` once poured into partly filled stacks first. */
+function newStacksNeeded(r: Ruleset, inv: ItemInstance[], items: ItemInstance[]): number {
+  const room = new Map<string, number>();
+  for (const o of inv) if (maxStack(r, o) > 1) room.set(o.baseId, (room.get(o.baseId) ?? 0) + Math.max(0, maxStack(r, o) - o.qty));
+  let stacks = 0;
   for (const it of items) {
     if (it.bound) continue;
-    const base = ix.item.get(it.baseId);
-    if (base?.stackable && !it.uniqueId && p.inventory.some((o) => o.baseId === it.baseId && o.level === it.level && !o.uniqueId)) continue;
-    used++;
+    const max = maxStack(r, it);
+    if (max <= 1) {
+      stacks++;
+      continue;
+    }
+    let left = it.qty;
+    const free = room.get(it.baseId) ?? 0;
+    const used = Math.min(free, left);
+    left -= used;
+    room.set(it.baseId, free - used);
+    while (left > 0) {
+      stacks++;
+      const put = Math.min(max, left);
+      left -= put;
+      room.set(it.baseId, (room.get(it.baseId) ?? 0) + (max - put));
+    }
   }
-  return used <= cap;
+  return stacks;
 }
 
-/** Add items to an inventory, stacking where possible. */
+/** Whether `items` fit (filling existing stacks is free; story items always fit). */
+export function fitsInInventory(r: Ruleset, p: Pick<PlayerState, 'inventory' | 'inventoryUpgrades'>, items: ItemInstance[]): boolean {
+  const used = p.inventory.filter((i) => !i.bound).length;
+  return used + newStacksNeeded(r, p.inventory, items) <= inventoryCapacity(r, p);
+}
+
+/** Add items, topping up existing stacks to their limit and opening new stacks for the rest. */
 export function addToInventory(r: Ruleset, inv: ItemInstance[], items: ItemInstance[]) {
-  const ix = rx(r);
   for (const it of items) {
-    const base = ix.item.get(it.baseId);
-    const same = base?.stackable && !it.uniqueId ? inv.find((o) => o.baseId === it.baseId && o.level === it.level && !o.uniqueId) : undefined;
-    if (same) same.qty += it.qty;
-    else inv.push(it);
+    const max = maxStack(r, it);
+    if (max <= 1) {
+      inv.push(it);
+      continue;
+    }
+    // Stackables don't depend on level: keep one level per stack (the higher).
+    let left = it.qty;
+    for (const o of inv) {
+      if (left <= 0) break;
+      if (!sameStack(r, o, it) || o.qty >= max) continue;
+      const put = Math.min(max - o.qty, left);
+      o.qty += put;
+      o.level = Math.max(o.level, it.level);
+      left -= put;
+    }
+    let first = true;
+    while (left > 0) {
+      const put = Math.min(max, left);
+      inv.push({ ...it, id: first ? it.id : uid('it'), qty: put });
+      first = false;
+      left -= put;
+    }
   }
+}
+
+/** Re-pack an inventory (older saves stacked by level, or had no stack limits). */
+export function normalizeInventory(r: Ruleset, inv: ItemInstance[]): ItemInstance[] {
+  const out: ItemInstance[] = [];
+  addToInventory(r, out, inv.map((i) => ({ ...i })));
+  return out;
 }
 
 export function removeFromInventory(inv: ItemInstance[], itemId: string, qty = 1): ItemInstance | null {

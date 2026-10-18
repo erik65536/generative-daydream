@@ -55,7 +55,7 @@ const FANTASY: Theme = {
   materials: ['Iron Ore', 'Herbs', 'Arcane Dust'], valuables: ['Gem', 'Curio'],
   tools: ['Trap Kit', 'Lockpick', 'Recall Scroll'],
   kins: [['Human', 'Adaptable and ambitious.'], ['Elf', 'Graceful, long-lived and keen-eyed.'], ['Dwarf', 'Stout and stubborn as stone.']],
-  ui: { material: 'parchment', ornament: 'filigree', tint: '#ffd8a0', mood: 'warm' },
+  ui: { material: 'parchment', ornament: 'filigree', tint: '#ffd8a0', mood: 'warm', typeface: 'engraved' },
   rulesName: 'The Old Ways', intro: 'Steel, sorcery and stubborn courage decide every fight. Rest is never far, but every battle is earned.',
 };
 
@@ -83,7 +83,7 @@ const SCIFI: Theme = {
   materials: ['Scrap Alloy', 'Bio-gel', 'Quantum Dust'], valuables: ['Data Shard', 'Old Tech'],
   tools: ['Disarm Kit', 'Bypass Tool', 'Beacon'],
   kins: [['Human', 'Versatile and stubborn survivors.'], ['Synthetic', 'Engineered bodies, tireless and precise.'], ['Colonist', 'Hardened by low gravity and thin air.']],
-  ui: { material: 'glass', ornament: 'circuit', tint: '#a0e0ff', mood: 'cold' },
+  ui: { material: 'glass', ornament: 'circuit', tint: '#a0e0ff', mood: 'cold', typeface: 'technical' },
   rulesName: 'Field Protocols', intro: 'Every engagement is a calculation: plating against plasma, shields against kinetic rounds. Patch up between fights; inside one, every action point counts.',
 };
 
@@ -109,7 +109,7 @@ const HORROR: Theme = {
   materials: ['Grave Iron', 'Nightshade', 'Bone Dust'], valuables: ['Locket', 'Silver Coin'],
   tools: ['Trap Tongs', 'Skeleton Key', 'Lantern Charm'],
   kins: [['Villager', 'Ordinary folk hardened by hard times.'], ['Gentry', 'Educated, connected and secretly curious.'], ['Wanderer', 'No roots, many scars.']],
-  ui: { material: 'paper', ornament: 'runes', tint: '#c0b090', mood: 'bleak' },
+  ui: { material: 'paper', ornament: 'runes', tint: '#c0b090', mood: 'bleak', typeface: 'gothic' },
   rulesName: 'The Long Night', intro: 'Wounds close between ordeals, but the dark keeps coming. Fight smart: every blow and every prayer costs something.',
 };
 
@@ -137,7 +137,7 @@ const COZY: Theme = {
   materials: ['Thread', 'Berries', 'Glitter'], valuables: ['Pretty Stone', 'Old Button'],
   tools: ['Tweezers', 'Hairpin Pick', 'Homeward Whistle'],
   kins: [['Mouse', 'Small, brave and quick.'], ['Badger', 'Sturdy and steady.'], ['Hare', 'Fast and full of ideas.']],
-  ui: { material: 'paper', ornament: 'vines', tint: '#ffe0c0', mood: 'warm' },
+  ui: { material: 'paper', ornament: 'vines', tint: '#ffe0c0', mood: 'warm', typeface: 'storybook' },
   rulesName: 'The Gentle Rules', intro: 'Squabbles are settled with bonks, sparkles and stubbornness. Everyone feels better after a short sit-down.',
 };
 
@@ -163,11 +163,11 @@ const MODERN: Theme = {
   materials: ['Scrap Metal', 'Chemicals', 'Circuits'], valuables: ['Watch', 'Jewelry'],
   tools: ['Wire Cutters', 'Lock Picks', 'Taxi Card'],
   kins: [['Local', 'Knows the streets.'], ['Ex-Military', 'Disciplined and tough.'], ['Academic', 'Clever and curious.']],
-  ui: { material: 'metal', ornament: 'rivets', tint: '#d0d8e0', mood: 'muted' },
+  ui: { material: 'metal', ornament: 'rivets', tint: '#d0d8e0', mood: 'muted', typeface: 'modern' },
   rulesName: 'Street Rules', intro: 'No magic shields here — just training, gear and nerve. Patch up after every scrap.',
 };
 
-const WHIMSY: Theme = { ...COZY, ui: { material: 'organic', ornament: 'vines', tint: '#f0d0ff', mood: 'vivid' }, rulesName: 'The Topsy Rules' };
+const WHIMSY: Theme = { ...COZY, ui: { material: 'organic', ornament: 'vines', tint: '#f0d0ff', mood: 'vivid', typeface: 'storybook' }, rulesName: 'The Topsy Rules' };
 
 export const THEMES: Record<Genre, Theme> = { fantasy: FANTASY, scifi: SCIFI, horror: HORROR, cozy: COZY, modern: MODERN, whimsy: WHIMSY };
 

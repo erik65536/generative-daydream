@@ -18,6 +18,8 @@ export interface Motion {
 export type EntityKind = 'character' | 'npc' | 'monster';
 
 export interface EntityView {
+  /** Player characters: chosen presentation (procedural figures use it). */
+  presentation?: string;
   id: string;
   kind: EntityKind;
   name: string;
@@ -205,6 +207,8 @@ export type ClientMessage =
   | { t: 'interact'; targetId: string; charId?: string; inspect?: boolean }
   | { t: 'talk'; npcId: string; text: string; giveItemId?: string; giveGold?: number; useSkillId?: string }
   | { t: 'end_dialog' }
+  /** Ask the NPC in the current conversation to trade: the shop opens at once, the reply follows. */
+  | { t: 'request_trade' }
   | { t: 'use_skill'; charId: string; skillId: string; targetId?: string; x?: number; y?: number }
   | { t: 'use_item'; charId: string; itemId: string; targetId?: string; x?: number; y?: number }
   | { t: 'equip'; charId: string; itemId: string }

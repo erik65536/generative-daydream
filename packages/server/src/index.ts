@@ -9,8 +9,11 @@ import { COMBAT_MODES, DIFFICULTIES, GAME_LENGTHS, WORLD_SIZES, type ClientMessa
 import { CLIENT_DIST, CONFIG_DIR } from './paths';
 import * as store from './storage';
 import { genai, reloadGenAI } from './genai/service';
-import { IMAGE_PROMPT_SYSTEM } from './genai/images';
-import { getJob, startArtJob, startRulesJob, startWorldGeneration } from './worldgen/pipeline';
+import { imagePromptSystem, writerProfile } from './genai/images';
+import { startWorldGeneration } from './worldgen/pipeline';
+import { activeJob, ACTIVE, enqueue, JobConflict, latestJob, logSince, logTail, queuePosition, requestCancel, type JobKind } from './jobs/queue';
+import { startWorker } from './jobs/worker';
+import { applyEdit, EditSchema, studioView, TaskSchema } from './worldgen/studio';
 import { incompatibility, instances } from './game/manager';
 
 const PORT = Number(process.env.GD_PORT ?? 3000);
@@ -30,10 +33,23 @@ function cookie(req: Request | http.IncomingMessage, name: string): string | und
 
 type AuthedRequest = Request & { user: store.User };
 
-function auth(req: Request, res: Response, next: NextFunction) {
-  const user = store.sessionUser(cookie(req, 'gd_session'));
-  if (!user) return void res.status(401).json({ error: 'Please sign in.' });
-  (req as AuthedRequest).user = user;
+const meOf = (u: store.User) => ({ id: u.id, username: u.username, isAdmin: u.isAdmin, mustChangePassword: u.mustChangePassword });
+
+/** Signed-in users only. Until a one-time password is replaced, only the password change is open. */
+function signedIn(allowPending: boolean) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const user = store.sessionUser(cookie(req, 'gd_session'));
+    if (!user) return void res.status(401).json({ error: 'Please sign in.' });
+    if (user.mustChangePassword && !allowPending) return void res.status(403).json({ error: 'Choose a new password first.', code: 'password_change_required' });
+    (req as AuthedRequest).user = user;
+    next();
+  };
+}
+const auth = signedIn(false);
+const authPending = signedIn(true);
+
+function adminOnly(req: Request, res: Response, next: NextFunction) {
+  if (!(req as AuthedRequest).user?.isAdmin) return void res.status(403).json({ error: 'Admins only.' });
   next();
 }
 
@@ -42,24 +58,31 @@ const setSession = (res: Response, token: string) =>
 
 const Credentials = z.object({ username: z.string().min(1).max(40), password: z.string().min(1).max(200) });
 
-app.post('/api/auth/register', (req, res) => {
-  const body = Credentials.safeParse(req.body);
-  if (!body.success) return void res.status(400).json({ error: 'Username and password are required.' });
-  try {
-    const u = store.createUser(body.data.username, body.data.password);
-    setSession(res, store.createSession(u.id));
-    res.json({ id: u.id, username: u.username, isAdmin: u.isAdmin });
-  } catch (e) {
-    res.status(400).json({ error: (e as Error).message });
+/** Failed sign-ins per user id and per address: a short lockout after repeated failures. */
+const failures = new Map<string, { n: number; until: number }>();
+const locked = (k: string) => (failures.get(k)?.until ?? 0) > Date.now();
+const fail = (k: string) => {
+  const f = failures.get(k) ?? { n: 0, until: 0 };
+  f.n++;
+  if (f.n >= 5) {
+    f.until = Date.now() + Math.min(15 * 60_000, 30_000 * 2 ** (f.n - 5));
   }
-});
+  failures.set(k, f);
+};
 
 app.post('/api/auth/login', (req, res) => {
   const body = Credentials.safeParse(req.body);
-  const u = body.success ? store.verifyUser(body.data.username, body.data.password) : null;
-  if (!u) return void res.status(401).json({ error: 'Wrong username or password.' });
+  if (!body.success) return void res.status(400).json({ error: 'User id and password are required.' });
+  const keys = [`u:${body.data.username.trim().toLowerCase()}`, `ip:${req.ip}`];
+  if (keys.some(locked)) return void res.status(429).json({ error: 'Too many failed attempts. Try again in a few minutes.' });
+  const u = store.verifyUser(body.data.username, body.data.password);
+  if (!u) {
+    keys.forEach(fail);
+    return void res.status(401).json({ error: 'Wrong user id or password.' });
+  }
+  keys.forEach((k) => failures.delete(k));
   setSession(res, store.createSession(u.id));
-  res.json({ id: u.id, username: u.username, isAdmin: u.isAdmin });
+  res.json(meOf(u));
 });
 
 app.post('/api/auth/logout', (req, res) => {
@@ -69,15 +92,67 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-app.get('/api/me', auth, (req, res) => {
+app.get('/api/me', authPending, (req, res) => {
+  res.json(meOf((req as AuthedRequest).user));
+});
+
+/** Change your own password (required after an administrator set it). Other sessions are signed out. */
+app.post('/api/auth/password', authPending, (req, res) => {
+  const body = z.object({ current: z.string().max(200), next: z.string().max(200) }).safeParse(req.body);
+  if (!body.success) return void res.status(400).json({ error: 'Current and new password are required.' });
   const u = (req as AuthedRequest).user;
-  res.json({ id: u.id, username: u.username, isAdmin: u.isAdmin });
+  try {
+    store.changePassword(u.id, body.data.current, body.data.next, cookie(req, 'gd_session'));
+  } catch (e) {
+    return void res.status(400).json({ error: (e as Error).message });
+  }
+  res.json(meOf(store.getUser(u.id)!));
+});
+
+// ------------------------------------------------------------------------------ user administration
+
+const userRow = (u: store.User) => ({ ...meOf(u), createdAt: u.createdAt });
+
+app.get('/api/admin/users', auth, adminOnly, (_req, res) => {
+  res.json(store.listUsers().map(userRow));
+});
+
+/** Invite a user: the server makes a one-time password, shown to the administrator once. */
+app.post('/api/admin/users', auth, adminOnly, (req, res) => {
+  const body = z.object({ username: z.string().max(40), isAdmin: z.boolean().default(false) }).safeParse(req.body);
+  if (!body.success) return void res.status(400).json({ error: 'A user id is required.' });
+  try {
+    const { user, password } = store.inviteUser(body.data.username, body.data.isAdmin);
+    res.json({ user: userRow(user), password });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+app.post('/api/admin/users/:id/reset', auth, adminOnly, (req, res) => {
+  try {
+    res.json({ password: store.resetPassword(String(req.params.id)) });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+app.patch('/api/admin/users/:id', auth, adminOnly, (req, res) => {
+  const body = z.object({ isAdmin: z.boolean() }).safeParse(req.body);
+  if (!body.success) return void res.status(400).json({ error: 'Nothing to change.' });
+  try {
+    store.setAdmin(String(req.params.id), body.data.isAdmin);
+    res.json(userRow(store.getUser(String(req.params.id))!));
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
 });
 
 // ------------------------------------------------------------------------------ worlds
 
 function worldSummary(w: WorldDefinition) {
-  const job = getJob(w.id);
+  const latest = latestJob(w.id);
+  const job = latest && ACTIVE.includes(latest.status) ? latest : undefined;
   return {
     id: w.id,
     title: w.concept.title,
@@ -86,7 +161,7 @@ function worldSummary(w: WorldDefinition) {
     ownerId: w.ownerId,
     ownerName: w.ownerName,
     public: w.public,
-    status: job && job.status === 'running' ? 'generating' : w.status,
+    status: job ? 'generating' : w.status,
     createdAt: w.createdAt,
     input: { size: w.input.size, length: w.input.length, combatMode: w.input.combatMode, communication: w.input.communication, art: w.input.art, difficulty: w.input.difficulty ?? 'normal' },
     rules: w.ruleset ? { name: w.ruleset.name, classes: w.ruleset.classes.map((c) => c.name), balance: w.ruleset.balance ? { at: w.ruleset.balance.at, ok: w.ruleset.balance.scenarios.filter((x) => x.ok).length, total: w.ruleset.balance.scenarios.length, durationMs: w.ruleset.balance.durationMs } : undefined } : undefined,
@@ -96,7 +171,7 @@ function worldSummary(w: WorldDefinition) {
     palette: w.concept.palette,
     cover: Object.values(w.assets).find((a) => a.status === 'ok' && a.kind === 'sprite')?.file,
     artProgress: { ok: Object.values(w.assets).filter((a) => a.status === 'ok').length, total: Object.keys(w.assets).length },
-    job: job ? { status: job.status, progress: job.progress, step: job.step, error: job.error } : undefined,
+    job: latest && (job || latest.status === 'failed') ? { status: latest.status, progress: latest.progress, step: latest.step, error: latest.error, queuePosition: queuePosition(latest) } : undefined,
   };
 }
 
@@ -139,8 +214,12 @@ app.post('/api/worlds', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
   const body = WorldInputSchema.safeParse(req.body);
   if (!body.success) return void res.status(400).json({ error: body.error.issues[0]?.message ?? 'Invalid input.' });
-  const job = startWorldGeneration(body.data, { id: u.id, name: u.username });
-  res.json({ worldId: job.worldId });
+  try {
+    res.json(startWorldGeneration(body.data, { id: u.id, name: u.username }, { maxPerOwner: u.isAdmin ? undefined : 2 }));
+  } catch (e) {
+    if (e instanceof JobConflict) return void res.status(429).json({ error: e.message });
+    throw e;
+  }
 });
 
 app.get('/api/worlds/:id', auth, (req, res) => {
@@ -151,17 +230,17 @@ app.get('/api/worlds/:id', auth, (req, res) => {
 
 app.get('/api/worlds/:id/job', auth, (req, res) => {
   const id = String(req.params.id);
-  const job = getJob(id);
+  const job = latestJob(id);
   const w = store.loadWorld(id);
   if (!job) return void res.json({ status: w?.status === 'ready' ? 'done' : w?.status ?? 'unknown', progress: w?.status === 'ready' ? 1 : 0, step: '', log: (w?.generationLog ?? []).map((msg) => ({ t: 0, msg, kind: 'info' })), preview: {} });
   const since = Number(req.query.since ?? 0);
-  res.json({ status: job.status, progress: job.progress, step: job.step, error: job.error, log: job.log.filter((l) => l.t > since), preview: job.preview });
+  res.json({ id: job.id, kind: job.kind, status: job.status, progress: job.progress, step: job.step, error: job.error, log: since ? logSince(job.id, since) : logTail(job.id), preview: job.preview, phases: job.phases, queuePosition: queuePosition(job) });
 });
 
 app.post('/api/worlds/:id/cancel', auth, (req, res) => {
-  const job = getJob(String(req.params.id));
+  const job = activeJob(String(req.params.id));
   const u = (req as AuthedRequest).user;
-  if (job && (job.owner.id === u.id || u.isAdmin)) job.cancelled = true;
+  if (job && (job.ownerId === u.id || u.isAdmin)) requestCancel(job.id);
   res.json({ ok: true });
 });
 
@@ -187,7 +266,7 @@ app.post('/api/worlds/:id/rules', auth, (req, res) => {
   if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'Not found.' });
   if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your world.' });
   const mode = req.body?.mode === 'rebalance' && w.rulesIntent ? 'rebalance' : 'regenerate';
-  startRulesJob(w, mode, { id: u.id, name: u.username });
+  if (!queueJob(res, 'rules', w, u, { mode })) return;
   res.json({ ok: true, mode });
 });
 
@@ -198,8 +277,66 @@ app.post('/api/worlds/:id/art', auth, (req, res) => {
   if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your world.' });
   if (genai().isProcedural('image.texture') && genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
   const level = req.body?.level === 'full' ? 'full' : 'essential';
-  if (req.body?.retryFailed) for (const a of Object.values(w.assets)) if (a.status !== 'ok') delete w.assets[a.key];
-  startArtJob(w, level, { id: u.id, name: u.username });
+  if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this world; wait for it to finish.' });
+  if (req.body?.retryFailed) {
+    for (const a of Object.values(w.assets)) if (a.status !== 'ok') delete w.assets[a.key];
+    store.saveWorld(w);
+  }
+  if (!queueJob(res, 'art', w, u, { level })) return;
+  res.json({ ok: true });
+});
+
+// ------------------------------------------------------------------------------ world studio
+
+/** Queue a job on a world; answers 409 (and returns false) when one is already active there. */
+function queueJob(res: Response, kind: JobKind, w: WorldDefinition, u: store.User, params: unknown, priority = 5): boolean {
+  try {
+    enqueue(kind, w.id, { id: u.id, name: u.username }, params, { priority, step: 'Waiting for a free worker' });
+    return true;
+  } catch (e) {
+    if (!(e instanceof JobConflict)) throw e;
+    res.status(409).json({ error: e.message });
+    return false;
+  }
+}
+
+/** The owner's world (or any world for an admin), loaded for the studio. */
+function ownedWorld(req: Request, res: Response) {
+  const u = (req as AuthedRequest).user;
+  const w = store.loadWorld(String(req.params.id));
+  if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'World not found or still generating.' });
+  if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Only the owner can open the studio.' });
+  return w;
+}
+
+app.get('/api/worlds/:id/studio', auth, (req, res) => {
+  const w = ownedWorld(req, res);
+  if (w) res.json(studioView(w));
+});
+
+app.post('/api/worlds/:id/studio/edit', auth, (req, res) => {
+  const w = ownedWorld(req, res);
+  if (!w) return;
+  if (activeJob(w.id)) return void res.status(409).json({ error: 'A job is running on this world; wait for it to finish.' });
+  const edits = z.array(EditSchema).max(50).safeParse(Array.isArray(req.body) ? req.body : [req.body]);
+  if (!edits.success) return void res.status(400).json({ error: edits.error.issues[0]?.message ?? 'Invalid edit.' });
+  for (const e of edits.data) {
+    const err = applyEdit(w, e);
+    if (err) return void res.status(400).json({ error: err });
+  }
+  store.saveWorld(w);
+  res.json(studioView(w));
+});
+
+app.post('/api/worlds/:id/studio/task', auth, (req, res) => {
+  const w = ownedWorld(req, res);
+  if (!w) return;
+  if (activeJob(w.id)) return void res.status(409).json({ error: 'A job is already running on this world.' });
+  const task = TaskSchema.safeParse(req.body);
+  if (!task.success) return void res.status(400).json({ error: task.error.issues[0]?.message ?? 'Invalid task.' });
+  if (task.data.kind !== 'rewrite' && task.data.kind !== 'zone' && genai().isProcedural('image.texture') && genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
+  const u = (req as AuthedRequest).user;
+  if (!queueJob(res, 'studio', w, u, { task: task.data }, 3)) return;
   res.json({ ok: true });
 });
 
@@ -225,7 +362,8 @@ app.get('/api/worlds/:id/assets/:file', (req, res) => {
   if (!/^[\w-]+$/.test(id) || !/^[\w.-]+\.png$/.test(file)) return void res.status(400).end();
   const p = path.join(store.worldAssetDir(id), file);
   if (!fs.existsSync(p)) return void res.status(404).end();
-  res.setHeader('Cache-Control', 'public, max-age=3600');
+  // Revalidate: art can be repainted from the studio under the same file name.
+  res.setHeader('Cache-Control', 'no-cache');
   res.sendFile(p);
 });
 
@@ -324,7 +462,7 @@ app.post('/api/genai/test', auth, async (req, res) => {
       return void res.json({ ok: true, ms: Date.now() - t0, json: answers });
     }
     if (purpose === 'image.prompt') {
-      const text = await g.text('image.prompt', { system: IMAGE_PROMPT_SYSTEM, messages: [{ role: 'user', content: 'Brief: a game character sprite, full body. Subject: a lantern-bearing night watchman in a patched oilskin coat. Art style: painterly dark fantasy.' }], maxTokens: 400 });
+      const text = await g.text('image.prompt', { system: imagePromptSystem(writerProfile()), messages: [{ role: 'user', content: 'Brief: a game character sprite, full body. Subject: a lantern-bearing night watchman in a patched oilskin coat. Art style: painterly dark fantasy.' }], maxTokens: 400 });
       return void res.json({ ok: true, ms: Date.now() - t0, text });
     }
     if (purpose.startsWith('image.') && purpose !== 'image.check') {
@@ -344,7 +482,10 @@ app.post('/api/genai/test', auth, async (req, res) => {
 
 // ------------------------------------------------------------------------------ static client
 
-if (fs.existsSync(CLIENT_DIST)) {
+// In development the live client is Vite's (its API calls come here); a built client in dist/ would be stale.
+const devClient = process.env.GD_DEV_CLIENT;
+if (devClient) app.get(/^\/(?!api|ws).*/, (req, res) => res.redirect(devClient + req.originalUrl));
+else if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));
   app.get(/^\/(?!api|ws).*/, (_req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')));
 }
@@ -361,8 +502,8 @@ wss.on('connection', (ws: WebSocket, req) => {
   const send = (m: ServerMessage) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m));
   };
-  if (!user) {
-    send({ t: 'error', message: 'Please sign in.' });
+  if (!user || user.mustChangePassword) {
+    send({ t: 'error', message: user ? 'Choose a new password first.' : 'Please sign in.' });
     return ws.close();
   }
   const inst = instances.get(instanceId);
@@ -390,6 +531,16 @@ wss.on('connection', (ws: WebSocket, req) => {
 server.listen(PORT, () => {
   const g = genai();
   console.log(`Generative Daydream server on http://localhost:${PORT}`);
+  // Jobs run here unless a separate worker process runs them (GD_WORKER=external, as `npm run dev` does).
+  if (process.env.GD_WORKER !== 'external') {
+    startWorker();
+    console.log('Job worker: in this process');
+  } else console.log('Job worker: separate process (npm run worker)');
+  const first = store.ensureAdmin();
+  if (first) console.log(`
+No accounts yet: created administrator "admin" with one-time password ${first}
+(change it on first sign-in; reset it any time with: npm run users -w @gd/server -- reset admin)
+`);
   console.log('GenAI purposes:');
   for (const p of g.describe()) console.log(`  ${p.purpose.padEnd(14)} → ${p.provider} (${p.type}${p.model ? `, ${p.model}` : ''})`);
 });

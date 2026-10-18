@@ -57,8 +57,14 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires INTEGER NOT NULL);
 `);
+// Accounts made or reset by an administrator carry a one-time password the user must replace.
+if (!(db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).some((c) => c.name === 'must_change_password'))
+  db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
 
-function tx<T>(fn: () => T): T {
+/** The shared database (jobs and GPU leases live here too, so every process sees them). */
+export const globalDb = () => db;
+
+export function tx<T>(fn: () => T): T {
   db.exec('BEGIN IMMEDIATE');
   try {
     const r = fn();
@@ -147,7 +153,12 @@ db.exec(catalogSql);
 db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema_version', String(SCHEMA_VERSION));
 
 const q = {
-  insertUser: db.prepare('INSERT INTO users (id, username, password_hash, salt, created_at, is_admin) VALUES (?, ?, ?, ?, ?, ?)'),
+  insertUser: db.prepare('INSERT INTO users (id, username, password_hash, salt, created_at, is_admin, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  setPassword: db.prepare('UPDATE users SET password_hash = ?, salt = ?, must_change_password = ? WHERE id = ?'),
+  setAdmin: db.prepare('UPDATE users SET is_admin = ? WHERE id = ?'),
+  allUsers: db.prepare('SELECT * FROM users ORDER BY created_at'),
+  adminCount: db.prepare('SELECT COUNT(*) AS n FROM users WHERE is_admin = 1'),
+  userSessionsDelete: db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?'),
   userByName: db.prepare('SELECT * FROM users WHERE username = ?'),
   userById: db.prepare('SELECT * FROM users WHERE id = ?'),
   userCount: db.prepare('SELECT COUNT(*) AS n FROM users'),
@@ -179,6 +190,8 @@ export interface User {
   salt: string;
   createdAt: number;
   isAdmin: boolean;
+  /** Signed in with a password an administrator set: must choose a new one before doing anything else. */
+  mustChangePassword: boolean;
 }
 
 interface UserRow {
@@ -188,48 +201,103 @@ interface UserRow {
   salt: string;
   created_at: number;
   is_admin: number;
+  must_change_password?: number;
 }
 
 const toUser = (r: UserRow | undefined): User | undefined =>
-  r && { id: r.id, username: r.username, passwordHash: r.password_hash, salt: r.salt, createdAt: r.created_at, isAdmin: !!r.is_admin };
+  r && { id: r.id, username: r.username, passwordHash: r.password_hash, salt: r.salt, createdAt: r.created_at, isAdmin: !!r.is_admin, mustChangePassword: !!r.must_change_password };
 
 function hashPassword(password: string, salt: string): string {
   return crypto.scryptSync(password, salt, 64).toString('hex');
 }
 
 function insertUser(u: User) {
-  q.insertUser.run(u.id, u.username, u.passwordHash, u.salt, u.createdAt, u.isAdmin ? 1 : 0);
+  q.insertUser.run(u.id, u.username, u.passwordHash, u.salt, u.createdAt, u.isAdmin ? 1 : 0, u.mustChangePassword ? 1 : 0);
 }
 
-export function createUser(username: string, password: string): User {
+export const MIN_PASSWORD = 8;
+
+/** A one-time password an administrator hands out (no look-alike characters). */
+export function randomPassword(length = 14): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
+  return Array.from({ length }, () => alphabet[crypto.randomInt(alphabet.length)]).join('');
+}
+
+function validUsername(username: string): string {
   const name = username.trim();
-  if (!/^[\w .-]{3,24}$/.test(name)) throw new Error('Username must be 3-24 letters, numbers, spaces, dots or dashes.');
-  if (password.length < 6) throw new Error('Password must be at least 6 characters.');
+  if (!/^[\w.-]{3,24}$/.test(name)) throw new Error('User ids are 3-24 letters, numbers, dots, dashes or underscores.');
+  return name;
+}
+
+/** Accounts are made by administrators: a one-time password the user replaces on first sign-in. */
+export function inviteUser(username: string, isAdmin = false): { user: User; password: string } {
+  const name = validUsername(username);
+  const password = randomPassword();
   return tx(() => {
-    if (q.userByName.get(name)) throw new Error('That username is taken.');
+    if (q.userByName.get(name)) throw new Error('That user id is taken.');
     const salt = crypto.randomBytes(16).toString('hex');
-    const user: User = {
-      id: `u_${crypto.randomBytes(6).toString('hex')}`,
-      username: name,
-      salt,
-      passwordHash: hashPassword(password, salt),
-      createdAt: Date.now(),
-      isAdmin: (q.userCount.get() as { n: number }).n === 0,
-    };
+    const user: User = { id: `u_${crypto.randomBytes(6).toString('hex')}`, username: name, salt, passwordHash: hashPassword(password, salt), createdAt: Date.now(), isAdmin, mustChangePassword: true };
     insertUser(user);
-    return user;
+    return { user, password };
   });
 }
 
 export function verifyUser(username: string, password: string): User | null {
   const u = toUser(q.userByName.get(username.trim()) as UserRow | undefined);
-  if (!u) return null;
+  if (!u) {
+    hashPassword(password, 'timing'); // same cost whether or not the account exists
+    return null;
+  }
   const h = hashPassword(password, u.salt);
   return crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(u.passwordHash, 'hex')) ? u : null;
 }
 
+/** The user replaces their password (knowing the current one). Their other sessions are signed out. */
+export function changePassword(userId: string, current: string, next: string, keepToken = ''): void {
+  const u = getUser(userId);
+  if (!u || !verifyUser(u.username, current)) throw new Error('Your current password is wrong.');
+  if (next.length < MIN_PASSWORD) throw new Error(`Choose a password of at least ${MIN_PASSWORD} characters.`);
+  if (next === current) throw new Error('Choose a password different from the current one.');
+  const salt = crypto.randomBytes(16).toString('hex');
+  q.setPassword.run(hashPassword(next, salt), salt, 0, userId);
+  q.userSessionsDelete.run(userId, keepToken);
+}
+
+/** An administrator resets a password: a new one-time password, every session signed out. */
+export function resetPassword(userId: string): string {
+  if (!getUser(userId)) throw new Error('No such user.');
+  const password = randomPassword();
+  const salt = crypto.randomBytes(16).toString('hex');
+  q.setPassword.run(hashPassword(password, salt), salt, 1, userId);
+  q.userSessionsDelete.run(userId, '');
+  return password;
+}
+
+export function setAdmin(userId: string, isAdmin: boolean): void {
+  tx(() => {
+    const u = getUser(userId);
+    if (!u) throw new Error('No such user.');
+    if (u.isAdmin && !isAdmin && (q.adminCount.get() as { n: number }).n <= 1) throw new Error('The server needs at least one administrator.');
+    q.setAdmin.run(isAdmin ? 1 : 0, userId);
+  });
+}
+
+export function listUsers(): User[] {
+  return (q.allUsers.all() as unknown as UserRow[]).map((r) => toUser(r)!);
+}
+
 export function getUser(id: string): User | undefined {
   return toUser(q.userById.get(id) as UserRow | undefined);
+}
+
+export function findUser(username: string): User | undefined {
+  return toUser(q.userByName.get(username.trim()) as UserRow | undefined);
+}
+
+/** A server without accounts gets an administrator "admin" with a one-time password (returned once). */
+export function ensureAdmin(): string | null {
+  if ((q.userCount.get() as { n: number }).n > 0) return null;
+  return inviteUser('admin', true).password;
 }
 
 export function createSession(userId: string): string {

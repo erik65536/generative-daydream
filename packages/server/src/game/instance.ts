@@ -13,7 +13,7 @@ import { Combat, type CombatHost } from './combat';
 import { addStatus, checkItemUse, checkSkill, executeSkill, isHostileTo, springTrap, useConsumable, applySurface } from './effects';
 import { QuestEngine, objectivesOf, currentObjectiveIndex } from './quests';
 import { DialogueEngine } from './dialogue';
-import { addToInventory, affixValue, fitsInInventory, inventoryCapacity, makeItem, makeUnique, merchantStock, mergeStacks, removeFromInventory, rollLoot, rollRandomItem } from './loot';
+import { addToInventory, affixValue, fitsInInventory, inventoryCapacity, normalizeInventory, makeItem, makeUnique, merchantStock, mergeStacks, removeFromInventory, rollLoot, rollRandomItem } from './loot';
 import { allocateNode, clampPools, createCharacter, defaultHotbar, grantXp, levelUpTo, regenerate, restoreFully } from './characters';
 
 export interface Conn {
@@ -73,6 +73,7 @@ export class GameInstance implements CombatHost {
     state.difficulty ??= world.input.difficulty ?? 'normal';
     this.rng = new Rng(`${state.id}:${Date.now()}`);
     this.mergeDynamicItems();
+    for (const p of Object.values(state.players)) p.inventory = normalizeInventory(this.r, p.inventory);
     this.quests = new QuestEngine({
       ctx: this.ctx,
       rng: this.rng,
@@ -1282,6 +1283,7 @@ export class GameInstance implements CombatHost {
       switch (msg.t) {
         case 'move': return this.cmdMove(p, msg.x, msg.y, msg.charId);
         case 'interact': return this.cmdInteract(p, msg.targetId, msg.charId, msg.inspect);
+        case 'request_trade': return void this.dialogue.requestTrade(userId);
         case 'talk': return void this.dialogue.say(userId, msg.text, { giveItemId: msg.giveItemId, giveGold: msg.giveGold, useSkillId: msg.useSkillId });
         case 'end_dialog': return this.endDialog(userId);
         case 'use_skill': return this.cmdSkill(p, msg.charId, msg.skillId, msg.targetId, msg.x, msg.y);

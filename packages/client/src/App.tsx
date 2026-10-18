@@ -1,9 +1,11 @@
 import { Component, useEffect, useState, type ReactNode } from 'react';
 import { api, ApiError, type Me } from './api';
-import { AuthScreen } from './screens/Auth';
+import { AuthScreen, ForcedPasswordScreen } from './screens/Auth';
+import { Account, Users } from './screens/Account';
 import { Lobby } from './screens/Lobby';
 import { CreateWorld } from './screens/CreateWorld';
 import { WorldPage } from './screens/WorldPage';
+import { Studio } from './screens/Studio';
 import { CharacterCreate } from './screens/CharacterCreate';
 import { Settings } from './screens/Settings';
 import { GameScreen } from './screens/Game';
@@ -74,6 +76,7 @@ export function App() {
       </div>
     );
   if (!me) return <AuthScreen onAuthed={setMe} />;
+  if (me.mustChangePassword) return <ForcedPasswordScreen me={me} onDone={setMe} onLogout={() => setMe(null)} />;
   const parts = hash.replace(/^#\/?/, '').split('/');
   let screen;
   switch (parts[0]) {
@@ -81,13 +84,19 @@ export function App() {
       screen = <CreateWorld me={me} />;
       break;
     case 'world':
-      screen = parts[2] === 'new' ? <CharacterCreate me={me} worldId={parts[1]!} /> : <WorldPage me={me} worldId={parts[1]!} />;
+      screen = parts[2] === 'new' ? <CharacterCreate me={me} worldId={parts[1]!} /> : parts[2] === 'studio' ? <Studio me={me} worldId={parts[1]!} /> : <WorldPage me={me} worldId={parts[1]!} />;
       break;
     case 'join':
       screen = <CharacterCreate me={me} worldId={parts[1]!} joinInstanceId={parts[2]} />;
       break;
     case 'play':
       screen = <GameScreen key={parts[1]} me={me} instanceId={parts[1]!} />;
+      break;
+    case 'account':
+      screen = <Account me={me} onMe={setMe} />;
+      break;
+    case 'users':
+      screen = <Users me={me} />;
       break;
     case 'settings':
       screen = <Settings me={me} />;

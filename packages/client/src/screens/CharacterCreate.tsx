@@ -6,6 +6,7 @@ import { TopBar } from './Lobby';
 import { navigate } from '../App';
 import { Portrait, SkillIcon, SkillTooltip, tip } from '../ui/common';
 import { setRules, weaponVisual } from '../rules';
+import { loadImage } from '../render/sprites';
 import { applyWorldTheme } from '../ui/theme';
 
 const PALETTES = [
@@ -44,6 +45,8 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
     let clear = () => {};
     api.setup(worldId).then((s) => {
       setRules(s.ruleset);
+      // Warm the image cache so switching class or presentation shows art at once.
+      for (const o of s.origins) for (const k of [o.asset, ...Object.values(o.assets ?? {})]) if (k && s.assets[k]) loadImage(`/api/worlds/${worldId}/assets/${s.assets[k]}`);
       clear = applyWorldTheme({ concept: s.concept, ruleset: s.ruleset });
       setSetup(s);
       setDifficulty(s.difficulty);
@@ -70,7 +73,8 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
   const cls = ix.cls.get(d.classId)!;
   const kin = ix.kin.get(d.kinId);
   const look = setup.origins.find((o) => o.id === d.classId);
-  const sprite = look?.asset && setup.assets[look.asset] ? `/api/worlds/${worldId}/assets/${setup.assets[look.asset]}` : undefined;
+  const lookAsset = look?.assets?.[d.presentation] ?? look?.asset;
+  const sprite = lookAsset && setup.assets[lookAsset] ? `/api/worlds/${worldId}/assets/${setup.assets[lookAsset]}` : undefined;
   const st = preview.stats;
   const start = async () => {
     setBusy(true);
@@ -98,7 +102,7 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
       <div className="page-inner">
         <h1 className="h1">{setup.concept.title}</h1>
         <p className="lede">{setup.concept.pitch}</p>
-        <p className="serif muted" style={{ fontSize: 16, marginTop: -6 }}>You are {setup.concept.playerRole.replace(/^(A|An|The) /, (m) => m.toLowerCase()).replace(/\.$/, '')}.</p>
+        <p className="serif muted" style={{ fontSize: 16, marginTop: -6 }}>You are {setup.concept.playerRole.replace(/^you are\s+/i, '').replace(/^(A|An|The) /, (m) => m.toLowerCase()).replace(/\.$/, '')}.</p>
 
         {maxParty > 1 && (
           <div className="row" style={{ marginTop: 14 }}>
@@ -116,7 +120,7 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
           <div className="panel ornate" style={{ width: 300, flex: 'none' }}>
             <div className="panel-body col" style={{ alignItems: 'center' }}>
               <div className="hero-stage">
-                <Portrait full size={210} sprite={sprite} colors={d.colors} archetype={cls.aiRole} weapon={weaponVisual({ equipment: preview.equipment })} seed={d.name + d.classId} />
+                <Portrait full size={210} sprite={sprite} colors={d.colors} archetype={cls.aiRole} weapon={weaponVisual({ equipment: preview.equipment })} seed={d.name + d.classId} presentation={d.presentation} />
               </div>
               <input className="input" style={{ width: '100%', textAlign: 'center', fontSize: 18 }} value={d.name} maxLength={24} onChange={(e) => update({ name: e.target.value })} />
               <div className="seg" style={{ width: '100%' }}>

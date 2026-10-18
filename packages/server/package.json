@@ -6,7 +6,9 @@
   "scripts": {
     "dev": "tsx watch --clear-screen=false src/index.ts",
     "start": "tsx src/index.ts",
-    "gen": "tsx src/cli/generate.ts"
+    "gen": "tsx src/cli/generate.ts",
+    "users": "tsx src/cli/users.ts",
+    "worker": "tsx src/worker.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.135.0",

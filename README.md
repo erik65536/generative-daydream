@@ -9,10 +9,10 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173, create an account (the first account becomes the administrator), and choose **Dream a new world**. With no AI configured, everything uses the built-in procedural generators, so the full game is playable immediately. Add models later (below) and new worlds use them.
+Open http://localhost:5173 and sign in as `admin` with the one-time password the server prints on its first start (you choose your own password next). Accounts are invite only: administrators create them on the **Users** page, and `npm run users -w @gd/server -- reset <user id>` resets a password from the console. Then choose **Dream a new world**. With no AI configured, everything uses the built-in procedural generators, so the full game is playable immediately. Add models later (below) and new worlds use them.
 
-- `npm run dev` — game server (port 3000, auto-restart) + Vite client (port 5173)
-- `npm run build && npm start` — production: the server also serves the built client on port 3000 (`GD_PORT` to change)
+- `npm run dev` — game server (port 3000, restarts on every change), job worker (pauses its jobs at a safe point and restarts with new code; they resume from checkpoints) + Vite client (port 5173)
+- `npm run build && npm start` — production: the server also serves the built client on port 3000 (`GD_PORT` to change) and runs jobs itself; set `GD_WORKER=external` and run `npm run worker -w @gd/server` (one or more) to run them in separate processes. See [docs/server-architecture.md](docs/server-architecture.md).
 - `npm test` — world generation validation, gameplay simulation, combat balance, mock-LLM pipeline, image post-processing
 - `npm run typecheck`
 

@@ -153,7 +153,6 @@ export class DialogueEngine {
     const involved = this.involvedQuests(p, def.id);
     const persuade = involved.flatMap((q) => q.objectives.filter((o, i) => i === q.current && o.type === 'persuade' && o.npcId === def.id));
     if (persuade[0]) out.push(`About ${persuade[0].description.toLowerCase().replace(/^persuade\s+\S+\s+(to\s+)?/, '')}...`.slice(0, 80));
-    if (def.role === 'merchant' || def.role === 'crafter') out.push('Show me your wares.');
     if (def.role === 'innkeeper') out.push('I need a room for the night.');
     if (this.teachList(def, p).length) out.push('Can you teach me something?');
     if (def.canJoinParty && !rt.partyOf) out.push('Would you travel with me?');
@@ -209,6 +208,18 @@ export class DialogueEngine {
       : disp < -30 ? ['You again.', 'What do you want now?', `Make it quick, ${name}.`]
       : [`Back again, ${name}?`, 'Yes?', `Hello again, ${name}.`, 'What can I do for you?'];
     return pool[(this.h.day() + def.name.length) % pool.length]!;
+  }
+
+  // ------------------------------------------------------------------ trade
+
+  /** The Trade button: open the shop straight away (no model call, no reply). */
+  requestTrade(userId: string) {
+    const s = this.sessions.get(userId);
+    const p = this.h.player(userId);
+    if (!s || !p || s.thinking) return;
+    const def = this.npc(s.npcId)!;
+    if (!(def.role === 'merchant' || def.role === 'innkeeper' || def.role === 'crafter')) return;
+    this.h.openTrade(userId, s.npcId);
   }
 
   // ------------------------------------------------------------------ turns

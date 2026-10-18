@@ -5,13 +5,39 @@ import {
 } from '@gd/shared';
 import type { GameClient } from '../net/game';
 import { TEX, hexToRgb, imageTexture, mix, proceduralTexture, rgb, shade, strHash } from './textures';
-import { featureSprite, furnitureSprite, lightSprite, pillarSprite, plantSprite, rockSprite, rubbleSprite, treeSprite, type Sprite } from './props';
-import { drawFigure, drawImageSprite, drawShadow, loadImage } from './sprites';
+import { ART_SIZE, blockSprite, featureSprite, furnitureSprite, imageSprite, lightSprite, pillarSprite, plantSprite, rockSprite, rubbleSprite, treeSprite, type Sprite } from './props';
+import { drawFigure, drawImageSprite, drawShadow, loadImage, type PoseFrames } from './sprites';
 import { FxSystem } from './fx';
+import { HIGHLIGHT, drawOutline } from './highlight';
 import { kindColor, rules } from '../rules';
 
 const HW = 32; // half tile width
 const HH = 16; // half tile height
+
+/** Features the player can use (they glow when near). Doors only glow on hover; they are everywhere. */
+const USABLE = new Set(['chest', 'lever', 'shrine', 'sign', 'lore', 'bed', 'craft_station', 'waypoint']);
+
+let lootCanvas: HTMLCanvasElement | null = null;
+/** A dropped satchel (drawn once). */
+function lootSprite(): HTMLCanvasElement {
+  if (lootCanvas) return lootCanvas;
+  const c = document.createElement('canvas');
+  c.width = 24;
+  c.height = 20;
+  const g = c.getContext('2d')!;
+  g.fillStyle = '#7a5a34';
+  g.beginPath();
+  g.ellipse(12, 12, 8, 6, 0, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = '#5a4024';
+  g.fillRect(9, 4, 6, 4);
+  g.fillStyle = '#ffe08a';
+  g.beginPath();
+  g.arc(17, 4, 1.6, 0, Math.PI * 2);
+  g.fill();
+  lootCanvas = c;
+  return c;
+}
 const CHUNK = 12;
 
 const iso = (x: number, y: number) => ({ x: (x - y) * HW, y: (x + y) * HH });
@@ -202,8 +228,8 @@ export class Renderer {
     const cached = this.textures.get(key);
     if (cached) return cached;
     let tex: HTMLCanvasElement | null = null;
-    if (role !== 'roof') {
-      const url = this.client.assetUrl(ts.roles[role]?.asset);
+    {
+      const url = this.client.assetUrl(role === 'roof' ? ts.extras?.roof?.asset : ts.roles[role]?.asset);
       const img = loadImage(url);
       if (img) tex = imageTexture(img);
       else if (url) {
@@ -441,7 +467,7 @@ export class Renderer {
     const doors = new Set<number>();
     for (const f of z.features) if (f.kind === 'door') doors.add(f.y * W + f.x);
     const solid = (i: number) => z.groundBytes[i] === GROUND.wall || doors.has(i);
-    if (z.kind === 'town') {
+    if (z.kind === 'town' && !z.indoor && z.layout?.structures !== 'walled') {
       for (let i = 0; i < W * H; i++) {
         if (z.groundBytes[i] !== GROUND.wall || map[i]! >= 0) continue;
         const idx = list.length;
@@ -813,7 +839,8 @@ export class Renderer {
     const lp = leader ? this.client.entityPos(leader) : { x: -99, y: -99 };
     const occluders = [...st.entities.values()].filter((e) => e.ownerUserId === st.userId || e.inCombat).map((e) => this.client.entityPos(e));
     const ctx = this.ctx;
-    const roof = z.kind === 'town';
+    // Pitched roofs belong to outdoor towns; indoor hubs (lobbies, decks) show their rooms as plain walls.
+    const roof = z.kind === 'town' && !z.indoor && z.layout?.structures !== 'walled';
     const bld = this.buildings();
     const g = (x: number, y: number) => (x < 0 || y < 0 || x >= z.width || y >= z.height ? GROUND.void : z.groundBytes[y * W + x]!);
     for (let y = minY; y <= maxY; y++)
@@ -866,22 +893,25 @@ export class Renderer {
         const jx = ((v & 15) - 7.5) * 0.9, jy = (((v >> 4) & 15) - 7.5) * 0.4;
         let spr: Sprite | null = null;
         const role = ob === OBJ.tree ? 'tree' : ob === OBJ.rock ? 'rock' : ob === OBJ.plant ? 'plant' : ob === OBJ.light ? 'light' : ob === OBJ.furniture ? 'furniture' : ob === OBJ.rubble ? 'rubble' : 'pillar';
-        const img = loadImage(this.client.assetUrl(ts.roles[role as TileRole]?.asset));
+        const assetKey = ts.roles[role as TileRole]?.asset;
+        const img = loadImage(this.client.assetUrl(assetKey));
         if (img) {
-          const h = role === 'tree' ? 150 : role === 'pillar' ? 120 : role === 'light' ? 90 : role === 'furniture' ? 70 : role === 'rock' ? 50 : 34;
+          const [mh, mw] = ART_SIZE[role]!;
+          // Slight size variety and mirroring so repeated props do not look stamped.
+          const vary = 0.9 + ((v >> 2) & 7) * 0.03;
+          const art = imageSprite(img, assetKey!, Math.round(mh * vary), Math.round(mw * vary), (v & 1) === 1);
           list.push({
             depth: depth + 0.05,
             draw: () => {
-              ctx.globalAlpha = inFront && h > 60 ? 0.4 : 1;
-              const w = (img.naturalWidth / img.naturalHeight) * h;
-              ctx.drawImage(img, p.x + jx - w / 2, p.y + jy - h + 6, w, h);
+              ctx.globalAlpha = inFront && mh > 60 ? 0.4 : 1;
+              ctx.drawImage(art.canvas, p.x + (role === 'plant' || role === 'rubble' || role === 'rock' ? jx : 0) - art.ax, p.y + (role === 'plant' || role === 'rubble' ? jy : 0) - art.ay);
               ctx.globalAlpha = 1;
             },
           });
           continue;
         }
         switch (ob) {
-          case OBJ.tree: spr = treeSprite(ts, v % 4); break;
+          case OBJ.tree: spr = z.layout?.structure === 'grid' || (z.indoor && z.kind !== 'dungeon') ? blockSprite(ts, v % 4) : treeSprite(ts, v % 4); break;
           case OBJ.rock: spr = rockSprite(ts, v % 3, (v & 64) > 0); break;
           case OBJ.plant: spr = plantSprite(ts, v % 4); break;
           case OBJ.light: spr = lightSprite(ts, z.kind === 'interior' || z.kind === 'dungeon'); break;
@@ -915,6 +945,8 @@ export class Renderer {
     const z = st.zone!;
     const ctx = this.ctx;
     const bld = this.buildings();
+    const leader = this.client.leaderEntity();
+    const lp = leader ? this.client.entityPos(leader) : null;
     for (const f of z.features) {
       const fs = st.features.get(f.id);
       if (f.kind === 'trap' && !fs) continue;
@@ -932,10 +964,14 @@ export class Renderer {
         continue;
       }
       const p = iso(f.x, f.y);
-      const spr = featureSprite(f.kind, ts, { opened: fs?.opened, toggled: fs?.toggled, disarmed: fs?.disarmed || fs?.triggered, empty: fs?.empty, locked: !!f.lockLevel && !fs?.unlocked }, f.facing);
+      const spr = this.featureArt(f.kind, ts, fs) ?? featureSprite(f.kind, ts, { opened: fs?.opened, toggled: fs?.toggled, disarmed: fs?.disarmed || fs?.triggered, empty: fs?.empty, locked: !!f.lockLevel && !fs?.unlocked }, f.facing);
       const flat = f.kind === 'trap' || f.kind === 'waypoint' || f.kind === 'exit';
       const depth = f.x + f.y + (flat ? -0.4 : 0.06);
       const hovered = this.hover.featureId === f.id;
+      // What can be used glows gold when you are near; spotted live traps glow red.
+      const liveTrap = f.kind === 'trap' && !fs?.disarmed && !fs?.triggered;
+      const usable = !liveTrap && USABLE.has(f.kind) && !(f.kind === 'chest' && fs?.opened && fs?.empty);
+      const near = lp ? Math.hypot(lp.x - f.x, lp.y - f.y) : 99;
       list.push({
         depth,
         draw: () => {
@@ -950,13 +986,8 @@ export class Renderer {
             ctx.drawImage(spr.canvas, -spr.ax, -spr.ay);
             ctx.restore();
           } else {
-            if (hovered) {
-              ctx.save();
-              ctx.shadowColor = 'rgba(255,230,150,0.95)';
-              ctx.shadowBlur = 14;
-            }
             if (f.kind === 'waypoint') ctx.globalAlpha = 0.7 + Math.sin(this.t * 2) * 0.2;
-            if (f.kind === 'trap' && !fs?.disarmed && !fs?.triggered) {
+            if (liveTrap) {
               // Spotted, live traps pulse with a warning outline so they read clearly against any floor.
               ctx.save();
               ctx.strokeStyle = `rgba(255,70,50,${0.55 + Math.sin(this.t * 4) * 0.35})`;
@@ -974,7 +1005,12 @@ export class Renderer {
             }
             ctx.drawImage(spr.canvas, p.x - spr.ax, p.y - spr.ay);
             ctx.globalAlpha = 1;
-            if (hovered) ctx.restore();
+            const pulse = 0.5 + Math.sin(this.t * 3 + f.x * 0.7) * 0.5;
+            if (liveTrap) drawOutline(ctx, spr.canvas, p.x - spr.ax, p.y - spr.ay, HIGHLIGHT.trap, hovered ? 1 : 0.55 + pulse * 0.4);
+            else if (usable || hovered) {
+              const proximity = near < 10 ? 1 - Math.max(0, near - 4) / 6 : 0;
+              drawOutline(ctx, spr.canvas, p.x - spr.ax, p.y - spr.ay, HIGHLIGHT.use, hovered ? 1 : usable ? proximity * (0.35 + pulse * 0.35) : 0);
+            }
           }
           const s = this.worldToScreen(p.x - spr.ax, p.y - spr.ay);
           this.hitRects.push({ id: f.id, kind: 'feature', x: s.x, y: s.y, w: spr.canvas.width * this.zoom, h: spr.canvas.height * this.zoom, depth });
@@ -983,35 +1019,52 @@ export class Renderer {
     }
   }
 
+  /** Painted pose frames of a generated character, once loaded (walk frames only count as a pair). */
+  private poseFrames(key: string | undefined): PoseFrames | undefined {
+    const w = this.client.state.world;
+    if (!key || !w) return undefined;
+    const frame = (v: string) => {
+      const k = `${key}@${v}`;
+      const img = loadImage(this.client.assetUrl(k));
+      return img ? { img, rel: w.assets[k]?.relHeight ?? 1 } : undefined;
+    };
+    const out: PoseFrames = { walk_a: frame('walk_a'), walk_b: frame('walk_b'), attack: frame('attack') };
+    return out.walk_a || out.attack ? out : undefined;
+  }
+
+  /** Generated art for a feature (chest closed or open, shrine, sign, lever, bed, crafting station), if painted. */
+  private featureArt(kind: string, ts: TilesetDef, fs: { opened?: boolean; toggled?: boolean } | undefined): Sprite | null {
+    const base = kind === 'craft_station' ? ts.extras?.craft?.asset : ['chest', 'shrine', 'sign', 'lever', 'bed'].includes(kind) ? ts.roles[kind as TileRole]?.asset : undefined;
+    if (!base) return null;
+    const key = kind === 'chest' && fs?.opened && this.client.assetUrl(`${base}@open`) ? `${base}@open` : base;
+    const img = loadImage(this.client.assetUrl(key));
+    if (!img) return null;
+    const [mh, mw] = ART_SIZE[kind] ?? [56, 56];
+    // A pulled lever is the same lever, mirrored.
+    return imageSprite(img, key, mh, mw, kind === 'lever' && !!fs?.toggled);
+  }
+
   private collectLoot(list: Drawable[]) {
     const ctx = this.ctx;
+    const spr = lootSprite();
     for (const l of this.client.state.lootPiles) {
       const p = iso(l.x, l.y);
       const depth = l.x + l.y + 0.02;
+      const hovered = this.hover.lootId === l.id;
       list.push({
         depth,
         draw: () => {
-          const pulse = 0.6 + Math.sin(this.t * 4 + l.x) * 0.3;
-          ctx.save();
-          ctx.shadowColor = `rgba(255,220,120,${pulse})`;
-          ctx.shadowBlur = 12;
-          ctx.fillStyle = '#7a5a34';
-          ctx.beginPath();
-          ctx.ellipse(p.x, p.y - 4, 8, 6, 0, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.fillStyle = '#5a4024';
-          ctx.fillRect(p.x - 3, p.y - 12, 6, 4);
-          ctx.fillStyle = `rgba(255,230,140,${pulse})`;
-          ctx.beginPath();
-          ctx.arc(p.x + 5, p.y - 12, 1.6, 0, Math.PI * 2);
-          ctx.fill();
-          ctx.restore();
+          const x = p.x - spr.width / 2, y = p.y - spr.height + 4;
+          ctx.drawImage(spr, x, y);
+          const pulse = 0.5 + Math.sin(this.t * 4 + l.x) * 0.5;
+          drawOutline(ctx, spr, x, y, HIGHLIGHT.loot, hovered ? 1 : 0.45 + pulse * 0.45);
           const s = this.worldToScreen(p.x - 12, p.y - 18);
           this.hitRects.push({ id: l.id, kind: 'loot', x: s.x, y: s.y, w: 24 * this.zoom, h: 24 * this.zoom, depth });
         },
       });
     }
   }
+
 
   // ---------------------------------------------------------------------------- entities
 
@@ -1101,11 +1154,11 @@ export class Renderer {
             ctx.restore();
           }
           const walk = a.amt > 0.02 ? a.walk : NaN;
-          if (img) drawImageSprite(ctx, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack });
+          if (img) drawImageSprite(ctx, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames: this.poseFrames(e.sprite) });
           else
             drawFigure(ctx, {
               shape: e.shape, colors: e.colors.length ? e.colors : this.defaultColors(e, ts), scale: e.scale * 1.15, dir, back, walk, t: this.t, weapon: e.weapon, archetype: e.archetype,
-              seed: e.id, downed: e.downed, hurt: a.hurt, attack: a.attack, role: e.role, kind: e.kind, amt: a.amt,
+              seed: e.id, downed: e.downed, hurt: a.hurt, attack: a.attack, role: e.role, kind: e.kind, amt: a.amt, presentation: e.presentation,
             });
           ctx.shadowBlur = 0;
           // Status tint
@@ -1774,7 +1827,8 @@ export class Renderer {
 
   private drawWeather(dt: number, ts: TilesetDef) {
     const kind = ts.weather ?? 'none';
-    if (kind === 'none') return;
+    // No rain or snow under a roof (dust, ash, spores and embers can drift indoors).
+    if (kind === 'none' || (!ts.outdoor && (kind === 'rain' || kind === 'snow'))) return;
     const ctx = this.ctx;
     this.setScreenTransform();
     const target = kind === 'rain' ? 160 : kind === 'snow' ? 120 : kind === 'fireflies' ? 26 : 50;

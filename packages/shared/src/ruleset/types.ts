@@ -261,6 +261,8 @@ export interface ItemBaseDef {
   /** Potions and tools. */
   use?: { effects: Effect[]; ap: number; targeting: Targeting; radius?: number; outOfCombat: boolean; tool?: 'disarm' | 'unlock' | 'recall' };
   stackable: boolean;
+  /** Per-slot stack limit (defaults by category). */
+  maxStack?: number;
   price: number;
   dropWeight: number;
   icon: string;
@@ -402,7 +404,7 @@ export interface Ruleset {
 
   terminology: { xp: string; level: string; actionPoints: string; party: string; town: string; dungeon: string; wilderness: string; quest: string; currency: string };
 
-  ui: { material: 'parchment' | 'wood' | 'stone' | 'metal' | 'glass' | 'organic' | 'paper' | 'neon'; ornament: 'none' | 'filigree' | 'runes' | 'rivets' | 'circuit' | 'vines'; grading: { tint: string; saturation: number; contrast: number; vignette: number; grain: number } };
+  ui: { material: 'parchment' | 'wood' | 'stone' | 'metal' | 'glass' | 'organic' | 'paper' | 'neon'; ornament: 'none' | 'filigree' | 'runes' | 'rivets' | 'circuit' | 'vines'; typeface?: 'engraved' | 'classic' | 'modern' | 'condensed' | 'storybook' | 'gothic' | 'technical'; grading: { tint: string; saturation: number; contrast: number; vignette: number; grain: number } };
 
   balance?: BalanceReport;
 }

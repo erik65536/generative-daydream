@@ -117,6 +117,7 @@ export class CharActor extends Actor {
     return {
       ...this.baseView(),
       kind: 'character',
+      presentation: this.ch.presentation,
       name: this.ch.name,
       title: npc ? npc.title : rx(this.r).cls.get(this.ch.classId)?.name,
       sprite: this.ch.sprite,
