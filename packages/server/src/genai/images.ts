@@ -143,6 +143,9 @@ export interface Review {
   problems: string[];
 }
 
+const FACING_QUESTION = 'Which side of the image is the figure facing or moving toward, as the viewer sees it?';
+const FACING_CHOICES = { left: 'toward the left edge of the image', right: 'toward the right edge of the image', front: 'straight at the viewer' };
+
 /** Score an image 0-10 with the configured checker: a decision model (fast, probabilistic) or a vision LLM. */
 export async function qualityCheck(png: Buffer, kind: AssetKind, description: string, reference?: Buffer): Promise<Review | null> {
   const g = genai();
@@ -440,9 +443,13 @@ export async function produceAssets(
       }
     }
     // Phase 2: score every candidate while the checker is resident (also when stopping: they are paid for).
-    for (const { rec, img } of fresh) {
+    for (const entry of fresh) {
+      const { rec } = entry;
+      let img = entry.img;
       const ref = rec.ref ? refs.get(rec.ref) : undefined;
       const review = await qualityCheck(img.png, rec.kind, rec.variant ? `${rec.prompt}, ${VARIANTS[rec.variant]?.change ?? rec.variant}` : rec.prompt, ref ? fs.readFileSync(path.join(outDir, fileFor(rec.ref!))) : undefined);
+      // The game draws characters facing left (mirrored to go right): a frame painted facing right is mirrored.
+      if (rec.kind === 'sprite' && (await facingOf(img.png)) === 'right') img = { ...img, png: await sharp(img.png).flop().png().toBuffer() };
       const notes = img.notes ?? [];
       const problems = [...img.problems, ...(review?.problems ?? []), ...notes];
       let score = review ? review.score : 7;
@@ -457,6 +464,35 @@ export async function produceAssets(
     pending = pending.filter((r) => !finished.has(r.key));
     // Stopping: approved images are saved; the rest are painted again next time.
     if (shouldStop?.()) return;
+  }
+}
+
+/**
+ * Which way a painted character faces. The game draws characters facing left (mirrored to go right). The
+ * checker sees the figure alone on plain grey, once as painted and once mirrored; only answers that flip with
+ * the mirror count (a checker leaning one way whatever it sees gives "front", and nothing is changed).
+ */
+export async function facingOf(png: Buffer): Promise<'left' | 'right' | 'front' | null> {
+  const g = genai();
+  if (g.isProcedural('image.check')) return null;
+  const plain = (b: Buffer) => sharp(b).resize(384, 384, { fit: 'contain', background: { r: 128, g: 128, b: 128, alpha: 1 } }).flatten({ background: '#808080' }).png().toBuffer();
+  const ask = async (b: Buffer): Promise<string | null> => {
+    const view = await plain(b);
+    if (g.isDecision('image.check')) {
+      const a = await g.decide('image.check', { state: 'A game character on a plain grey background.', images: [view], questions: { facing: { type: 'choice', instructions: FACING_QUESTION, criteria: FACING_CHOICES } } });
+      return a.facing?.type === 'choice' ? (a.facing as { choice: string }).choice : null;
+    }
+    const r = await g.structured('image.check', { system: 'Judge only what you see.', prompt: `${FACING_QUESTION} Answer left, right or front.`, schema: z.object({ facing: z.enum(['left', 'right', 'front']) }), name: 'facing', images: [view], maxTokens: 60 });
+    return r.facing;
+  };
+  try {
+    const asPainted = await ask(png);
+    const mirrored = await ask(await sharp(png).flop().png().toBuffer());
+    if (asPainted === 'left' && mirrored === 'right') return 'left';
+    if (asPainted === 'right' && mirrored === 'left') return 'right';
+    return 'front';
+  } catch {
+    return null;
   }
 }
 

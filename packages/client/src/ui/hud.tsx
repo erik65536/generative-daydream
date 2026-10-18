@@ -1,3 +1,4 @@
+import { readable } from './theme';
 import { useEffect, useRef, useState } from 'react';
 import { GROUND, OBJ, rx, skillAp, skillRank, xpForLevel, type EntityView } from '@gd/shared';
 import { client, tryClient, useGame } from '../net/game';
@@ -91,14 +92,14 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
       cv.height = S * 2;
       const ctx = cv.getContext('2d')!;
       ctx.setTransform(2, 0, 0, 2, 0, 0);
-      ctx.fillStyle = '#0a0810';
-      ctx.fillRect(0, 0, S, S);
+      // Transparent: a light sketch of the place over the world, fading out at the edges.
+      ctx.clearRect(0, 0, S, S);
       const leader = c.leaderEntity();
       const lp = leader ? c.entityPos(leader) : { x: z.width / 2, y: z.height / 2 };
       const scale = 3.2;
       const cx = S / 2, cy = S / 2;
       const isoP = (x: number, y: number) => ({ x: cx + (x - y - (lp.x - lp.y)) * scale, y: cy + (x + y - (lp.x + lp.y)) * scale * 0.5 });
-      const col: Record<number, string> = { [GROUND.floor]: ts.roles.floor.colors[0]!, [GROUND.floorAlt]: ts.roles.floorAlt.colors[0]!, [GROUND.path]: ts.roles.path.colors[0]!, [GROUND.water]: ts.roles.water.colors[0]!, [GROUND.wall]: ts.roles.wall.colors[0]! };
+      const col: Record<number, string> = { [GROUND.floor]: 'rgba(225,228,236,0.26)', [GROUND.floorAlt]: 'rgba(225,228,236,0.26)', [GROUND.path]: 'rgba(235,238,245,0.42)', [GROUND.water]: 'rgba(110,165,230,0.42)', [GROUND.wall]: 'rgba(250,250,255,0.82)' };
       const R = 34;
       for (let y = Math.max(0, Math.floor(lp.y) - R); y < Math.min(z.height, lp.y + R); y++)
         for (let x = Math.max(0, Math.floor(lp.x) - R); x < Math.min(z.width, lp.x + R); x++) {
@@ -107,8 +108,7 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
           if (!g) continue;
           const o = z.objectBytes[y * z.width + x]!;
           const p = isoP(x, y);
-          ctx.fillStyle = o === OBJ.tree ? ts.roles.tree.colors[0]! : col[g] ?? '#333';
-          ctx.globalAlpha = g === GROUND.wall ? 1 : 0.85;
+          ctx.fillStyle = o === OBJ.tree ? 'rgba(250,250,255,0.5)' : col[g] ?? 'rgba(255,255,255,0.2)';
           ctx.beginPath();
           ctx.moveTo(p.x, p.y - scale * 0.5);
           ctx.lineTo(p.x + scale, p.y);
@@ -136,6 +136,20 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
         ctx.arc(p.x, p.y, e.ownerUserId === c.state.userId ? 3 : 2.2, 0, Math.PI * 2);
         ctx.fill();
       }
+      // Where you are: a ring at the centre.
+      ctx.strokeStyle = 'rgba(255,255,255,0.9)';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.arc(cx, cy, 5.5, 0, Math.PI * 2);
+      ctx.stroke();
+      // Soft circular edge.
+      const fade = ctx.createRadialGradient(cx, cy, S * 0.3, cx, cy, S * 0.5);
+      fade.addColorStop(0, 'rgba(0,0,0,1)');
+      fade.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.globalCompositeOperation = 'destination-in';
+      ctx.fillStyle = fade;
+      ctx.fillRect(0, 0, S, S);
+      ctx.globalCompositeOperation = 'source-over';
     };
     draw();
     const t = setInterval(draw, 400);
@@ -320,7 +334,7 @@ export function CombatLog() {
   return (
     <div className="log">
       {items.map((l, i) => (
-        <div key={i} style={{ color: l.color }}>{l.text}</div>
+        <div key={i} style={{ color: readable(l.color) }}>{l.text}</div>
       ))}
     </div>
   );

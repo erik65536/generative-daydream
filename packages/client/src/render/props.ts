@@ -914,20 +914,23 @@ export function featureSprite(kind: string, ts: TilesetDef, state: { opened?: bo
   return s;
 }
 
-export function clearPropCache() {
-  cache.clear();
-}
-
 // ---------------------------------------------------------------------------------------- generated art
 
 const imageCache = new Map<string, Sprite>();
+
+/** Forget every drawn prop (a new game may be another daydream, whose tilesets reuse the same ids). */
+export function clearPropCache() {
+  cache.clear();
+  imageCache.clear();
+}
 
 /**
  * A generated image as a map sprite: scaled to fit a height and width, anchored at its base, with a soft
  * contact shadow baked under it (generated art has no ground). Mirroring gives repeated props variety.
  */
 export function imageSprite(img: HTMLImageElement, key: string, maxH: number, maxW: number, mirror = false): Sprite {
-  const k = `${key}:${maxH}:${maxW}:${mirror}`;
+  // Keyed by the image's own URL: asset names repeat in every daydream, URLs do not.
+  const k = `${img.src || key}:${maxH}:${maxW}:${mirror}`;
   const hit = imageCache.get(k);
   if (hit) return hit;
   const sc = Math.min(maxH / img.naturalHeight, maxW / img.naturalWidth);

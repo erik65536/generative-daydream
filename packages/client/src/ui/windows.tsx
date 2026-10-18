@@ -1,3 +1,4 @@
+import { readable } from './theme';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   DIFFICULTIES, bagUpgradeCost, branchSpent, canAllocate, codexSections, enchantCost, inventoryCapacity, inventoryUsed, itemPrice, knownSkills, modifierLabel, nodeLines,
@@ -457,10 +458,10 @@ export function CharacterWindow({ onClose }: { onClose: () => void }) {
           <div className="label" style={{ marginTop: 12 }}>Defences</div>
           <div className="kv">
             {r.damageTypes.map((d) => (
-              <span key={d.id} style={{ display: 'contents' }}><span style={{ color: d.color }}>{d.mitigationName}</span><span className="v">{pctOf(s.mitigation[d.id] ?? 0)} less {d.name.toLowerCase()}</span></span>
+              <span key={d.id} style={{ display: 'contents' }}><span style={{ color: readable(d.color) }}>{d.mitigationName}</span><span className="v">{pctOf(s.mitigation[d.id] ?? 0)} less {d.name.toLowerCase()}</span></span>
             ))}
             {r.systems.subtypes && r.subtypes.filter((x) => Math.abs(s.resist[x.id] ?? 0) >= 0.005).map((x) => (
-              <span key={x.id} style={{ display: 'contents' }}><span style={{ color: x.color }}>{x.name}</span><span className="v">{(s.resist[x.id] ?? 0) > 0 ? '' : '+'}{pctOf(-(s.resist[x.id] ?? 0)).replace('-', '−')} damage</span></span>
+              <span key={x.id} style={{ display: 'contents' }}><span style={{ color: readable(x.color) }}>{x.name}</span><span className="v">{(s.resist[x.id] ?? 0) > 0 ? '' : '+'}{pctOf(-(s.resist[x.id] ?? 0)).replace('-', '−')} damage</span></span>
             ))}
           </div>
           {bonuses.length > 0 && (

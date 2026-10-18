@@ -520,7 +520,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
    brings its own palette, lettering and grading; this keeps every one of them grounded and minimal.
    ===================================================================================================== */
 :root {
-  --radius: 3px;
+  --radius: 8px;
   --shadow: 0 10px 30px rgba(0, 0, 0, 0.6);
   --hair: rgba(255, 255, 255, 0.085);
   --hair-strong: rgba(255, 255, 255, 0.18);
@@ -547,14 +547,14 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 
 /* Controls */
 .btn,
-:root[data-material] .btn { border-radius: 2px; box-shadow: none; text-shadow: none; }
+:root[data-material] .btn { border-radius: 6px; box-shadow: none; text-shadow: none; }
 .btn:hover { box-shadow: none; border-color: var(--hair-strong); background-color: rgba(255, 255, 255, 0.05); }
 .btn.primary { background: var(--btn-primary-b, #3a3226); border-color: var(--btn-primary-edge, #8a7550); color: var(--text); font-weight: 600; letter-spacing: 0.03em; text-shadow: none; }
 .btn.primary:hover { filter: brightness(1.15); }
-.input, textarea.input, select.input { border-radius: 2px; }
+.input, textarea.input, select.input { border-radius: 6px; }
 .input:focus { box-shadow: none; border-color: var(--hair-strong); }
-.badge { border-radius: 2px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; padding: 2px 6px; }
-.choice { border-radius: 2px; }
+.badge { border-radius: 6px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.07em; padding: 2px 6px; }
+.choice { border-radius: 6px; }
 .choice.on { box-shadow: none; background: rgba(255, 255, 255, 0.045); }
 .tab.on { border-bottom-width: 1px; }
 .tab .dot { border-radius: 0; box-shadow: none; }
@@ -562,23 +562,23 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .label, .field label { letter-spacing: 0.12em; }
 
 /* HUD */
-.pcard { border-radius: 2px; border-color: var(--hair); background-image: var(--grain); }
+.pcard { border-radius: 6px; border-color: var(--hair); background-image: var(--grain); }
 .pcard.sel { border-color: var(--line-strong); box-shadow: var(--shadow); }
 .pcard.active { box-shadow: inset 2px 0 0 var(--gold), var(--shadow); }
-.portrait, .portrait-lg { border-radius: 2px; background: #0e0d11; border-color: var(--hair); }
+.portrait, .portrait-lg { border-radius: 6px; background: #0e0d11; border-color: var(--hair); }
 .bar, .bar > div { border-radius: 0; }
 .bar { height: 5px; background: rgba(0, 0, 0, 0.7); }
-.points { border-radius: 2px; box-shadow: none; font-size: 9px; padding: 0 4px; right: -3px; top: -3px; }
+.points { border-radius: 6px; box-shadow: none; font-size: 9px; padding: 0 4px; right: -3px; top: -3px; }
 .topright { gap: 6px; }
 .map-head { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
 .zone-name { font-family: var(--sans); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.16em; color: var(--text); text-shadow: 0 1px 3px #000; }
 .clock { font-size: 11px; letter-spacing: 0.04em; }
-.minimap { width: 176px; height: 176px; border-radius: 2px; border: 1px solid var(--hair-strong); box-shadow: var(--shadow); }
-.slots { border-radius: 2px; padding: 5px; gap: 4px; border-color: var(--hair); background-image: var(--grain); }
-.slot { border-radius: 2px; background: #121116; border-color: var(--hair); }
+.minimap { width: 176px; height: 176px; border-radius: 6px; border: 1px solid var(--hair-strong); box-shadow: var(--shadow); }
+.slots { border-radius: 6px; padding: 5px; gap: 4px; border-color: var(--hair); background-image: var(--grain); }
+.slot { border-radius: 6px; background: #121116; border-color: var(--hair); }
 .slot.on { box-shadow: none; border-color: var(--gold); }
 .slot .cost { box-shadow: none; }
-.systembar { position: absolute; right: 14px; bottom: 14px; display: flex; gap: 3px; padding: 5px; background: var(--panel); background-image: var(--grain); border: 1px solid var(--hair); border-radius: 2px; box-shadow: var(--shadow); }
+.systembar { position: absolute; right: 14px; bottom: 14px; display: flex; gap: 3px; padding: 5px; background: var(--panel); background-image: var(--grain); border: 1px solid var(--hair); border-radius: 6px; box-shadow: var(--shadow); }
 .systembar .btn { padding: 0; width: 34px; height: 34px; position: relative; border-color: transparent; background: transparent; }
 .systembar .btn:hover { border-color: var(--hair-strong); }
 .systembar .btn .k { position: absolute; bottom: 0; right: 2px; font-size: 8.5px; color: var(--dim); }
@@ -588,7 +588,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 
 /* Party frames */
 .pcard { padding: 6px 9px 6px 6px; width: 236px; }
-.pcard .portrait { width: 48px; height: 48px; border-radius: 2px; border: 1px solid var(--hair-strong); }
+.pcard .portrait { width: 48px; height: 48px; border-radius: 6px; border: 1px solid var(--hair-strong); }
 .pcard.sel .portrait { border-color: var(--gold); }
 .pcard .name { font-family: var(--sans); font-weight: 600; font-size: 12.5px; letter-spacing: 0.02em; }
 .pcard .lvl { font-family: var(--sans); font-size: 10px; font-weight: 600; color: var(--muted); }
@@ -596,39 +596,39 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 
 /* Action bar: flat slots, radial cooldowns, square action-point pips */
 .slot .key { top: 2px; left: 4px; font-size: 9px; color: rgba(255, 255, 255, 0.45); z-index: 2; }
-.slot .ap { bottom: 2px; right: 3px; min-width: 13px; height: 13px; border-radius: 1px; background: rgba(0, 0, 0, 0.75); display: grid; place-items: center; font-size: 9px; z-index: 2; }
+.slot .ap { bottom: 2px; right: 3px; min-width: 13px; height: 13px; border-radius: 3px; background: rgba(0, 0, 0, 0.75); display: grid; place-items: center; font-size: 9px; z-index: 2; }
 .slot.cd { filter: none; }
 .slot.cd::before { content: ''; position: absolute; inset: 0; z-index: 1; background: conic-gradient(rgba(0, 0, 0, 0.72) calc(var(--cdf, 1) * 360deg), rgba(0, 0, 0, 0.15) 0); }
 .slot .cdn { z-index: 2; }
 .slot.na:not(.cd) { filter: grayscale(0.7) brightness(0.6); }
-.ap-row { padding: 6px 12px; border-radius: 2px; background: var(--panel); border: 1px solid var(--hair); }
-.pip { width: 11px; height: 11px; border-radius: 1px; transform: none; border: 1px solid var(--hair-strong); background: transparent; box-shadow: none; }
+.ap-row { padding: 6px 12px; border-radius: 6px; background: var(--panel); border: 1px solid var(--hair); }
+.pip { width: 11px; height: 11px; border-radius: 3px; transform: none; border: 1px solid var(--hair-strong); background: transparent; box-shadow: none; }
 .pip.on { background: var(--gold); border-color: var(--gold); box-shadow: none; }
 .pip.spend { background: var(--danger); border-color: var(--danger); box-shadow: none; }
 
 /* Turn order, windows, tooltips, toasts */
-.turnbar { border-radius: 2px; }
-.turnbar .tp { border-radius: 2px; }
+.turnbar { border-radius: 6px; }
+.turnbar .tp { border-radius: 6px; }
 .turnbar .tp.active { box-shadow: inset 0 -2px 0 var(--gold); }
-.tooltip { padding: 10px 12px; border-radius: 2px; background: rgba(12, 11, 15, 0.97); border-color: var(--hair-strong); max-width: 320px; }
+.tooltip { padding: 10px 12px; border-radius: 6px; background: rgba(12, 11, 15, 0.97); border-color: var(--hair-strong); max-width: 320px; }
 .tooltip .tname { font-family: var(--sans); font-weight: 600; font-size: 13px; letter-spacing: 0.02em; }
-.toast { border-radius: 2px; border-left-width: 2px; padding: 8px 16px; background: rgba(14, 12, 18, 0.95); }
+.toast { border-radius: 6px; border-left-width: 2px; padding: 8px 16px; background: rgba(14, 12, 18, 0.95); }
 .toast.quest { border-left-color: var(--quest); }
 .toast.good { border-left-color: var(--good); }
 .toast.bad { border-left-color: var(--danger); }
 .toast.loot { border-left-color: var(--info); }
-.dialog, .modal { border-radius: 2px; }
+.dialog, .modal { border-radius: 6px; }
 
 /* Studio and pages */
-.studio .seg > button { border-radius: 2px; }
-.studio-item, .studio-ai, .zone-map, .art-card, .art-thumb, .element-row .art-thumb { border-radius: 2px; }
+.studio .seg > button { border-radius: 6px; }
+.studio-item, .studio-ai, .zone-map, .art-card, .art-thumb, .element-row .art-thumb { border-radius: 6px; }
 .studio-ai { border-style: solid; border-color: var(--hair); background: rgba(255, 255, 255, 0.02); }
-.seg { border-radius: 2px; }
+.seg { border-radius: 6px; }
 
 /* Square edges everywhere (dots and spinners stay round). */
 .chip, .card, .progress, .progress > div, .item, .quest, .skill-card, .skill-card canvas, .seg, .seg .btn, .swatch-btn, .offer-row, .recipe,
 .loot-row, .worldmap, .dialog .dlg-portrait, .replies li, .msg, .cursor-note, .icon-btn, .ap-row, .turnbar, .gen-log, .phases li, .hero-stage,
-.branch-chip, .codex-entry, .lobby-card, .choice-grid .choice { border-radius: 2px; }
+.branch-chip, .codex-entry, .lobby-card, .choice-grid .choice { border-radius: 6px; }
 .card { border-color: var(--hair); }
 .progress { height: 5px; }
 .progress > div { box-shadow: none; }
@@ -639,3 +639,36 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .daydream-art .dd-shade { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 85%, transparent 20%, rgba(8, 7, 10, 0.85) 75%), linear-gradient(180deg, rgba(8, 7, 10, 0.7), transparent 60%), var(--grain); }
 .daydream-art .dd-figures { position: absolute; left: 0; right: 0; bottom: 4%; display: flex; justify-content: center; align-items: flex-end; gap: 2%; }
 .daydream-art .dd-figures img { object-fit: contain; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.7)); }
+
+
+/* =====================================================================================================
+   Modern, minimal HUD: no panels behind the party, the action bar or the menus. Everything floating over
+   the world gets a soft shadow (text) or a translucent dark backing (icons), so it reads on any background.
+   ===================================================================================================== */
+.hud { --float-text: 0 1px 2px rgba(0, 0, 0, 0.95), 0 0 10px rgba(0, 0, 0, 0.75); }
+.badge { border-radius: 4px; }
+.pcard, .pcard.sel { background: none; background-image: none; border: 0; box-shadow: none; padding: 4px 6px 4px 4px; gap: 9px; }
+.pcard.active { box-shadow: none; }
+.pcard.active .portrait, .pcard.sel .portrait { border-color: var(--gold); }
+.pcard .portrait { border-radius: 50%; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.7); background: rgba(10, 9, 13, 0.85); }
+.pcard .name, .pcard .lvl, .bar-num { text-shadow: var(--float-text); }
+.pcard .lvl { color: var(--text); }
+.bar-wrap { position: relative; margin-top: 3px; }
+.bar-num { font-size: 10px; line-height: 12px; font-weight: 600; color: rgba(255, 255, 255, 0.86); font-variant-numeric: tabular-nums; text-align: right; }
+.bar { height: 5px; border-radius: 3px; margin-top: 1px; background: rgba(0, 0, 0, 0.62); box-shadow: 0 1px 4px rgba(0, 0, 0, 0.6); }
+.bar > div { border-radius: 3px; }
+.bar.thin { height: 3px; }
+.slots { background: none; background-image: none; border: 0; box-shadow: none; padding: 0; gap: 5px; }
+.slot { background: rgba(12, 11, 15, 0.72); border-color: rgba(255, 255, 255, 0.1); border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55); backdrop-filter: blur(3px); }
+.slot .key { text-shadow: var(--float-text); }
+.systembar { background: none; background-image: none; border: 0; box-shadow: none; padding: 0; gap: 4px; }
+.systembar .btn { background: rgba(12, 11, 15, 0.62); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5); backdrop-filter: blur(3px); }
+.systembar .btn:hover { background: rgba(28, 26, 34, 0.85); border-color: var(--hair-strong); }
+.systembar .btn .k { text-shadow: var(--float-text); }
+.zone-name, .clock { text-shadow: var(--float-text); }
+.minimap { border-radius: 10px; border-color: rgba(255, 255, 255, 0.14); }
+.ap-row { background: rgba(12, 11, 15, 0.62); border: 0; border-radius: 8px; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5); }
+.toast { border-radius: 8px; }
+
+/* Minimap: no box, a light sketch over the world with a dark outline so it reads on bright floors. */
+.minimap { background: none; border: 0; border-radius: 50%; box-shadow: none; filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.95)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.7)); }

@@ -5,7 +5,7 @@ import {
 } from '@gd/shared';
 import type { GameClient } from '../net/game';
 import { TEX, hexToRgb, imageTexture, mix, proceduralTexture, rgb, shade, strHash } from './textures';
-import { ART_SIZE, blockSprite, featureSprite, furnitureSprite, imageSprite, lightSprite, pillarSprite, plantSprite, rockSprite, rubbleSprite, treeSprite, type Sprite } from './props';
+import { ART_SIZE, blockSprite, clearPropCache, featureSprite, furnitureSprite, imageSprite, lightSprite, pillarSprite, plantSprite, rockSprite, rubbleSprite, treeSprite, type Sprite } from './props';
 import { drawFigure, drawImageSprite, drawShadow, loadImage, type PoseFrames } from './sprites';
 import { FxSystem } from './fx';
 import { HIGHLIGHT, drawOutline } from './highlight';
@@ -109,6 +109,7 @@ export class Renderer {
   onClick?: (info: HoverInfo, button: number, ev: MouseEvent) => void;
 
   constructor(private canvas: HTMLCanvasElement, private client: GameClient) {
+    clearPropCache();
     this.ctx = canvas.getContext('2d')!;
     this.unsubFx = client.onFx((ev) => this.onFx(ev));
     this.resize();
@@ -866,8 +867,10 @@ export class Renderer {
           }
           const left = g(x, y + 1) !== GROUND.wall;
           const right = g(x + 1, y) !== GROUND.wall;
-          // Interiors: the walls facing the camera are cut down so the room stays visible.
-          const low = z.kind === 'interior' && (y === z.height - 1 || x === z.width - 1);
+          // Interiors: the walls facing the camera stand at full height, and are cut down where the party is
+          // close to them so the people inside stay visible.
+          const front = z.kind === 'interior' && (y === z.height - 1 || x === z.width - 1);
+          const low = front && occluders.some((o) => Math.abs(o.x - x) + Math.abs(o.y - y) <= 5);
           const spr = this.wallSprite(ts, left, right, roof, v, low ? 14 : undefined);
           const p = iso(x, y);
           list.push({

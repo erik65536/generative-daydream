@@ -506,7 +506,8 @@ export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageEl
   // A painted strike lunges forward a little.
   if (framed && striking) ctx.translate(Math.sin(opts.attack! * Math.PI) * 6 * opts.dir, 0);
   ctx.rotate(lean * opts.dir);
-  ctx.scale(opts.dir, 1);
+  // Painted characters face left (as their art direction asks): mirrored to go right.
+  ctx.scale(-opts.dir, 1);
   // Widen slightly as it squashes, so the volume reads as constant.
   const wq = w * (1 + (1 - squash) * 0.6);
   ctx.drawImage(img, -wq / 2, -h * squash - bob, wq, h * squash);

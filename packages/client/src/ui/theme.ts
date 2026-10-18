@@ -125,4 +125,10 @@ export function applyWorldTheme(world: ThemeSource | null | undefined): () => vo
   return clear;
 }
 
+/** A daydream's colour made legible as text on dark panels (same hue, lightened). */
+export function readable(color: string | undefined, fallback = 'var(--text)'): string {
+  const c = color ? hexToHsl(color) : null;
+  return c ? hsl({ h: c.h, s: Math.min(0.8, c.s), l: Math.max(0.68, Math.min(0.85, c.l)) }) : color ?? fallback;
+}
+
 const clamp = (x: number, lo: number, hi: number) => (Number.isFinite(x) ? Math.max(lo, Math.min(hi, x)) : lo);

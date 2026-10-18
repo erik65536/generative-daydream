@@ -86,11 +86,18 @@ export function Portrait({ sprite, colors, shape = 'humanoid', archetype, weapon
 export function Bar({ value, max, color, label, thin, extra, extraColor }: { value: number; max: number; color: string; label?: string; thin?: boolean; extra?: number; extraColor?: string }) {
   const pct = max > 0 ? Math.max(0, Math.min(100, (value / max) * 100)) : 0;
   const ex = extra && max > 0 ? Math.max(0, Math.min(100 - pct, (extra / max) * 100)) : 0;
-  return (
+  const bar = (
     <div className={`bar${thin ? ' thin' : ''}`}>
       <div style={{ width: `${pct}%`, background: color }} />
       {ex > 0 && <div style={{ position: 'absolute', left: `${pct}%`, top: 0, bottom: 0, width: `${ex}%`, background: extraColor ?? 'rgba(160,216,255,.8)' }} />}
-      {label && !thin && <div className="lbl">{label}</div>}
+    </div>
+  );
+  // The numbers sit above the bar, never squeezed inside it.
+  if (!label || thin) return bar;
+  return (
+    <div className="bar-wrap">
+      <div className="bar-num">{label}</div>
+      {bar}
     </div>
   );
 }
