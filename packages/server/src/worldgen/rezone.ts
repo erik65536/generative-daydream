@@ -4,7 +4,7 @@
  * without renumbering anything that belongs to other places. Works on any saved world (no Draft needed).
  */
 import {
-  GROUND, Rng, SIZE_PROFILES, base64ToBytes, findPath, slugify,
+  GROUND, Rng, SIZE_PROFILES, base64ToBytes, findPath, isWalkableGround, slugify,
   type FeatureDef, type NpcDef, type NpcRole, type QuestDef, type QuestObjective, type SpawnDef, type Vec2, type WorldDefinition, type ZoneDef, type ZoneLayoutPlan,
 } from '@gd/shared';
 import { genai } from '../genai/service';
@@ -12,6 +12,8 @@ import { questRewards } from '../rules/bind';
 import { fuzzy } from './assemble';
 import { fallbackAreaContent, fallbackNpc, fallbackTownContent, type NpcPlan } from './fallbacks';
 import { BANKS, detectGenre, fallbackTileset, type Genre } from './genres';
+import { realiseBlueprint } from './architect';
+import { designBlueprint, type PlaceDesign } from './blueprint';
 import { generateDungeon, generateInterior, generateTown, generateWilderness, resolvePlan, type LayoutResult, type MapBuilder } from './layout';
 import * as P from './prompts';
 import { AreaContentSchema, LayoutPlanSchema, TownContentSchema, type AreaContentOut, type NpcOut, type TownContentOut } from './schemas';
@@ -41,9 +43,27 @@ function outerZone(w: WorldDefinition, zoneId: string): ZoneDef & { kind: OuterK
 
 // ------------------------------------------------------------------------------------ layout
 
+/** Map size of a place (by kind and world size). */
+export function zoneSize(w: WorldDefinition, kind: OuterKind): number {
+  return { town: 50, wilderness: 62, dungeon: 54 }[kind] + sizeBoost(w);
+}
+
+/** A town's enterable buildings, by name, in the order of its doors. */
+export function buildingNames(w: WorldDefinition, z: ZoneDef): string[] {
+  return z.features.filter((f) => f.kind === 'door').map((f) => w.zones.find((x) => x.id === f.targetZoneId)?.name ?? f.name ?? f.id);
+}
+
 function generate(w: WorldDefinition, z: ZoneDef & { kind: OuterKind }, plan: ZoneLayoutPlan, rng: Rng) {
   const edges = z.features.filter((f) => f.kind === 'exit' && f.facing).map((f) => f.facing!);
   const boost = sizeBoost(w);
+  // Places with a floor plan are built from it.
+  const ts = w.tilesets[z.tilesetId];
+  if (z.blueprint && ts?.props?.length) {
+    return realiseBlueprint(z.blueprint, rng, {
+      kind: z.kind, size: zoneSize(w, z.kind), edges, internalExits: z.features.filter((f) => f.kind === 'exit' && !f.facing).length,
+      buildings: z.kind === 'town' ? buildingNames(w, z) : [], enclosed: z.kind === 'dungeon' || plan.enclosed, props: ts.props, surfaces: ts.surfaces ?? [],
+    });
+  }
   if (z.kind === 'town') return generateTown(rng, { size: 50 + boost, buildingCount: z.features.filter((f) => f.kind === 'door').length, edges, plan });
   if (z.kind === 'wilderness') {
     const internalExits = z.features.filter((f) => f.kind === 'exit' && !f.facing).length;
@@ -209,6 +229,31 @@ export function rebuildZoneMap(w: WorldDefinition, zoneId: string, opts: { plan?
   throw new Error(z.kind === 'town' ? `This layout could not fit ${z.features.filter((f) => f.kind === 'door').length} buildings with every way out reachable; try another structure or fewer blockers.` : 'This layout could not connect every way out; try another structure or fewer blockers.');
 }
 
+/**
+ * Give a place a floor plan: its props and extra surfaces go into its tileset (keeping the art of props that
+ * did not change), and its map is rebuilt from the plan.
+ */
+export function applyDesign(w: WorldDefinition, zoneId: string, d: PlaceDesign, seed?: string): RebuildResult {
+  const z = outerZone(w, zoneId);
+  const ts = w.tilesets[z.tilesetId];
+  if (!ts) throw new Error('This place has no look yet.');
+  const same = <T extends { id: string; prompt: string; asset?: string }>(old: T[] | undefined, next: T[]) => next.map((n) => {
+    const o = old?.find((x) => x.id === n.id && x.prompt === n.prompt);
+    return o?.asset ? { ...n, asset: o.asset } : n;
+  });
+  ts.props = same(ts.props, d.props);
+  ts.surfaces = same(ts.surfaces, d.surfaces);
+  z.blueprint = d.blueprint;
+  return rebuildZoneMap(w, zoneId, { seed });
+}
+
+/** Ask the level designer for a new floor plan for a place and build it. */
+export async function redesignZone(w: WorldDefinition, zoneId: string, guidance?: string): Promise<RebuildResult> {
+  const z = outerZone(w, zoneId);
+  const d = await designBlueprint(w, z, { size: zoneSize(w, z.kind), buildings: z.kind === 'town' ? buildingNames(w, z) : [], guidance });
+  return applyDesign(w, zoneId, d);
+}
+
 /** Let the design model choose the place's level design from the owner's direction. */
 export async function designZonePlan(w: WorldDefinition, zoneId: string, guidance: string): Promise<PlanDraft | undefined> {
   const z = outerZone(w, zoneId);
@@ -275,7 +320,7 @@ export async function writeZoneContent(w: WorldDefinition, zoneId: string, guida
 /** An open, reachable tile on a saved map, away from its entry (for something new placed in a place that keeps its map). */
 function freeTileIn(z: ZoneDef, rng: Rng): Vec2 | null {
   const g = base64ToBytes(z.ground), o = base64ToBytes(z.objects);
-  const walk = (x: number, y: number) => x > 0 && y > 0 && x < z.width - 1 && y < z.height - 1 && [GROUND.floor, GROUND.floorAlt, GROUND.path].includes(g[y * z.width + x] as 1);
+  const walk = (x: number, y: number) => x > 0 && y > 0 && x < z.width - 1 && y < z.height - 1 && isWalkableGround(g[y * z.width + x]!);
   const busy = (x: number, y: number) => z.features.some((f) => f.x === x && f.y === y) || z.spawns.some((s) => s.x === x && s.y === y);
   for (let t = 0; t < 400; t++) {
     const x = rng.int(1, z.width - 2), y = rng.int(1, z.height - 2);

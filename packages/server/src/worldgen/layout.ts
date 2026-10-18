@@ -1,7 +1,7 @@
 /** Procedural tile-map generators for towns, wilderness, dungeons and building interiors. */
-import { GROUND, OBJ, Rng, bytesToBase64, findPath, type FeatureDef, type Vec2, type ZoneLayoutPlan } from '@gd/shared';
+import { GROUND, OBJ, Rng, bytesToBase64, findPath, isWalkableGround, objBlocks, type FeatureDef, type Vec2, type ZoneLayoutPlan } from '@gd/shared';
 
-const BLOCKING_OBJ = new Set<number>([OBJ.tree, OBJ.rock, OBJ.furniture, OBJ.pillar, OBJ.light]);
+const BLOCKING_OBJ = { has: objBlocks };
 
 /** A neutral default plan (open, outdoor) for callers that do not have one. */
 export const DEFAULT_PLAN: ZoneLayoutPlan = { structure: 'open', enclosed: false, blockers: { amount: 'some', arrangement: 'clusters' }, hazard: 'pools', structures: 'roofed', clutter: 'some' };
@@ -87,8 +87,7 @@ export class MapBuilder {
     if (this.in(x, y)) this.objects[this.i(x, y)] = v;
   }
   walkableGround(x: number, y: number) {
-    const g = this.g(x, y);
-    return g === GROUND.floor || g === GROUND.floorAlt || g === GROUND.path;
+    return isWalkableGround(this.g(x, y));
   }
   passable(x: number, y: number) {
     if (!this.walkableGround(x, y)) return false;

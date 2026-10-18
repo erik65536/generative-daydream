@@ -14,6 +14,8 @@ import * as S from './schemas';
 import * as P from './prompts';
 import * as F from './fallbacks';
 import { assembleWorld, type Draft } from './assemble';
+import { designBlueprint } from './blueprint';
+import { applyDesign, buildingNames, zoneSize } from './rezone';
 import { generateArt, linkAssets } from './art';
 import { compileRuleset } from '../rules/compile';
 import { designRules, reviewRules, type StepRunner } from '../rules/generate';
@@ -165,6 +167,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
     { id: 'story', label: 'Main story', detail: `${sk.arcs} story arcs, key characters and bosses` },
     { id: 'zones', label: 'Towns, wilds and dungeons', detail: 'People, quests and lore for every place', total: sk.slots.length, done: 0 },
     { id: 'assemble', label: 'Building the maps', detail: 'Layouts, buildings, monsters and treasure' },
+    { id: 'plans', label: 'Floor plans', detail: 'Every place planned room by room and furnished', total: sk.slots.length, done: 0 },
     { id: 'balance', label: 'Balancing', detail: 'Simulated fights tune every number' },
     ...(painting ? artPhases() : []),
   ]);
@@ -314,6 +317,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
     job.phase('assemble');
     const draft: Draft = { id: job.worldId, input, seed, genre, skeleton: sk, concept, atlas, story, ruleset, rulesIntent, families, towns, areas, log: [] };
     world = assembleWorld(draft, job.owner);
+    await floorPlans(job, world, cp);
     job.push(`Assembled ${world.zones.length} zones (${world.zones.filter((z) => z.kind === 'interior').length} interiors), ${world.npcs.length} NPCs, ${world.quests.length} quests (${world.quests.filter((q) => q.main).length} main), ${world.bosses.length} bosses, ${world.zones.reduce((s, z) => s + z.spawns.length, 0)} monsters.`);
 
     // ---------------------------------------------------------------- balance
@@ -332,6 +336,59 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
   job.finishPhases();
   job.push('The world is ready.', 'step');
 }
+
+/**
+ * Each outer place gets a floor plan from the level designer (in parallel), and its map is rebuilt from it.
+ * Plans are checkpointed, so a resumed build makes the same maps.
+ */
+async function floorPlans(job: WorldGenJob, world: WorldDefinition, cp: Checkpoints) {
+  if (genai().isProcedural('world.design')) return;
+  job.phase('plans');
+  setStepText(job, 'Planning every place room by room', 0.79);
+  const outer = world.zones.filter((z) => z.kind !== 'interior');
+  let done = 0;
+  const tasks = outer.map((z) => async () => {
+    job.yieldPoint();
+    const design = await cp.get(`plan_${z.id}`, async () => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await designBlueprint(world, z, { size: zoneSize(world, z.kind as 'town'), buildings: z.kind === 'town' ? buildingNames(world, z) : [] });
+        } catch (e) {
+          if (job.cancelled) throw new Error('cancelled');
+          if (e instanceof BudgetExceeded) throw new StepFailed(`Floor plan for ${z.name}: ${(e as Error).message} Resume the build then.`);
+          if (attempt >= STEP_TRIES) throw new StepFailed(`Floor plan for ${z.name} failed ${STEP_TRIES} times (last: ${(e as Error).message.slice(0, 200)}). Resume the build once the model service is working.`);
+          job.push(`Floor plan for ${z.name}: try ${attempt} failed (${(e as Error).message.slice(0, 160)})`, 'warn');
+          await new Promise((r) => setTimeout(r, STEP_BACKOFF_MS[attempt - 1] ?? 120_000));
+        }
+      }
+    });
+    try {
+      applyDesign(world, z.id, design, `${world.seed}:plan`);
+      job.push(`${z.name}: ${design.blueprint.areas.map((a) => a.name).join(', ')}`, 'preview');
+    } catch (e) {
+      // The plan could not be built (it keeps its generic map); the build goes on.
+      z.blueprint = undefined;
+      job.push(`${z.name}: its floor plan could not be built (${(e as Error).message.slice(0, 160)}); keeping its first map`, 'warn');
+    }
+    job.count('plans', ++done);
+  });
+  const par = Math.max(1, genai().config.worldGenParallelism);
+  await Promise.all(Array.from({ length: par }, async () => {
+    for (;;) {
+      if (job.cancelled) return;
+      const t = tasks.shift();
+      if (!t) return;
+      await t();
+    }
+  }));
+  if (job.cancelled) throw new Error('cancelled');
+}
+
+const setStepText = (job: WorldGenJob, name: string, progress: number) => {
+  job.step = name;
+  job.progress = progress;
+  job.push(name, 'step');
+};
 
 /** Paint a world's art, saving as images arrive (and on the way out, when stopped or restarted). */
 export async function paint(job: WorldGenJob, world: WorldDefinition, level: 'essential' | 'full', scale: (frac: number) => number = (f) => f, only?: Set<string>) {

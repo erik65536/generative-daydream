@@ -1,11 +1,11 @@
 /** Isometric 2D renderer and mouse input for the game view. */
 import {
-  ALLY_PASS_COST, GROUND, OBJ, findPath, reachable, rx, skillRange, hasLineOfSight,
+  ALLY_PASS_COST, GROUND, OBJ, findPath, isWalkableGround, objBlocks, objOpaque, propIndex, SURFACE_BASE, PROP_COVER, PROP_COVER_TALL, reachable, rx, skillRange, hasLineOfSight,
   type EntityView, type FeatureDef, type FxEvent, type TilesetDef, type TileRole, type Vec2,
 } from '@gd/shared';
 import type { GameClient } from '../net/game';
 import { TEX, hexToRgb, imageTexture, mix, proceduralTexture, rgb, shade, strHash } from './textures';
-import { ART_SIZE, blockSprite, clearPropCache, featureSprite, furnitureSprite, imageSprite, lightSprite, pillarSprite, plantSprite, rockSprite, rubbleSprite, treeSprite, type Sprite } from './props';
+import { ART_SIZE, PROP_ART, blockSprite, propBoxSprite, clearPropCache, featureSprite, furnitureSprite, imageSprite, lightSprite, pillarSprite, plantSprite, rockSprite, rubbleSprite, treeSprite, type Sprite } from './props';
 import { drawFigure, drawImageSprite, drawShadow, loadImage, type PoseFrames } from './sprites';
 import { FxSystem } from './fx';
 import { HIGHLIGHT, drawOutline } from './highlight';
@@ -78,7 +78,6 @@ export interface HoverInfo {
   screenY: number;
 }
 
-const BLOCKING = new Set<number>([OBJ.tree, OBJ.rock, OBJ.furniture, OBJ.pillar, OBJ.light]);
 const SOLID_FEATURE = new Set(['chest', 'shrine', 'sign', 'lever', 'lore', 'bed', 'craft_station', 'waypoint']);
 
 export class Renderer {
@@ -216,8 +215,14 @@ export class Renderer {
     return this.passable(Math.round(x), Math.round(y), ignoreId, ignoreEntities);
   }
 
+  /** Developer option: zoom far out to see a whole place. */
+  devZoom = false;
+  private get minZoom() {
+    return this.devZoom ? 0.15 : 0.55;
+  }
+
   zoomBy(f: number) {
-    this.zoom = Math.max(0.55, Math.min(1.9, this.zoom * f));
+    this.zoom = Math.max(this.minZoom, Math.min(1.9, this.zoom * f));
   }
 
   private onMove = (e: MouseEvent) => {
@@ -238,7 +243,7 @@ export class Renderer {
 
   private onWheel = (e: WheelEvent) => {
     e.preventDefault();
-    this.zoom = Math.max(0.55, Math.min(1.9, this.zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
+    this.zoom = Math.max(this.minZoom, Math.min(1.9, this.zoom * (e.deltaY > 0 ? 0.9 : 1.1)));
   };
 
   private pick(sx: number, sy: number): HoverInfo {
@@ -275,18 +280,35 @@ export class Renderer {
 
   // ---------------------------------------------------------------------------- textures
 
-  private texture(ts: TilesetDef, role: TileRole | 'roof'): HTMLCanvasElement {
+  private texture(ts: TilesetDef, role: TileRole | 'roof' | `s:${string}`): HTMLCanvasElement {
     const key = `${ts.id}:${role}`;
     const cached = this.textures.get(key);
     if (cached) return cached;
     let tex: HTMLCanvasElement | null = null;
+    // A floor-plan surface: its painting, or a procedural ground in its colours.
+    if (role.startsWith('s:')) {
+      const sd = ts.surfaces?.find((s) => s.id === role.slice(2));
+      const url = this.client.assetUrl(sd?.asset);
+      const img = loadImage(url);
+      const proc = () => proceduralTexture({ ...ts, id: `${ts.id}:${role}`, roles: { ...ts.roles, floorAlt: { ...ts.roles.floorAlt, colors: sd?.colors ?? ts.roles.floorAlt.colors } } }, 'floorAlt');
+      if (!img && url) {
+        setTimeout(() => {
+          this.textures.delete(key);
+          this.chunks.clear();
+        }, 1500);
+        return proc();
+      }
+      tex = img ? imageTexture(img) : proc();
+      this.textures.set(key, tex);
+      return tex;
+    }
     {
-      const url = this.client.assetUrl(role === 'roof' ? ts.extras?.roof?.asset : ts.roles[role]?.asset);
+      const url = this.client.assetUrl(role === 'roof' ? ts.extras?.roof?.asset : ts.roles[role as TileRole]?.asset);
       const img = loadImage(url);
       if (img) tex = imageTexture(img);
       else if (url) {
         // Not loaded yet: use procedural for now and retry later.
-        const p = proceduralTexture(ts, role);
+        const p = proceduralTexture(ts, role as TileRole | 'roof');
         setTimeout(() => {
           this.textures.delete(key);
           this.chunks.clear();
@@ -295,7 +317,7 @@ export class Renderer {
         return p;
       }
     }
-    tex = tex ?? proceduralTexture(ts, role);
+    tex = tex ?? proceduralTexture(ts, role as TileRole | 'roof');
     this.textures.set(key, tex);
     return tex;
   }
@@ -366,7 +388,7 @@ export class Renderer {
     ctx.fill();
     // Layers with soft, organic edges: a blurred mask of jittered diamonds filled with the role texture.
     // Neighbors outside the chunk are included so edges match across chunk borders.
-    const softLayer = (code: number, role: TileRole, amp: number, blur: number, rim: number) => {
+    const softLayer = (code: number, role: TileRole | `s:${string}`, amp: number, blur: number, rim: number) => {
       const sel = tiles.filter((t) => t.g === code);
       if (!sel.length) return;
       const mask = document.createElement('canvas');
@@ -401,6 +423,8 @@ export class Renderer {
     };
     softLayer(GROUND.floorAlt, 'floorAlt', 0.6, 7, 0);
     softLayer(GROUND.path, 'path', 0.35, 4, 0.22);
+    // A floor plan's own surfaces (an office's carpet, a kitchen's tiles): crisp edges, like laid flooring.
+    (ts.surfaces ?? []).forEach((sd, k) => softLayer(SURFACE_BASE + k, `s:${sd.id}`, 0, 1.2, 0.18));
     // Water with a darker bank.
     ctx.save();
     ctx.beginPath();
@@ -519,7 +543,9 @@ export class Renderer {
     const doors = new Set<number>();
     for (const f of z.features) if (f.kind === 'door') doors.add(f.y * W + f.x);
     const solid = (i: number) => z.groundBytes[i] === GROUND.wall || doors.has(i);
-    if (z.kind === 'town' && !z.indoor && z.layout?.structures !== 'walled') {
+    const flat = !!z.indoor || z.layout?.structures === 'walled';
+    // Outdoor towns get every wall block as a building; indoors only blocks with a door are shops (the rest is walls).
+    if (z.kind === 'town') {
       for (let i = 0; i < W * H; i++) {
         if (z.groundBytes[i] !== GROUND.wall || map[i]! >= 0) continue;
         const idx = list.length;
@@ -544,8 +570,9 @@ export class Renderer {
           }
         }
         const w = x1 - x0 + 1, h = y1 - y0 + 1;
-        const roofed = x0 > 1 && y0 > 1 && x1 < W - 2 && y1 < H - 2 && n >= w * h - 2 && w >= 3 && h >= 3;
-        list.push({ x0, y0, x1, y1, alongX: w >= h, roofed });
+        const hasDoor = [...doors].some((d) => map[d] === idx);
+        const roofed = x0 > 1 && y0 > 1 && x1 < W - 2 && y1 < H - 2 && n >= w * h - 2 && w >= 3 && h >= 3 && (!flat || hasDoor);
+        list.push({ x0, y0, x1, y1, alongX: w >= h, roofed, flat });
       }
     }
     this.bld = { zoneId: z.id, map, list, doors };
@@ -553,6 +580,7 @@ export class Renderer {
   }
 
   private roofHeight(b: Building, cx: number, cy: number, H: number) {
+    if (b.flat) return H;
     const pitch = 24;
     if (b.alongX) {
       const half = (b.y1 - b.y0 + 1) / 2, mid = (b.y0 + b.y1) / 2;
@@ -597,6 +625,7 @@ export class Renderer {
       ctx.globalAlpha = alpha;
       ctx.fillStyle = `rgba(0,0,0,${dark})`;
       ctx.fill();
+      if (b.flat) return storefront(a0, b0, dark, windowSeed);
       // Timber beams at the base and the top of the wall.
       ctx.strokeStyle = 'rgba(40,26,16,0.55)';
       ctx.lineWidth = 2.5;
@@ -675,6 +704,69 @@ export class Renderer {
         ctx.stroke();
       }
     };
+    // A shop front: a coloured fascia along the top, glass below it (lit from inside), the door in the glass.
+    const fascia = hueFor(b);
+    const storefront = (a0: { x: number; y: number }, b0: { x: number; y: number }, dark: number, seed: number) => {
+      const band = (lo: number, hi: number, fill: string) => {
+        ctx.beginPath();
+        ctx.moveTo(a0.x, a0.y - lo);
+        ctx.lineTo(b0.x, b0.y - lo);
+        ctx.lineTo(b0.x, b0.y - hi);
+        ctx.lineTo(a0.x, a0.y - hi);
+        ctx.closePath();
+        ctx.fillStyle = fill;
+        ctx.fill();
+      };
+      band(H * 0.8, H, `rgba(${fascia.join(',')},${0.95 - dark * 0.5})`);
+      ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(a0.x, a0.y - H * 0.8);
+      ctx.lineTo(b0.x, b0.y - H * 0.8);
+      ctx.stroke();
+      if (isDoor) {
+        const d0 = lerp(a0, b0, 0.2), d1 = lerp(a0, b0, 0.8);
+        ctx.beginPath();
+        ctx.moveTo(d0.x, d0.y);
+        ctx.lineTo(d1.x, d1.y);
+        ctx.lineTo(d1.x, d1.y - H * 0.72);
+        ctx.lineTo(d0.x, d0.y - H * 0.72);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(255,236,190,0.82)';
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(30,30,36,0.9)';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        const m0 = lerp(d0, d1, 0.5);
+        ctx.beginPath();
+        ctx.moveTo(m0.x, m0.y);
+        ctx.lineTo(m0.x, m0.y - H * 0.72);
+        ctx.stroke();
+        return;
+      }
+      // Glass between a low sill and the fascia, in panes.
+      const g0 = lerp(a0, b0, 0.06), g1 = lerp(a0, b0, 0.94);
+      ctx.beginPath();
+      ctx.moveTo(g0.x, g0.y - H * 0.14);
+      ctx.lineTo(g1.x, g1.y - H * 0.14);
+      ctx.lineTo(g1.x, g1.y - H * 0.74);
+      ctx.lineTo(g0.x, g0.y - H * 0.74);
+      ctx.closePath();
+      const warm = 200 + (seed % 40);
+      ctx.fillStyle = `rgba(${warm},${warm + 10},${210 + (seed % 30)},${0.62 - dark * 0.4})`;
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(30,30,36,0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+      // A sheen across the glass.
+      ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      const s0 = lerp(g0, g1, 0.2), s1 = lerp(g0, g1, 0.45);
+      ctx.moveTo(s0.x, s0.y - H * 0.2);
+      ctx.lineTo(s1.x, s1.y - H * 0.66);
+      ctx.stroke();
+    };
     if (!isWall(x, y + 1)) face(x - 0.5, y + 0.5, x + 0.5, y + 0.5, 0.12, v);
     if (!isWall(x + 1, y)) face(x + 0.5, y + 0.5, x + 0.5, y - 0.5, 0.36, v >> 2);
     // Roof piece, split at the ridge when it crosses this tile.
@@ -699,7 +791,23 @@ export class Renderer {
       ctx.stroke();
     };
     const x0 = x - 0.5, x1 = x + 0.5, y0 = y - 0.5, y1 = y + 0.5;
-    if (b.alongX) {
+    if (b.flat) {
+      // A flat top: the wall's material, darker, with a lighter parapet along the building's edge.
+      const edge = x === b.x0 || x === b.x1 || y === b.y0 || y === b.y1;
+      ctx.beginPath();
+      [[x0, y0], [x1, y0], [x1, y1], [x0, y1]].forEach(([cx, cy], i) => {
+        const p = P(cx!, cy!, H + 2);
+        if (i === 0) ctx.moveTo(p.x, p.y);
+        else ctx.lineTo(p.x, p.y);
+      });
+      ctx.closePath();
+      ctx.fillStyle = rgb(shade(wallBase, edge ? 0.95 : 0.62));
+      ctx.fill();
+      ctx.globalAlpha = alpha * 0.35;
+      ctx.fillStyle = wallTex;
+      ctx.fill();
+      ctx.globalAlpha = alpha;
+    } else if (b.alongX) {
       const mid = (b.y0 + b.y1) / 2;
       if (mid > y0 && mid < y1) {
         piece([[x0, y0], [x1, y0], [x1, mid], [x0, mid]], 0.72);
@@ -903,7 +1011,9 @@ export class Renderer {
         const v = z.variationBytes[i]!;
         const depth = x + y;
         // Cutaway: tall things drawn over any of the party on screen become see-through.
-        const occH = gr === GROUND.wall ? this.wallHeight() + 90 : ob === OBJ.tree ? 150 : ob === OBJ.pillar ? 120 : 0;
+        const pi = propIndex(ob);
+        const prop = pi >= 0 ? ts.props?.[pi] : undefined;
+        const occH = gr === GROUND.wall ? this.wallHeight() + 90 : ob === OBJ.tree ? 150 : ob === OBJ.pillar ? 120 : prop?.height === 'tall' ? (prop.size === 2 ? 170 : 125) : 0;
         const inFront = occH > 0 && depth > lp.x + lp.y + 0.2 && occluders.some((o) => {
           const dx = (x - y - (o.x - o.y)) * HW, dy = (x + y - (o.x + o.y)) * HH;
           return Math.abs(dx) < 40 && dy > -10 && dy - occH < -20;
@@ -942,7 +1052,11 @@ export class Renderer {
             continue;
           }
         }
-        if (!ob) continue;
+        if (!ob || ob === PROP_COVER || ob === PROP_COVER_TALL) continue;
+        if (pi >= 0) {
+          if (prop) this.drawProp(list, prop, x, y, v, inFront);
+          continue;
+        }
         const p = iso(x, y);
         const jx = ((v & 15) - 7.5) * 0.9, jy = (((v >> 4) & 15) - 7.5) * 0.4;
         let spr: Sprite | null = null;
@@ -992,6 +1106,27 @@ export class Renderer {
           },
         });
       }
+  }
+
+  /** A floor-plan prop: its painting (or a box in its colours), standing on its whole footprint. */
+  private drawProp(list: Drawable[], prop: NonNullable<TilesetDef['props']>[number], x: number, y: number, v: number, inFront: boolean) {
+    const ctx = this.ctx;
+    const n = prop.size;
+    const p = iso(x + (n - 1) / 2, y + (n - 1) / 2);
+    const img = loadImage(this.client.assetUrl(prop.asset));
+    const [mh, mw] = PROP_ART[prop.height][n === 2 ? 1 : 0];
+    // Slight size variety and mirroring so copies in a row do not look stamped (rows of desks keep one way round).
+    const vary = 0.94 + ((v >> 2) & 3) * 0.03;
+    const spr = img ? imageSprite(img, prop.asset!, Math.round(mh * vary), Math.round(mw * vary), prop.height !== 'tall' ? false : (v & 1) === 1) : propBoxSprite(prop);
+    const fade = inFront && prop.height !== 'low';
+    list.push({
+      depth: x + y + (n - 1) * 2 + 0.05,
+      draw: () => {
+        ctx.globalAlpha = fade ? 0.4 : 1;
+        ctx.drawImage(spr.canvas, p.x - spr.ax, p.y - spr.ay);
+        ctx.globalAlpha = 1;
+      },
+    });
   }
 
   private collectFeatures(list: Drawable[], ts: TilesetDef) {
@@ -1451,8 +1586,8 @@ export class Renderer {
     if (x < 0 || y < 0 || x >= z.width || y >= z.height) return false;
     const i = y * z.width + x;
     const g = z.groundBytes[i]!;
-    if (!(g === GROUND.floor || g === GROUND.floorAlt || g === GROUND.path)) return false;
-    if (BLOCKING.has(z.objectBytes[i]!)) return false;
+    if (!isWalkableGround(g)) return false;
+    if (objBlocks(z.objectBytes[i]!)) return false;
     for (const f of z.features) if (f.x === x && f.y === y && (SOLID_FEATURE.has(f.kind) || (f.kind === 'gate' && !st.features.get(f.id)?.toggled))) return false;
     if (!ignoreEntities) for (const e of st.entities.values()) if (e.id !== ignoreId && !e.dead && Math.round(e.x) === x && Math.round(e.y) === y && st.combat && e.inCombat) return false;
     return true;
@@ -1593,7 +1728,7 @@ export class Renderer {
           const los = range <= 2 || hasLineOfSight(up, center, (x, y) => {
             const g = z.groundBytes[y * z.width + x];
             const o = z.objectBytes[y * z.width + x];
-            return g === GROUND.wall || g === GROUND.void || o === OBJ.tree || o === OBJ.pillar;
+            return g === GROUND.wall || g === GROUND.void || objOpaque(o!);
           });
           const color = inRange && los ? '255,220,120' : '255,80,60';
           if (radius) {
@@ -1843,7 +1978,8 @@ export class Renderer {
     const lightColor = ts.lightColor ?? '#ffc070';
     for (let y = Math.max(0, minY - 4); y <= Math.min(z.height - 1, maxY + 4); y++)
       for (let x = Math.max(0, minX - 4); x <= Math.min(z.width - 1, maxX + 4); x++) {
-        if (z.objectBytes[y * W + x] === OBJ.light) {
+        const ob = z.objectBytes[y * W + x]!;
+        if (ob === OBJ.light || (propIndex(ob) >= 0 && ts.props?.[propIndex(ob)]?.light)) {
           const fl = Math.sin(this.t * 9 + x * 3 + y) * 0.04;
           hole(x, y, 5, 0.95, fl);
           glows.push({ x, y, r: 2.6 + fl * 10, color: lightColor });
@@ -2012,6 +2148,16 @@ export class Renderer {
 }
 
 
+/** A shop's fascia colour (stable per building). */
+function hueFor(b: { x0: number; y0: number }): [number, number, number] {
+  const h = ((b.x0 * 73 + b.y0 * 151) % 360) / 360;
+  const f = (n: number) => {
+    const k = (n + h * 12) % 12;
+    return Math.round(255 * (0.5 - 0.32 * Math.max(-1, Math.min(k - 3, 9 - k, 1))));
+  };
+  return [f(0), f(8), f(4)];
+}
+
 interface Building {
   x0: number;
   y0: number;
@@ -2019,4 +2165,6 @@ interface Building {
   y1: number;
   alongX: boolean;
   roofed: boolean;
+  /** Indoors (a shop in a concourse, a suite off a lobby): a flat-topped storefront rather than a pitched roof. */
+  flat?: boolean;
 }

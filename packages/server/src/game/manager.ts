@@ -35,6 +35,16 @@ class InstanceManager {
     return inst;
   }
 
+  /** Drop the running copy (after saving it) so the next connection loads the daydream as it is on disk now. */
+  reload(id: string) {
+    const inst = this.live.get(id);
+    if (!inst) return;
+    this.cancelUnload(id);
+    inst.save();
+    inst.stop();
+    this.live.delete(id);
+  }
+
   private wire(inst: GameInstance): GameInstance {
     inst.onSave = (s) => saveInstance(s);
     inst.onEmpty = () => this.scheduleUnload(inst.state.id);

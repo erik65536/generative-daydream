@@ -952,3 +952,33 @@ export const ART_SIZE: Record<string, [number, number]> = {
   tree: [150, 130], pillar: [125, 70], light: [92, 50], furniture: [74, 96], rock: [52, 64], plant: [38, 48], rubble: [30, 52],
   chest: [40, 50], shrine: [76, 70], sign: [56, 46], lever: [42, 38], bed: [46, 72], craft_station: [64, 78],
 };
+
+/** Size limits (height, width) of floor-plan props by how tall they stand and their footprint (1 or 2 tiles). */
+export const PROP_ART: Record<'low' | 'mid' | 'tall', [[number, number], [number, number]]> = {
+  low: [[40, 58], [62, 124]],
+  mid: [[70, 78], [100, 132]],
+  tall: [[128, 72], [176, 140]],
+};
+
+/** A plain box in a prop's colours, until its painting arrives. */
+export function propBoxSprite(p: { id: string; colors: string[]; height: 'low' | 'mid' | 'tall'; size: 1 | 2 }): Sprite {
+  const key = `propbox:${p.id}:${p.colors.join()}:${p.height}:${p.size}`;
+  let s = cache.get(key);
+  if (s) return s;
+  const c = hexToRgb(p.colors[0] ?? '#808080');
+  const h = { low: 14, mid: 30, tall: 70 }[p.height] * (p.size === 2 ? 1.3 : 1), w = 22 * p.size, d = 11 * p.size;
+  s = make(Math.ceil(w * 2 + 20), Math.ceil(h + d * 2 + 20), Math.ceil(w + 10), Math.ceil(h + d + 10), (ctx) => {
+    shadow(ctx, w + 4, d + 2, 0.35);
+    const face = (k: number, pts: [number, number][]) => {
+      ctx.fillStyle = rgb(shade(c, k));
+      ctx.beginPath();
+      pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+      ctx.fill();
+    };
+    face(0.72, [[-w, 0], [0, d], [0, d - h], [-w, -h]]);
+    face(0.55, [[w, 0], [0, d], [0, d - h], [w, -h]]);
+    face(1.05, [[-w, -h], [0, d - h], [w, -h], [0, -d - h]]);
+  });
+  cache.set(key, s);
+  return s;
+}

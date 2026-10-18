@@ -1,6 +1,6 @@
 /** Read-only helpers over a WorldDefinition (decoded maps, lookups, naming). */
 import {
-  GROUND, OBJ, base64ToBytes, itemDisplayName, rx, type BossDef, type FeatureDef, type ItemInstance, type MonsterFamily, type MonsterMember, type NpcDef, type QuestDef,
+  GROUND, base64ToBytes, isWalkableGround, objBlocks, objOpaque, itemDisplayName, rx, type BossDef, type FeatureDef, type ItemInstance, type MonsterFamily, type MonsterMember, type NpcDef, type QuestDef,
   type Ruleset, type TilesetDef, type UniqueItemDef, type WorldDefinition, type ZoneDef,
 } from '@gd/shared';
 
@@ -16,7 +16,6 @@ export interface ZoneMap {
   opaque: Uint8Array;
 }
 
-const BLOCKING_OBJ = new Set<number>([OBJ.tree, OBJ.rock, OBJ.furniture, OBJ.pillar, OBJ.light]);
 const SOLID_FEATURES = new Set(['chest', 'shrine', 'sign', 'lever', 'lore', 'bed', 'craft_station', 'waypoint']);
 
 export class WorldCtx {
@@ -74,9 +73,8 @@ export class WorldCtx {
     for (let i = 0; i < n; i++) {
       const g = ground[i]!;
       const o = objects[i]!;
-      const walk = g === GROUND.floor || g === GROUND.floorAlt || g === GROUND.path;
-      if (!walk || BLOCKING_OBJ.has(o)) solid[i] = 1;
-      if (g === GROUND.wall || g === GROUND.void || o === OBJ.tree || o === OBJ.pillar) opaque[i] = 1;
+      if (!isWalkableGround(g) || objBlocks(o)) solid[i] = 1;
+      if (g === GROUND.wall || g === GROUND.void || objOpaque(o)) opaque[i] = 1;
     }
     const features = new Map<string, FeatureDef>();
     for (const f of def.features) {

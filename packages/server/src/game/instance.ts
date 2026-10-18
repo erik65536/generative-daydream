@@ -951,7 +951,7 @@ export class GameInstance implements CombatHost {
   // =================================================================== aggro & combat
 
   private checkAggro(z: LiveZone) {
-    const chars = [...z.actors.values()].filter((a): a is CharActor => a instanceof CharActor && a.alive() && !a.combatId);
+    const chars = [...z.actors.values()].filter((a): a is CharActor => a instanceof CharActor && a.alive() && !a.combatId && !this.devPeace.has(a.userId));
     if (!chars.length) return;
     const W = z.map.def.width;
     for (const a of z.actors.values()) {
@@ -1336,6 +1336,7 @@ export class GameInstance implements CombatHost {
         }
         case 'rest': return this.cmdRest(p, false);
         case 'fast_travel': return this.cmdFastTravel(p, msg.zoneId);
+        case 'dev': return this.cmdDev(p, msg);
         case 'hard_save': return this.hardSave?.(p, msg.name);
         case 'set_options': {
           if (msg.open !== undefined && this.state.ownerId === userId) this.state.open = msg.open;
@@ -2028,6 +2029,47 @@ export class GameInstance implements CombatHost {
       if (this.day() !== before) this.newDay();
       this.sendTo(p.userId, { t: 'narration', title: 'Rest', text: 'You sleep soundly and wake at dawn, restored.', style: 'quest' });
       this.sendClock(true);
+    }
+  }
+
+  /** Developer options (the server only lets admins send these). */
+  /** Developer option: monsters leave these players alone. */
+  private devPeace = new Set<string>();
+
+  /** Step out of any fight at once (developer options). */
+  private leaveCombat(p: PlayerState) {
+    for (const c of this.charActors(p)) {
+      const combat = this.combatOf(c);
+      if (combat) combat.remove(c);
+    }
+    this.sendTo(p.userId, { t: 'combat', combat: null });
+  }
+
+  private cmdDev(p: PlayerState, msg: Extract<ClientMessage, { t: 'dev' }>) {
+    if (msg.action === 'peace') {
+      if (msg.on) this.devPeace.add(p.userId);
+      else this.devPeace.delete(p.userId);
+      if (msg.on) this.leaveCombat(p);
+      return this.sendTo(p.userId, { t: 'toast', text: msg.on ? 'Peaceful: monsters ignore you.' : 'Monsters notice you again.', kind: 'info' });
+    }
+    if (msg.action === 'goto') {
+      const def = this.ctx.zones.get(msg.zoneId);
+      if (!def) return;
+      this.leaveCombat(p);
+      let at = msg.x !== undefined && msg.y !== undefined ? { x: Math.round(msg.x), y: Math.round(msg.y) } : undefined;
+      if (at) {
+        this.live(def.id);
+        if (!this.passable(def.id, at.x, at.y)) at = undefined;
+      }
+      return this.transfer(p, def.id, undefined, at);
+    }
+    if (msg.action === 'reveal') {
+      const def = this.ctx.zones.get(p.zoneId);
+      if (!def) return;
+      const bs = new BitSet(def.width * def.height);
+      for (let i = 0; i < def.width * def.height; i++) bs.set(i);
+      p.explored[def.id] = bs.encode();
+      return this.sendZone(p.userId);
     }
   }
 

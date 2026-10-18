@@ -757,3 +757,10 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .voice-toggle { font-size: 11px; }
 .voice-toggle.on { color: var(--gold-2); border-color: var(--hair-strong); }
 .say .mic.on { color: var(--danger); border-color: var(--danger); }
+.dev-panel { position: absolute; top: 60px; left: 12px; width: 280px; max-height: 70vh; display: flex; flex-direction: column; gap: 6px; padding: 10px; background: rgba(10,10,16,.92); border: 1px solid var(--hair-strong); border-radius: 6px; z-index: 50; pointer-events: auto; font-size: 12px; }
+.dev-zones { overflow-y: auto; display: flex; flex-direction: column; gap: 1px; }
+.dev-zone { text-align: left; background: none; border: 0; color: inherit; padding: 3px 6px; cursor: pointer; border-radius: 3px; font: inherit; }
+.dev-zone:hover { background: rgba(255,255,255,.08); }
+.dev-zone.on { color: var(--gold-2); }
+.dev-zone.sub { padding-left: 18px; }
+.game.hud-hidden .hud > :not(.dev-panel) { display: none; }

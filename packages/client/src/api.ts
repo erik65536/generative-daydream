@@ -129,7 +129,7 @@ export type StudioTask =
   | { kind: 'rewrite'; target: { type: 'npc' | 'quest' | 'zone'; id: string }; guidance: string }
   | { kind: 'direct'; tilesetIds: string[]; guidance: string }
   | { kind: 'paint'; keys: string[]; reroll?: boolean }
-  | { kind: 'zone'; zoneId: string; plan?: import('@gd/shared').ZoneLayoutPlan; content: boolean; guidance: string };
+  | { kind: 'zone'; zoneId: string; plan?: import('@gd/shared').ZoneLayoutPlan; content: boolean; guidance: string; floorPlan?: boolean };
 
 export type CharSpec = Omit<import('@gd/shared').CharacterSpec, 'sprite'>;
 

@@ -1,0 +1,443 @@
+{
+ "props": [
+  {
+   "id": "intake_counter",
+   "name": "Intake Counter",
+   "prompt": "A waist-high, squared counter with a brushed-steel kick plate, immaculate pale laminate, and a shallow paper tray built into its top; corners nicked from years of hurried forms.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 2,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "review_desk",
+   "name": "Review Desk",
+   "prompt": "A broad beige desk with a rigid metal modesty panel, a shallow stack of blank review folders, and a pencil secured by a short chain; the surface is polished where elbows rest.",
+   "colors": [
+    "#d8c8a0",
+    "#808080"
+   ],
+   "size": 2,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "review_chair",
+   "name": "Review Chair",
+   "prompt": "A hard-backed gray office chair with thin black casters, a seat worn shiny at the front edge, and armrests set just too far apart for comfort.",
+   "colors": [
+    "#808080",
+    "#202020"
+   ],
+   "size": 1,
+   "height": "low",
+   "blocks": false
+  },
+  {
+   "id": "glass_table",
+   "name": "Glass Review Table",
+   "prompt": "A rectangular smoke-glass meeting table on narrow chrome legs; its transparent top reflects faces from below and shows faint rings from abandoned coffee cups.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 2,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "interview_stool",
+   "name": "Interview Stool",
+   "prompt": "A backless black vinyl stool on a chrome pedestal, slightly tilted and fixed at an uncomfortable interview height.",
+   "colors": [
+    "#202020"
+   ],
+   "size": 1,
+   "height": "low",
+   "blocks": false
+  },
+  {
+   "id": "file_cart",
+   "name": "File Cart",
+   "prompt": "A narrow two-tier steel cart with squeaking casters and tightly packed manila folders whose blank tabs have been rubbed smooth by anxious thumbs.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "shredder",
+   "name": "Industrial Shredder",
+   "prompt": "A boxy office shredder with a wide feed slot, a bulging translucent waste drawer, and strips of paper clinging to its vent grille like pale lint.",
+   "colors": [
+    "#808080",
+    "#202020"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "paper_bin",
+   "name": "Paper Confiscation Bin",
+   "prompt": "A square gray metal bin with a narrow slot and a lid bowed under the weight of discarded forms; torn paper edges protrude from the seam.",
+   "colors": [
+    "#808080",
+    "#f0f0f0"
+   ],
+   "size": 1,
+   "height": "low",
+   "blocks": false
+  },
+  {
+   "id": "audit_kiosk",
+   "name": "Audit Kiosk",
+   "prompt": "A freestanding black terminal on a heavy pedestal, its small blue screen glowing with blank grids and empty rating bars; no visible keyboard, just a fingerprint-sized glass pad.",
+   "colors": [
+    "#202020",
+    "#3a5aa0"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true,
+   "light": true
+  },
+  {
+   "id": "floor_lamp",
+   "name": "Inspection Floor Lamp",
+   "prompt": "A tall, narrow steel lamp with a hooded head aimed sharply downward, bleaching one small circle of floor in cold white light.",
+   "colors": [
+    "#f0f0f0"
+   ],
+   "size": 1,
+   "height": "tall",
+   "blocks": true,
+   "light": true
+  },
+  {
+   "id": "water_cooler",
+   "name": "Sticky-Note Water Cooler",
+   "prompt": "A blue-gray water cooler with a cloudy bottle and a paper cup caught beneath its tap; layers of blank sticky notes cling to the base, folded inward so none can be read.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "complaint_box",
+   "name": "Sealed Complaint Box",
+   "prompt": "A beige steel box with a narrow red-edged slot and a heavy padlock; its lower seam is strained by a dense stack of papers inside.",
+   "colors": [
+    "#d8c8a0",
+    "#b03030"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "filing_cabinet",
+   "name": "Identity File Cabinet",
+   "prompt": "A tall, four-drawer steel cabinet with uneven handles, shallow dents, and blank label holders; one drawer is always left open by a finger's width.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 1,
+   "height": "tall",
+   "blocks": true
+  },
+  {
+   "id": "privacy_screen",
+   "name": "Frosted Privacy Screen",
+   "prompt": "A narrow freestanding panel of frosted glass in a chrome frame, translucent enough to show a seated silhouette and too short to conceal anyone standing.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 1,
+   "height": "tall",
+   "blocks": true
+  },
+  {
+   "id": "evidence_tray",
+   "name": "Evidence Tray",
+   "prompt": "A shallow black steel tray holding a precisely squared stack of blank resignation sheets, each edge clipped and ready for review.",
+   "colors": [
+    "#202020",
+    "#f0f0f0"
+   ],
+   "size": 1,
+   "height": "low",
+   "blocks": false
+  }
+ ],
+ "surfaces": [
+  {
+   "id": "burnt_carpet",
+   "name": "Burnt Carpet",
+   "prompt": "Office carpet tiles scorched into uneven dark patches, with frayed edges and flattened nap; no pattern or lettering.",
+   "colors": [
+    "#7a5232",
+    "#808080"
+   ]
+  },
+  {
+   "id": "guidance_strip",
+   "name": "Guidance Strip",
+   "prompt": "A narrow strip of cold blue-gray linoleum inset with worn parallel grooves, running straight through the suite like an instruction no one remembers receiving.",
+   "colors": [
+    "#3a5aa0",
+    "#808080"
+   ]
+  }
+ ],
+ "blueprint": {
+  "summary": "A narrow guidance-strip corridor links a sequence of glass-partitioned HR chambers, from intake and review desks to records, shredding, and the deep audit room. Sterile linoleum, burnt carpet, and meticulously arranged paper-handling equipment make the suite read as an office that has quietly become a dungeon.",
+  "style": "built",
+  "corridors": "guidance_strip",
+  "corridorProps": [
+   {
+    "prop": "floor_lamp",
+    "pattern": "line",
+    "amount": "few"
+   },
+   {
+    "prop": "paper_bin",
+    "pattern": "scatter",
+    "amount": "few"
+   }
+  ],
+  "areas": [
+   {
+    "id": "intake",
+    "name": "Unscheduled Intake",
+    "purpose": "The quiet-office entrance where uninvited employees are logged, redirected, and made to wait beneath the transparent gaze of the review suite.",
+    "count": 1,
+    "size": "small",
+    "floor": "floor",
+    "enclosure": "walled",
+    "where": "entrance",
+    "arrangements": [
+     {
+      "prop": "intake_counter",
+      "pattern": "line",
+      "amount": "few"
+     },
+     {
+      "prop": "review_chair",
+      "pattern": "rows",
+      "amount": "some"
+     },
+     {
+      "prop": "paper_bin",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ]
+   },
+   {
+    "id": "review_bullpen",
+    "name": "Analyst Review Bay",
+    "purpose": "A tightly controlled work chamber where auditors prepare performance reviews and record every hesitation as a measurable deficiency.",
+    "count": 1,
+    "size": "large",
+    "floor": "floor",
+    "enclosure": "walled",
+    "where": "center",
+    "arrangements": [
+     {
+      "prop": "review_desk",
+      "pattern": "rows",
+      "amount": "many",
+      "with": "review_chair"
+     },
+     {
+      "prop": "filing_cabinet",
+      "pattern": "along_walls",
+      "amount": "some"
+     },
+     {
+      "prop": "floor_lamp",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ]
+   },
+   {
+    "id": "glass_meetings",
+    "name": "Doorless Review Rooms",
+    "purpose": "Three glass-walled chambers for private conversations that can be watched from every corridor; each has no door, only a gap in the partition.",
+    "count": 3,
+    "size": "medium",
+    "floor": "burnt_carpet",
+    "enclosure": "walled",
+    "where": "center",
+    "arrangements": [
+     {
+      "prop": "glass_table",
+      "pattern": "center",
+      "amount": "few",
+      "with": "interview_stool"
+     },
+     {
+      "prop": "audit_kiosk",
+      "pattern": "corners",
+      "amount": "few"
+     },
+     {
+      "prop": "paper_bin",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ]
+   },
+   {
+    "id": "grievance_waiting",
+    "name": "Grievance Waiting Room",
+    "purpose": "A holding area for employees summoned to explain themselves; the water cooler is the customary place to leave forbidden sticky-note messages.",
+    "count": 1,
+    "size": "medium",
+    "floor": "burnt_carpet",
+    "enclosure": "walled",
+    "where": "edge",
+    "arrangements": [
+     {
+      "prop": "review_chair",
+      "pattern": "rows",
+      "amount": "some"
+     },
+     {
+      "prop": "water_cooler",
+      "pattern": "corners",
+      "amount": "few"
+     },
+     {
+      "prop": "complaint_box",
+      "pattern": "center",
+      "amount": "few"
+     }
+    ],
+    "gathering": true
+   },
+   {
+    "id": "shock_calibration",
+    "name": "Synergy Shock Calibration",
+    "purpose": "A sterile chamber where auditors stage rehearsals of corrective interviews and test how much discomfort can be recorded as team-building.",
+    "count": 1,
+    "size": "medium",
+    "floor": "floor",
+    "enclosure": "walled",
+    "where": "center",
+    "arrangements": [
+     {
+      "prop": "review_desk",
+      "pattern": "line",
+      "amount": "some",
+      "with": "review_chair"
+     },
+     {
+      "prop": "privacy_screen",
+      "pattern": "cluster",
+      "amount": "some"
+     },
+     {
+      "prop": "audit_kiosk",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ]
+   },
+   {
+    "id": "records_vault",
+    "name": "Unaccounted Paper Records",
+    "purpose": "A crowded archive for disputed paper assets, with carts staged for transfer and cabinets whose blank drawers resist being fully closed.",
+    "count": 1,
+    "size": "large",
+    "floor": "floor",
+    "enclosure": "walled",
+    "where": "deep",
+    "arrangements": [
+     {
+      "prop": "filing_cabinet",
+      "pattern": "rows",
+      "amount": "many"
+     },
+     {
+      "prop": "file_cart",
+      "pattern": "cluster",
+      "amount": "some"
+     },
+     {
+      "prop": "evidence_tray",
+      "pattern": "center",
+      "amount": "few"
+     }
+    ]
+   },
+   {
+    "id": "shred_bay",
+    "name": "Resignation Processing Bay",
+    "purpose": "A paper-destruction room where unsigned complaints and shredded resignation sheets are processed as routine administrative waste.",
+    "count": 1,
+    "size": "medium",
+    "floor": "burnt_carpet",
+    "enclosure": "walled",
+    "where": "deep",
+    "arrangements": [
+     {
+      "prop": "shredder",
+      "pattern": "along_walls",
+      "amount": "some"
+     },
+     {
+      "prop": "paper_bin",
+      "pattern": "corners",
+      "amount": "many"
+     },
+     {
+      "prop": "file_cart",
+      "pattern": "line",
+      "amount": "some"
+     }
+    ]
+   },
+   {
+    "id": "master_audit",
+    "name": "Director's Final Audit Chamber",
+    "purpose": "The deepest chamber, reserved for the suite's master auditor and final performance judgments; a single stack of blank resignation sheets waits under the inspection light.",
+    "count": 1,
+    "size": "medium",
+    "floor": "floor",
+    "enclosure": "walled",
+    "where": "deep",
+    "arrangements": [
+     {
+      "prop": "review_desk",
+      "pattern": "center",
+      "amount": "few",
+      "with": "review_chair"
+     },
+     {
+      "prop": "audit_kiosk",
+      "pattern": "corners",
+      "amount": "few"
+     },
+     {
+      "prop": "evidence_tray",
+      "pattern": "center",
+      "amount": "few"
+     },
+     {
+      "prop": "floor_lamp",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ]
+   }
+  ]
+ }
+}

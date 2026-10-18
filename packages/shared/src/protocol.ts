@@ -242,6 +242,11 @@ export type ClientMessage =
    */
   | { t: 'steer'; dx: number; dy: number; x?: number; y?: number }
   | { t: 'dismiss_companion'; charId: string }
+  /** Developer options (admins only): go anywhere, see the whole map, reload the daydream after editing it. */
+  | { t: 'dev'; action: 'goto'; zoneId: string; x?: number; y?: number }
+  | { t: 'dev'; action: 'reveal' }
+  | { t: 'dev'; action: 'peace'; on: boolean }
+  | { t: 'dev'; action: 'reload' }
   | { t: 'chat'; text: string };
 
 /** Character creation choices. */

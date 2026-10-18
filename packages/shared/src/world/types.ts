@@ -59,6 +59,110 @@ export type GroundCode = (typeof GROUND)[keyof typeof GROUND];
 export const OBJ = { none: 0, tree: 1, rock: 2, plant: 3, light: 4, furniture: 5, rubble: 6, pillar: 7 } as const;
 export type ObjCode = (typeof OBJ)[keyof typeof OBJ];
 
+/**
+ * Places designed from a floor plan use their own props and surfaces instead of the fixed roles. Their codes
+ * live above the fixed ones: ground codes from SURFACE_BASE are the tileset's extra surfaces (all walkable);
+ * object codes encode the prop's index and how it behaves, so movement and sight need no lookup.
+ */
+export const SURFACE_BASE = 16;
+export const MAX_SURFACES = 32;
+export const MAX_PROPS = 48;
+/** Object code bases: blocks movement and sight / blocks movement only / walkable (rugs, papers, chairs). */
+export const PROP_TALL = 16;
+export const PROP_SOLID = 64;
+export const PROP_LOW = 128;
+/** The other tiles of a prop bigger than one tile (drawn by its anchor, the footprint's back corner). */
+export const PROP_COVER = 240;
+export const PROP_COVER_TALL = 241;
+
+export const isWalkableGround = (g: number) => g === GROUND.floor || g === GROUND.floorAlt || g === GROUND.path || (g >= SURFACE_BASE && g < SURFACE_BASE + MAX_SURFACES);
+/** Objects you cannot walk through. */
+export const objBlocks = (o: number) => o === OBJ.tree || o === OBJ.rock || o === OBJ.furniture || o === OBJ.pillar || o === OBJ.light || (o >= PROP_TALL && o < PROP_SOLID + MAX_PROPS) || o === PROP_COVER || o === PROP_COVER_TALL;
+/** Objects you cannot see past. */
+export const objOpaque = (o: number) => o === OBJ.tree || o === OBJ.pillar || (o >= PROP_TALL && o < PROP_TALL + MAX_PROPS) || o === PROP_COVER_TALL;
+/** The tileset prop an object code stands for, or -1. */
+export function propIndex(o: number): number {
+  if (o >= PROP_TALL && o < PROP_TALL + MAX_PROPS) return o - PROP_TALL;
+  if (o >= PROP_SOLID && o < PROP_SOLID + MAX_PROPS) return o - PROP_SOLID;
+  if (o >= PROP_LOW && o < PROP_LOW + MAX_PROPS) return o - PROP_LOW;
+  return -1;
+}
+export const propCode = (index: number, p: Pick<PropDef, 'blocks' | 'height'>) => (!p.blocks ? PROP_LOW : p.height === 'tall' ? PROP_TALL : PROP_SOLID) + index;
+
+/** A specific thing that stands in a place (a desk, a server rack, a tent), painted once and placed by the plan. */
+export interface PropDef {
+  id: string;
+  name: string;
+  /** What it looks like (for the painter). */
+  prompt: string;
+  colors: string[];
+  /** Footprint in tiles (square). */
+  size: 1 | 2;
+  /** low: below the knee (a chair, a crate); mid: about waist to chest (a desk, a counter); tall: above head height (a rack, a tree). */
+  height: 'low' | 'mid' | 'tall';
+  /** Whether people must walk around it. */
+  blocks: boolean;
+  /** Gives off light. */
+  light?: boolean;
+  asset?: string;
+}
+
+/** An extra ground material for one part of a place (the break room's tiles, the lobby's marble). */
+export interface GroundDef {
+  id: string;
+  name: string;
+  prompt: string;
+  colors: string[];
+  asset?: string;
+}
+
+/** How copies of a prop are set out within an area. */
+export interface BlueprintArrangement {
+  prop: string;
+  pattern: 'rows' | 'grid' | 'along_walls' | 'around' | 'cluster' | 'scatter' | 'center' | 'corners' | 'line' | 'ring';
+  amount: 'few' | 'some' | 'many';
+  /** A second prop set beside each copy (chairs at desks, stools around a table). */
+  with?: string;
+}
+
+/** One part of a place with a purpose (an office, a server room, a campsite). */
+export interface BlueprintArea {
+  id: string;
+  name: string;
+  purpose: string;
+  /** How many such areas (four identical meeting rooms). */
+  count: number;
+  size: 'small' | 'medium' | 'large';
+  /** A surface id, one of the place's own floor, floorAlt or path, or water (a pond, a pool: impassable). */
+  floor: string;
+  /** Walled rooms have doorways; open areas are only set apart by their floor and furniture. */
+  enclosure: 'walled' | 'open';
+  where: 'entrance' | 'center' | 'edge' | 'deep' | 'any';
+  arrangements: BlueprintArrangement[];
+  /** The enterable building this area holds (its name), in towns. */
+  building?: string;
+  /** People spend their time here. */
+  gathering?: boolean;
+}
+
+/** A place's floor plan, designed per place and realised by the engine. */
+export interface Blueprint {
+  summary: string;
+  /** built: rooms and corridors on a grid; natural: organic regions joined by trails. */
+  style: 'built' | 'natural';
+  /** The ground of corridors, lanes and trails (a surface id or path). */
+  corridors: string;
+  /** Natural places: what lies between the areas (dense filler, impassable water crossed by causeways, or open ground). */
+  between?: 'filler' | 'water' | 'open';
+  /** What fills the edge and leftover ground (a prop id), e.g. dense trees around a clearing. */
+  filler?: string;
+  /** Small walkable props scattered thinly over all the ground (reeds, tufts, pebbles, litter, papers). */
+  groundCover?: string[];
+  /** Props set along the corridors, lanes or trails (lamps, planters, bins). */
+  corridorProps?: BlueprintArrangement[];
+  areas: BlueprintArea[];
+}
+
 export const TILE_ROLES = ['floor', 'floorAlt', 'path', 'water', 'wall', 'tree', 'rock', 'plant', 'light', 'furniture', 'rubble', 'pillar', 'door', 'chest', 'exit', 'shrine', 'sign', 'lever', 'bed'] as const;
 export type TileRole = (typeof TILE_ROLES)[number];
 
@@ -90,6 +194,9 @@ export interface TilesetDef {
   directed?: boolean;
   /** Elements outside the fixed roles: building roofs (towns) and the crafting station. */
   extras?: { roof?: TileRoleDef; craft?: TileRoleDef };
+  /** Specific props and extra surfaces of places built from a floor plan. */
+  props?: PropDef[];
+  surfaces?: GroundDef[];
 }
 
 export type ZoneKind = 'town' | 'wilderness' | 'dungeon' | 'interior';
@@ -184,6 +291,8 @@ export interface ZoneDef {
   indoor?: boolean;
   /** The level design this zone was built from. */
   layout?: ZoneLayoutPlan;
+  /** The floor plan this zone was built from (props and surfaces are in its tileset). */
+  blueprint?: Blueprint;
   /** Position on the world map (0..1). Interiors share their parent's. */
   mapPos: { x: number; y: number };
   /** Zones directly connected (for the world map). */

@@ -10,6 +10,7 @@ import { navigate } from '../App';
 import { applyWorldTheme } from '../ui/theme';
 import { PadInput } from '../input/gamepad';
 import { PadPrompt, PadWheel } from '../ui/pad';
+import { DevPanel } from '../ui/dev';
 
 export function GameScreen({ me, instanceId }: { me: Me; instanceId: string }) {
   const [gc, setGc] = useState<GameClient | null>(null);
@@ -28,6 +29,9 @@ export function GameScreen({ me, instanceId }: { me: Me; instanceId: string }) {
   return <GameView key={instanceId} me={me} />;
 }
 
+/** Admins get the developer options. */
+let devMode = false;
+
 function handleClick(r: Renderer, info: HoverInfo, button: number, ev?: MouseEvent) {
   const c = client();
   const st = c.state;
@@ -38,6 +42,8 @@ function handleClick(r: Renderer, info: HoverInfo, button: number, ev?: MouseEve
     return;
   }
   if (button !== 0) return;
+  // Developer teleport (the server ignores it from anyone but an admin).
+  if (ev?.ctrlKey && devMode && info.point && st.zone) return c.send({ t: 'dev', action: 'goto', zoneId: st.zone.id, x: info.point.x, y: info.point.y });
   const charId = st.selectedCharId ?? st.player?.leaderId;
   if (!charId) return;
   const tgt = st.targeting;
@@ -88,7 +94,10 @@ function GameView({ me }: { me: Me }) {
   const rendererRef = useRef<Renderer | null>(null);
   const { status, error, panel, dialog, trade, loot, targeting, world, combat, inputMode } = useGame((s) => ({ status: s.status, error: s.error, panel: s.panel, dialog: s.dialog, trade: s.trade, loot: s.loot, targeting: s.targeting, world: s.world, combat: s.combat, inputMode: s.inputMode }));
   const [note, setNote] = useState<{ x: number; y: number; text: string; ok: boolean } | null>(null);
+  const [dev, setDev] = useState(false);
+  const [hudHidden, setHudHidden] = useState(false);
   const c = client();
+  devMode = me.isAdmin;
 
   useEffect(() => {
     const r = new Renderer(canvasRef.current!, c);
@@ -116,6 +125,7 @@ function GameView({ me }: { me: Me }) {
       if (e.isTrusted && st.inputMode === 'pad') c.update({ inputMode: 'mouse' });
       if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'TEXTAREA') return;
       const k = e.key.toLowerCase();
+      if (k === '`' && me.isAdmin) return setDev((v) => !v);
       const toggle = (p: NonNullable<typeof st.panel>) => c.update({ panel: st.panel === p ? null : p });
       if (k === 'escape') {
         if (st.narrations.length) return c.update({ narrations: st.narrations.slice(1) });
@@ -169,7 +179,7 @@ function GameView({ me }: { me: Me }) {
   const close = () => c.update({ panel: null });
   return (
     <div
-      className={`game ${targeting ? 'targeting' : ''} ${inputMode === 'pad' ? 'pad' : ''}`}
+      className={`game ${targeting ? 'targeting' : ''} ${inputMode === 'pad' ? 'pad' : ''} ${hudHidden ? 'hud-hidden' : ''}`}
       onContextMenu={(e) => {
         // The game uses right-click; keep the browser menu only for text fields.
         const tag = (e.target as HTMLElement).tagName;
@@ -210,6 +220,7 @@ function GameView({ me }: { me: Me }) {
         <PadWheel />
         {note && <div className={`cursor-note ${note.ok ? '' : 'bad'}`} style={{ left: note.x, top: note.y }}>{note.text}</div>}
         {combat && !c.isMyTurn() && <div />}
+        {dev && <DevPanel renderer={rendererRef.current} hudHidden={hudHidden} setHudHidden={setHudHidden} onClose={() => setDev(false)} />}
       </div>
       {status !== 'connected' && (
         <div className="connection">

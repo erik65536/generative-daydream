@@ -383,6 +383,7 @@ function Rebuild({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
   const initial: ZoneLayoutPlan = z.layout ?? { structure: structures[0]!, enclosed: z.kind === 'dungeon' || !!z.indoor, blockers: { amount: 'some', arrangement: 'clusters' }, hazard: 'none', structures: 'roofed', clutter: 'some' };
   const [plan, setPlan] = useState<ZoneLayoutPlan>(initial);
   const [content, setContent] = useState(false);
+  const [floorPlan, setFloorPlan] = useState(!!z.blueprint);
   const [g, setG] = useState('');
   useEffect(() => setPlan(initial), [JSON.stringify(z.layout)]);
   const edited = JSON.stringify(plan) !== JSON.stringify(initial);
@@ -390,19 +391,23 @@ function Rebuild({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
   const what = z.kind === 'town' ? 'new residents, buildings and side quests' : 'new lore notes and shrine';
   const run = () => {
     const intro = `Build a new map for ${z.name}${content ? ` with ${what} from the AI` : ''}. Monsters, chests and people are placed again; its exits still lead to the same places.`;
-    ctx.task({ kind: 'zone', zoneId: z.id, plan: edited ? plan : undefined, content, guidance: g }, `${intro}\n\nReveries standing in this place may find themselves somewhere odd. Continue?`).then(() => setG(''));
+    ctx.task({ kind: 'zone', zoneId: z.id, plan: edited && !floorPlan ? plan : undefined, content, guidance: g, floorPlan }, `${intro}${floorPlan ? ' The AI designs a floor plan (areas with a purpose, furnished with their own props, which are then painted).' : ''}\n\nReveries standing in this place may find themselves somewhere odd. Continue?`).then(() => setG(''));
   };
   return (
     <div className="studio-ai col" style={{ gap: 6 }}>
       <div className="label">Rebuild this place</div>
-      <div className="studio-plan">
+      {z.blueprint && <div className="hint">Built from a floor plan: {z.blueprint.summary}</div>}
+      <label className="row small" style={{ gap: 6 }}>
+        <input type="checkbox" checked={floorPlan} onChange={(e) => setFloorPlan(e.target.checked)} /> Design a new floor plan (rooms and areas with a purpose, furnished with their own props)
+      </label>
+      {!floorPlan && <div className="studio-plan">
         <Pick label="Structure" value={plan.structure} options={structures} words={STRUCTURE_WORDS} onChange={(v) => set({ structure: v })} />
         <Pick label="Blockers" value={plan.blockers.amount} options={['sparse', 'some', 'dense'] as const} onChange={(v) => set({ blockers: { ...plan.blockers, amount: v } })} />
         <Pick label="Arranged" value={plan.blockers.arrangement} options={['scattered', 'clusters', 'rows', 'edges'] as const} onChange={(v) => set({ blockers: { ...plan.blockers, arrangement: v } })} />
         <Pick label="Hazard" value={plan.hazard} options={['none', 'pools', 'river', 'channels'] as const} onChange={(v) => set({ hazard: v })} />
         <Pick label="Clutter" value={plan.clutter} options={['sparse', 'some', 'dense'] as const} onChange={(v) => set({ clutter: v })} />
         {z.kind === 'town' && <Pick label="Structures" value={plan.structures} options={['roofed', 'walled'] as const} words={{ roofed: 'roofed buildings', walled: 'walled rooms' }} onChange={(v) => set({ structures: v })} />}
-      </div>
+      </div>}
       {z.kind !== 'dungeon' && (
         <label className="row small" style={{ gap: 6 }}>
           <input type="checkbox" checked={plan.enclosed} onChange={(e) => set({ enclosed: e.target.checked })} /> Enclosed (under a roof or ceiling: no sky or weather)

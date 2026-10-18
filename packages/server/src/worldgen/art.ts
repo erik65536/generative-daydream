@@ -5,7 +5,7 @@
  */
 import type { AssetRecord, TileRole, TileRoleDef, TilesetDef, WorldDefinition } from '@gd/shared';
 import { BudgetExceeded } from '../genai/spend';
-import { OBJ, base64ToBytes } from '@gd/shared';
+import { OBJ, SURFACE_BASE, base64ToBytes, propIndex } from '@gd/shared';
 import { z } from 'zod';
 import { VARIANTS, assetBrief, imagePromptSystem, produceAssets, supportsVariants, variantKey, wantsDescriptivePrompts, writerProfile } from '../genai/images';
 import { genai } from '../genai/service';
@@ -107,7 +107,8 @@ function describePlan(z: WorldDefinition['zones'][number]): string {
     p.hazard === 'none' ? 'little or no "water" element' : `the "water" element forms ${p.hazard} (impassable liquid, chasm or void)`,
     z.kind === 'town' ? `enterable places are ${p.structures === 'roofed' ? 'roofed buildings' : 'walled rooms or enclosures seen from above'} whose outer walls use the "wall" element` : '',
   ];
-  return parts.filter(Boolean).join('; ');
+  const plan = z.blueprint ? `. Its floor plan: ${z.blueprint.summary} Areas: ${z.blueprint.areas.map((a) => a.name).join(', ')} (their furniture is planned separately; the elements here are the place's ground, walls and generic pieces)` : '';
+  return parts.filter(Boolean).join('; ') + plan;
 }
 
 /** Rewrite each tileset's elements so they fit the place (once per tileset). */
@@ -151,20 +152,30 @@ THE OWNER'S DIRECTION FOR THIS PLACE (follow it, within the rules above): ${opts
 /** Which object roles, features and surfaces each tileset's zones actually use. */
 function usage(w: WorldDefinition, ts: TilesetDef) {
   const roles = new Set<TileRole>(TEXTURE_ROLES);
+  const props = new Set<number>(), surfaces = new Set<number>();
   let craft = false, roof = false;
   for (const z of w.zones.filter((x) => x.tilesetId === ts.id)) {
     const objs = base64ToBytes(z.objects);
     const seen = new Set<number>();
     for (let i = 0; i < objs.length; i++) seen.add(objs[i]!);
-    for (const code of seen) if (OBJ_ROLE[code]) roles.add(OBJ_ROLE[code]!);
+    for (const code of seen) {
+      if (OBJ_ROLE[code]) roles.add(OBJ_ROLE[code]!);
+      const pi = propIndex(code);
+      if (pi >= 0) props.add(pi);
+    }
+    const ground = base64ToBytes(z.ground);
+    for (let i = 0; i < ground.length; i++) if (ground[i]! >= SURFACE_BASE) surfaces.add(ground[i]! - SURFACE_BASE);
     for (const f of z.features) {
       if (FEATURE_ROLE[f.kind]) roles.add(FEATURE_ROLE[f.kind]!);
       if (f.kind === 'craft_station') craft = true;
     }
     if (z.kind === 'town' && !z.indoor && z.layout?.structures !== 'walled') roof = true;
   }
-  return { roles, craft, roof };
+  return { roles, craft, roof, props, surfaces };
 }
+
+export const propKey = (tsId: string, propId: string) => `obj_${tsId}_p_${propId}`;
+export const surfaceKey = (tsId: string, surfaceId: string) => `tex_${tsId}_s_${surfaceId}`;
 
 /** One asset the world uses, with its brief as derived from the world and as the owner customised it. */
 export interface ArtEntry {
@@ -217,6 +228,14 @@ function collectAssets(w: WorldDefinition, level: 'essential' | 'full'): { rec: 
       add(`obj_${ts.id}_${r}`, 'object', prompt);
       if (r === 'chest') variants(`obj_${ts.id}_${r}`, 'object', prompt, ['open']);
     }
+    // Floor-plan places: each specific prop and extra surface (only those a map uses).
+    for (const [i, p] of (ts.props ?? []).entries()) {
+      if (!use.props.has(i)) continue;
+      const how = p.size === 2 ? ', a large object taking up a 2x2 floor area' : '';
+      const stand = p.light ? ', shown as a free-standing light source on its own stand or base' : '';
+      add(propKey(ts.id, p.id), 'object', `${p.name}: ${p.prompt}${how}${stand} (found in ${ts.name})`);
+    }
+    for (const [i, s] of (ts.surfaces ?? []).entries()) if (use.surfaces.has(i)) add(surfaceKey(ts.id, s.id), 'texture', s.prompt || s.name);
     if (use.craft) add(`obj_${ts.id}_craft`, 'object', ts.extras?.craft ? `${ts.extras.craft.name}: ${ts.extras.craft.prompt} (found in ${ts.name})` : `a workbench where people make and mend things in ${ts.name}`);
   }
   const sprite = (key: string, prompt: string, humanoid = false) => {
@@ -250,6 +269,8 @@ export function linkAssets(w: WorldDefinition) {
     for (const r of Object.keys(ts.roles) as TileRole[]) ts.roles[r].asset = ok(`tex_${ts.id}_${r}`) ?? ok(`obj_${ts.id}_${r}`);
     if (ts.extras?.roof) ts.extras.roof.asset = ok(`tex_${ts.id}_roof`);
     if (ts.extras?.craft) ts.extras.craft.asset = ok(`obj_${ts.id}_craft`);
+    for (const p of ts.props ?? []) p.asset = ok(propKey(ts.id, p.id));
+    for (const s of ts.surfaces ?? []) s.asset = ok(surfaceKey(ts.id, s.id));
   }
   for (const o of w.origins) {
     o.asset = ok(`spr_origin_${o.id}`);

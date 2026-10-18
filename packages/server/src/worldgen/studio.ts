@@ -11,7 +11,8 @@ import { conceptSummary } from './prompts';
 import { artPhases, paint as paintWorld, WorldGenJob } from './pipeline';
 import { activeJob } from '../jobs/queue';
 import { directTilesets, listArt, planAssets } from './art';
-import { designZonePlan, rebuildZoneMap, spliceAreaContent, spliceTownContent, writeZoneContent, type PlanDraft } from './rezone';
+import { designBlueprint } from './blueprint';
+import { applyDesign, buildingNames, designZonePlan, rebuildZoneMap, zoneSize, spliceAreaContent, spliceTownContent, writeZoneContent, type PlanDraft } from './rezone';
 import { LayoutPlanSchema, type AreaContentOut, type TownContentOut } from './schemas';
 
 /** Everything the studio shows (the owner may see spoilers: it is their world). */
@@ -214,12 +215,14 @@ export async function rewrite(w: WorldDefinition, target: RewriteTarget, guidanc
  * Rebuild one place: optionally new content from the content model, then a new map from the owner's plan
  * (or one the design model picks from the owner's direction). Works on a copy so a failure changes nothing.
  */
-export async function rebuildZone(w: WorldDefinition, task: { zoneId: string; plan?: PlanDraft; content: boolean; guidance: string }, report: (m: string) => void = () => {}): Promise<string> {
+export async function rebuildZone(w: WorldDefinition, task: { zoneId: string; plan?: PlanDraft; content: boolean; guidance: string; floorPlan?: boolean }, report: (m: string) => void = () => {}): Promise<string> {
   const draft = structuredClone(w);
   const z = draft.zones.find((x) => x.id === task.zoneId);
   if (!z) throw new Error('No such place.');
   let plan = task.plan;
-  if (!plan && task.guidance.trim()) {
+  // An edited layout plan replaces a floor plan (the place goes back to the generic generator).
+  if (plan && !task.floorPlan) z.blueprint = undefined;
+  if (!plan && !task.floorPlan && !z.blueprint && task.guidance.trim()) {
     try {
       plan = await designZonePlan(draft, z.id, task.guidance);
       if (plan) report(`Level design from your direction: ${JSON.stringify(plan)}`);
@@ -235,7 +238,13 @@ export async function rebuildZone(w: WorldDefinition, task: { zoneId: string; pl
     if (z.kind === 'town') notes.push(`${res.added.length} new resident${res.added.length === 1 ? '' : 's'} (${res.added.slice(0, 6).join(', ')}${res.added.length > 6 ? '…' : ''}), ${res.removed.length} gone, side quests: ${res.quests.join('; ') || 'none'}`);
     else notes.push(`new lore: ${res.added.join('; ') || 'none'}`);
   }
-  const r = rebuildZoneMap(draft, z.id, { plan });
+  let r;
+  if (task.floorPlan && z.kind !== 'interior') {
+    report(`Designing a floor plan for ${z.name}`);
+    const d = await designBlueprint(draft, z, { size: zoneSize(draft, z.kind), buildings: z.kind === 'town' ? buildingNames(draft, z) : [], guidance: task.guidance.trim() || undefined });
+    report(`Floor plan: ${d.blueprint.summary} Areas: ${d.blueprint.areas.map((a) => `${a.count > 1 ? `${a.count}× ` : ''}${a.name}`).join(', ')}.`);
+    r = applyDesign(draft, z.id, d);
+  } else r = rebuildZoneMap(draft, z.id, { plan });
   Object.assign(w, draft);
   const zz = w.zones.find((x) => x.id === task.zoneId)!;
   return `New ${r.width}×${r.height} map for ${zz.name} (${r.plan.structure}${r.plan.enclosed ? ', enclosed' : ''})${r.droppedPacks ? `; ${r.droppedPacks} monster pack${r.droppedPacks === 1 ? '' : 's'} had no room` : ''}${notes.length ? `; ${notes.join('; ')}` : ''}.`;
@@ -247,7 +256,7 @@ export const TaskSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('rewrite'), target: z.object({ type: z.enum(['npc', 'quest', 'zone']), id: z.string() }), guidance: z.string().max(2000).default('') }),
   z.object({ kind: z.literal('direct'), tilesetIds: z.array(z.string()).min(1).max(8), guidance: z.string().max(2000).default('') }),
   z.object({ kind: z.literal('paint'), keys: z.array(z.string()).min(1).max(400), reroll: z.boolean().default(true) }),
-  z.object({ kind: z.literal('zone'), zoneId: z.string(), plan: LayoutPlanSchema.optional(), content: z.boolean().default(false), guidance: z.string().max(2000).default('') }),
+  z.object({ kind: z.literal('zone'), zoneId: z.string(), plan: LayoutPlanSchema.optional(), content: z.boolean().default(false), guidance: z.string().max(2000).default(''), floorPlan: z.boolean().default(false) }),
 ]);
 export type StudioTask = z.infer<typeof TaskSchema>;
 

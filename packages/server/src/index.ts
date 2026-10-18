@@ -575,6 +575,7 @@ wss.on('connection', (ws: WebSocket, req) => {
   }
   const conn = { userId: user.id, send };
   inst.join(conn);
+  let reload = false;
   ws.on('message', (data) => {
     let msg: ClientMessage;
     try {
@@ -583,9 +584,20 @@ wss.on('connection', (ws: WebSocket, req) => {
       return;
     }
     if (msg.t === 'ping') return send({ t: 'pong', serverTime: Date.now(), clientTime: msg.clientTime });
+    if (msg.t === 'dev') {
+      if (!user.isAdmin) return;
+      // Reload: the client reconnects by itself and gets a fresh copy of the daydream from disk.
+      if (msg.action === 'reload') {
+        reload = true;
+        return ws.close();
+      }
+    }
     inst.handle(user.id, msg);
   });
-  ws.on('close', () => inst.leave(conn));
+  ws.on('close', () => {
+    inst.leave(conn);
+    if (reload) instances.reload(instanceId);
+  });
 });
 
 server.listen(PORT, () => {

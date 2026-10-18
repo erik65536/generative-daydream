@@ -1,0 +1,575 @@
+{
+ "props": [
+  {
+   "id": "reception_fortress",
+   "name": "Glass-fronted reception desk",
+   "prompt": "A broad, angular desk behind a waist-high clear glass shield, with a narrow pass-through and a severe black counter; neatly aligned blank forms sit within reach.",
+   "colors": [
+    "#202020",
+    "#c0c0c8"
+   ],
+   "size": 2,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "queue_posts",
+   "name": "Chrome queue posts",
+   "prompt": "Short polished-steel stanchions connected by taut burgundy belts, arranged in crisp switchbacks that make a five-person queue feel disciplinary.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "marble_planter",
+   "name": "Lobby marble planter",
+   "prompt": "A square white-marble trough holding a clipped, glossy-leaved plant trimmed into a bland corporate globe; the leaves have a faint coat of dust.",
+   "colors": [
+    "#f0f0f0",
+    "#4a8a3a"
+   ],
+   "size": 2,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "lobby_bench",
+   "name": "Bolted lobby bench",
+   "prompt": "A rigid three-seat bench of perforated charcoal metal on a shared steel base, polished smooth at the edges by people waiting without being invited to sit.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 2,
+   "height": "low",
+   "blocks": true
+  },
+  {
+   "id": "security_kiosk",
+   "name": "IT Security checkpoint kiosk",
+   "prompt": "A waist-high gray inspection podium with a black glass top, a red indicator lens, and a shallow tray for employee badges; its blank screen reflects no faces clearly.",
+   "colors": [
+    "#808080",
+    "#202020",
+    "#b03030"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true,
+   "light": true
+  },
+  {
+   "id": "elevator_pedestal",
+   "name": "Elevator call pedestal",
+   "prompt": "A narrow steel pedestal beside the elevator doors, with a grid of unlabeled, differently worn buttons; a few buttons have tiny tactile notches, and the lowest row is immaculate.",
+   "colors": [
+    "#f0f0f0"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "breakroom_fridge",
+   "name": "Uncleaned breakroom fridge",
+   "prompt": "A dented white refrigerator with a rusting handle and a gasket stained near-black; a viscous dark seep gathers below the door, reflecting a faint oily sheen.",
+   "colors": [
+    "#f0f0f0",
+    "#202020"
+   ],
+   "size": 2,
+   "height": "tall",
+   "blocks": true
+  },
+  {
+   "id": "water_cooler",
+   "name": "Lobby water cooler",
+   "prompt": "A cloudy plastic water jug perched on a scratched white dispenser; small blank sticky notes cling to its side, folded inward so no writing can be read.",
+   "colors": [
+    "#3a5aa0",
+    "#f0f0f0"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "paper_cart",
+   "name": "Overloaded paper cart",
+   "prompt": "A squeaky gray metal trolley stacked with uneven reams and loose sheets, several corners bent as if repeatedly handled and then abandoned.",
+   "colors": [
+    "#808080",
+    "#f0f0f0"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "shred_bin",
+   "name": "Confidential shredding bin",
+   "prompt": "A locked waist-high bin with a narrow slot; pale paper strips bulge from the lid seam and collect in a tidy little drift at its base.",
+   "colors": [
+    "#808080",
+    "#f0f0f0"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "holding_cot",
+   "name": "Foldaway holding cot",
+   "prompt": "A narrow folding cot with a thin white vinyl mattress and a neatly tucked gray blanket, set up with the impersonal readiness of a room used too often.",
+   "colors": [
+    "#808080",
+    "#f0f0f0"
+   ],
+   "size": 1,
+   "height": "low",
+   "blocks": true
+  },
+  {
+   "id": "kettle_cart",
+   "name": "Lucky Kettle tea cart",
+   "prompt": "A compact cream enamel cart with a copper kettle, a few chipped cups, and a small green tea tin; its wheels are mismatched but carefully oiled.",
+   "colors": [
+    "#4a8a3a"
+   ],
+   "size": 1,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "supply_rack",
+   "name": "Synergy stock rack",
+   "prompt": "A narrow industrial rack loaded with squared stacks of blank paper, toner boxes, and sealed cartons; every package faces outward with its labels turned away.",
+   "colors": [
+    "#808080",
+    "#7a5232"
+   ],
+   "size": 2,
+   "height": "tall",
+   "blocks": true
+  },
+  {
+   "id": "display_case",
+   "name": "Thorne's glass display case",
+   "prompt": "A waist-high glass case on a dark wooden base, holding a few carefully spaced brass curios and one empty velvet pad, as if the missing item is still being priced.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 2,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "training_station",
+   "name": "Thorne's training station",
+   "prompt": "A squat charcoal practice podium beside a pair of thick, scuffed floor mats; red tape marks neat lanes that stop short of a blank beige target board.",
+   "colors": [
+    "#b03030",
+    "#d8c8a0"
+   ],
+   "size": 2,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "domestic_console",
+   "name": "Vane's model-home console",
+   "prompt": "A polished walnut console table with a single cream ceramic bowl and a brass desk clock stopped at an ordinary working hour; its showroom-perfect surface has no personal objects.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 2,
+   "height": "mid",
+   "blocks": true
+  },
+  {
+   "id": "nap_pod",
+   "name": "Nap Pod rest capsule",
+   "prompt": "A sealed-looking pale-gray recline capsule with a blue padded interior, a narrow oval opening, and a small pool of soft blue light beneath its base.",
+   "colors": [
+    "#808080",
+    "#3a5aa0",
+    "#f0f0f0"
+   ],
+   "size": 2,
+   "height": "mid",
+   "blocks": true,
+   "light": true
+  },
+  {
+   "id": "uniform_locker",
+   "name": "Gray Suit uniform locker",
+   "prompt": "A tall gunmetal locker with open cubbies holding identical pressed gray jackets on hangers; the empty lower compartments are clean enough to look recently inspected.",
+   "colors": [
+    "#808080"
+   ],
+   "size": 2,
+   "height": "tall",
+   "blocks": true
+  },
+  {
+   "id": "floor_uplight",
+   "name": "Recessed floor uplight",
+   "prompt": "A flush black floor canister casting a narrow cold-white beam upward, bright enough to reveal dust in the air but not warm enough to comfort anyone.",
+   "colors": [
+    "#202020",
+    "#f0f0f0"
+   ],
+   "size": 1,
+   "height": "low",
+   "blocks": false,
+   "light": true
+  }
+ ],
+ "surfaces": [
+  {
+   "id": "marble",
+   "name": "Polished Corporate Marble",
+   "prompt": "Broad ivory marble tiles with thin gray veins and a mirror gloss; black stone strips mark immaculate routes that seem designed to discourage lingering.",
+   "colors": [
+    "#f0ead0",
+    "#808080",
+    "#202020"
+   ]
+  },
+  {
+   "id": "carpet",
+   "name": "Beige Static Carpet",
+   "prompt": "Low beige office carpet, faintly mottled with darker squares where furniture has stood for years; the pile looks permanently flattened.",
+   "colors": [
+    "#d8c8a0",
+    "#7a5232"
+   ]
+  },
+  {
+   "id": "call_zone",
+   "name": "Elevator Call Zone",
+   "prompt": "A rectangular field of pale gray stone inset with narrow brushed-steel lines converging on the elevator doors, like a queue diagram without instructions.",
+   "colors": [
+    "#808080"
+   ]
+  }
+ ],
+ "blueprint": {
+  "summary": "A marble lobby funnels arrivals past a glass-fronted reception fortress into a central waiting hub and guarded elevator bank. Seven small, conspicuously branded frontages ring the public space; a concealed records room behind reception keeps the lobby’s unwanted departures out of sight.",
+  "style": "built",
+  "corridors": "marble",
+  "corridorProps": [
+   {
+    "prop": "marble_planter",
+    "pattern": "corners",
+    "amount": "few"
+   },
+   {
+    "prop": "floor_uplight",
+    "pattern": "line",
+    "amount": "few"
+   }
+  ],
+  "areas": [
+   {
+    "id": "reception",
+    "name": "Reception Fortress",
+    "purpose": "The formal arrival point, laid out so every visitor is visible to reception and security. Its glass shield is immaculate; a narrow service gap behind the desk leads to the concealed records room.",
+    "count": 1,
+    "size": "medium",
+    "floor": "marble",
+    "enclosure": "open",
+    "where": "entrance",
+    "arrangements": [
+     {
+      "prop": "reception_fortress",
+      "pattern": "line",
+      "amount": "few"
+     },
+     {
+      "prop": "queue_posts",
+      "pattern": "rows",
+      "amount": "some"
+     },
+     {
+      "prop": "floor_uplight",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ]
+   },
+   {
+    "id": "hidden_records",
+    "name": "Unlisted Holding Room",
+    "purpose": "A concealed room behind reception keeps catatonic former employees from public view. Orderly cots and a shredding bin make it look like temporary records processing.",
+    "count": 1,
+    "size": "small",
+    "floor": "carpet",
+    "enclosure": "walled",
+    "where": "deep",
+    "arrangements": [
+     {
+      "prop": "holding_cot",
+      "pattern": "rows",
+      "amount": "some"
+     },
+     {
+      "prop": "shred_bin",
+      "pattern": "corners",
+      "amount": "few"
+     },
+     {
+      "prop": "paper_cart",
+      "pattern": "center",
+      "amount": "few"
+     }
+    ]
+   },
+   {
+    "id": "elevator_checkpoint",
+    "name": "Elevator Security Checkpoint",
+    "purpose": "The guarded route upward, and the only link to the Open Floor. Officers inspect badges and question unauthorized emotional engagement; elevator controls offer no plain instructions.",
+    "count": 1,
+    "size": "medium",
+    "floor": "call_zone",
+    "enclosure": "open",
+    "where": "deep",
+    "arrangements": [
+     {
+      "prop": "security_kiosk",
+      "pattern": "line",
+      "amount": "some"
+     },
+     {
+      "prop": "elevator_pedestal",
+      "pattern": "center",
+      "amount": "few"
+     },
+     {
+      "prop": "lobby_bench",
+      "pattern": "along_walls",
+      "amount": "few"
+     }
+    ]
+   },
+   {
+    "id": "central_gathering",
+    "name": "Public Waiting Hub",
+    "purpose": "The lobby’s central gathering space: employees wait, trade glances, and pretend not to read notes by the cooler. Clear marble lanes stay passable even when benches fill.",
+    "count": 1,
+    "size": "medium",
+    "floor": "marble",
+    "enclosure": "open",
+    "where": "center",
+    "arrangements": [
+     {
+      "prop": "lobby_bench",
+      "pattern": "cluster",
+      "amount": "some"
+     },
+     {
+      "prop": "water_cooler",
+      "pattern": "corners",
+      "amount": "few"
+     },
+     {
+      "prop": "marble_planter",
+      "pattern": "corners",
+      "amount": "some"
+     }
+    ],
+    "gathering": true
+   },
+   {
+    "id": "lucky_kettle_frontage",
+    "name": "The Lucky Kettle frontage",
+    "purpose": "A small tea counter frontage facing the public hub. The cart and a few waiting cups promise a modest pause, though the polished marble around it leaves no obvious place to settle in.",
+    "count": 1,
+    "size": "small",
+    "floor": "carpet",
+    "enclosure": "open",
+    "where": "edge",
+    "arrangements": [
+     {
+      "prop": "kettle_cart",
+      "pattern": "line",
+      "amount": "few"
+     },
+     {
+      "prop": "lobby_bench",
+      "pattern": "along_walls",
+      "amount": "few"
+     }
+    ],
+    "building": "The Lucky Kettle"
+   },
+   {
+    "id": "synergy_supply_frontage",
+    "name": "The Synergy Supply Store frontage",
+    "purpose": "A compact supply-store frontage with stock stacked in disciplined ranks, ready for departments to replenish their paper assets and their explanations for losing them.",
+    "count": 1,
+    "size": "small",
+    "floor": "marble",
+    "enclosure": "open",
+    "where": "edge",
+    "arrangements": [
+     {
+      "prop": "supply_rack",
+      "pattern": "along_walls",
+      "amount": "some"
+     },
+     {
+      "prop": "paper_cart",
+      "pattern": "line",
+      "amount": "few"
+     }
+    ],
+    "building": "The Synergy Supply Store"
+   },
+   {
+    "id": "thorne_shop_frontage",
+    "name": "Thorne's Shop frontage",
+    "purpose": "A restrained display frontage that makes ordinary objects look as though they require approval to touch. The empty velvet pad is placed where it can be seen from the main corridor.",
+    "count": 1,
+    "size": "small",
+    "floor": "marble",
+    "enclosure": "open",
+    "where": "edge",
+    "arrangements": [
+     {
+      "prop": "display_case",
+      "pattern": "center",
+      "amount": "few"
+     },
+     {
+      "prop": "marble_planter",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ],
+    "building": "Thorne's Shop"
+   },
+   {
+    "id": "training_frontage",
+    "name": "Thorne's Training Hall frontage",
+    "purpose": "A practical forecourt for training appointments, marked into tidy lanes from the public entrance. Scuffed mats suggest the lessons are less theoretical than the signage implies.",
+    "count": 1,
+    "size": "small",
+    "floor": "carpet",
+    "enclosure": "open",
+    "where": "edge",
+    "arrangements": [
+     {
+      "prop": "training_station",
+      "pattern": "center",
+      "amount": "few"
+     },
+     {
+      "prop": "lobby_bench",
+      "pattern": "along_walls",
+      "amount": "few"
+     }
+    ],
+    "building": "Thorne's Training Hall"
+   },
+   {
+    "id": "vane_house_frontage",
+    "name": "Vane's House frontage",
+    "purpose": "An unnervingly domestic frontage presented as a model of a life beyond work. Its spotless console offers no evidence that anyone has ever lived there.",
+    "count": 1,
+    "size": "small",
+    "floor": "carpet",
+    "enclosure": "open",
+    "where": "edge",
+    "arrangements": [
+     {
+      "prop": "domestic_console",
+      "pattern": "center",
+      "amount": "few"
+     },
+     {
+      "prop": "marble_planter",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ],
+    "building": "Vane's House"
+   },
+   {
+    "id": "nap_pod_frontage",
+    "name": "The Nap Pod Lounge frontage",
+    "purpose": "A compact rest-lounge frontage with its capsule facing away from the busiest traffic, a small concession to privacy in a building that does not believe in it.",
+    "count": 1,
+    "size": "small",
+    "floor": "carpet",
+    "enclosure": "open",
+    "where": "edge",
+    "arrangements": [
+     {
+      "prop": "nap_pod",
+      "pattern": "along_walls",
+      "amount": "some"
+     },
+     {
+      "prop": "floor_uplight",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ],
+    "building": "The Nap Pod Lounge"
+   },
+   {
+    "id": "armory_frontage",
+    "name": "The Gray Suit Armory frontage",
+    "purpose": "A severe IT Security frontage, uniforms identical and no personal belongings in sight. The open floor before it makes the doorway feel like a checkpoint, even without an officer.",
+    "count": 1,
+    "size": "small",
+    "floor": "marble",
+    "enclosure": "open",
+    "where": "edge",
+    "arrangements": [
+     {
+      "prop": "uniform_locker",
+      "pattern": "along_walls",
+      "amount": "some"
+     },
+     {
+      "prop": "security_kiosk",
+      "pattern": "center",
+      "amount": "few"
+     }
+    ],
+    "building": "The Gray Suit Armory"
+   },
+   {
+    "id": "fridge_nook",
+    "name": "Breakroom Fridge Nook",
+    "purpose": "A conspicuously neglected breakroom corner by the public route. The refrigerator has gone uncleaned since 2009; dark seep draws curious visitors close enough to hear its whispered offers.",
+    "count": 1,
+    "size": "small",
+    "floor": "carpet",
+    "enclosure": "open",
+    "where": "edge",
+    "arrangements": [
+     {
+      "prop": "breakroom_fridge",
+      "pattern": "corners",
+      "amount": "few"
+     },
+     {
+      "prop": "water_cooler",
+      "pattern": "along_walls",
+      "amount": "few"
+     },
+     {
+      "prop": "shred_bin",
+      "pattern": "corners",
+      "amount": "few"
+     }
+    ]
+   }
+  ]
+ }
+}
