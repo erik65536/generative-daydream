@@ -107,7 +107,8 @@ const q = {
   claim: db.prepare(`UPDATE jobs SET status = 'running', lease_owner = ?, lease_until = ?, attempts = attempts + 1, started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ?`),
   renew: db.prepare('UPDATE jobs SET lease_until = ? WHERE id = ? AND lease_owner = ?'),
   save: db.prepare('UPDATE jobs SET status = ?, progress = ?, step = ?, error = ?, phases = ?, preview = ?, updated_at = ?, finished_at = ? WHERE id = ?'),
-  requeue: db.prepare(`UPDATE jobs SET status = 'queued', lease_owner = NULL, lease_until = NULL, updated_at = ? WHERE id = ?`),
+  // A planned pause (worker restart) is not a failed start: it does not count toward the crash limit.
+  requeue: db.prepare(`UPDATE jobs SET status = 'queued', lease_owner = NULL, lease_until = NULL, attempts = MAX(0, attempts - 1), updated_at = ? WHERE id = ?`),
   cancel: db.prepare('UPDATE jobs SET cancel_requested = 1, updated_at = ? WHERE id = ?'),
   cancelQueued: db.prepare(`UPDATE jobs SET status = 'cancelled', finished_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'`),
   cancelFlag: db.prepare('SELECT cancel_requested AS c FROM jobs WHERE id = ?'),

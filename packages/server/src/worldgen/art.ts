@@ -48,7 +48,7 @@ export interface ArtProgress {
 /** Roles that are drawn from art (doors and exits stay procedural). */
 const DIRECTED_ROLES: TileRole[] = ['floor', 'floorAlt', 'path', 'water', 'wall', 'tree', 'rock', 'plant', 'light', 'furniture', 'rubble', 'pillar', 'chest', 'shrine', 'sign', 'lever', 'bed'];
 
-const DirectionSchema = z.object({
+export const DirectionSchema = z.object({
   roles: z.object(Object.fromEntries(DIRECTED_ROLES.map((r) => [r, RoleDefSchema])) as Record<TileRole, typeof RoleDefSchema>),
   roof: RoleDefSchema.optional(),
   craft: RoleDefSchema.optional(),
@@ -65,6 +65,14 @@ Every object element stands on the floor of the map and is seen from above at an
 - Give every surface visible detail and mid-tone colours so it reads on the map: a dark substance or a void still shows its sheen, ripples, grain or drifting specks in a deep colour rather than flat black.
 
 For every element give a short name, 1-3 hex colours, and a prompt of 12-30 words describing only the physical thing: its shape, materials, colours, wear and details. Prompts never mention lighting, weather, fog, mist, smoke, glows, auras, surroundings or art style. Surfaces (floor, floorAlt, path, wall, water, roof) describe only their own material.`;
+
+/** Run tasks with at most `n` in flight. */
+async function pool<T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> {
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (next < items.length) await fn(items[next++]!);
+  }));
+}
 
 /** The zone's layout in words, so each element is chosen for the job it does on this map. */
 function describePlan(z: WorldDefinition['zones'][number]): string {
@@ -86,11 +94,11 @@ export async function directTilesets(w: WorldDefinition, report: (msg: string) =
   if (g.isProcedural('world.design')) return;
   const todo = opts?.only ? opts.only.map((id) => w.tilesets[id]).filter((t): t is TilesetDef => !!t) : Object.values(w.tilesets).filter((t) => !t.directed);
   let n = 0;
-  for (const ts of todo) {
+  await pool(todo, Math.max(1, g.config.worldGenParallelism), async (ts) => {
     if (shouldStop?.()) return;
     const zones = w.zones.filter((z) => z.tilesetId === ts.id);
     const z = zones.find((x) => x.kind !== 'interior') ?? zones[0];
-    if (!z) continue;
+    if (!z) return;
     const outer = z.kind === 'interior' ? w.zones.find((x) => x.id === z.parentZoneId) : undefined;
     const place = z.kind === 'interior' ? `inside the buildings of ${outer?.name ?? 'a town'} (${outer?.description ?? ''})` : `${z.name}, a ${z.kind}: ${z.description}\nLEVEL DESIGN: ${describePlan(z)}`;
     // Surfaces are listed by name only: their old descriptions often draw shapes (pools, patches) that do not tile.
@@ -114,7 +122,7 @@ THE OWNER'S DIRECTION FOR THIS PLACE (follow it, within the rules above): ${opts
       report(`Art direction for ${z.name} failed (${(e as Error).message.slice(0, 100)}); keeping its current look`);
     }
     onCount?.(++n, todo.length);
-  }
+  });
 }
 
 // ------------------------------------------------------------------------------------ plan
@@ -233,7 +241,7 @@ export function linkAssets(w: WorldDefinition) {
 
 // ------------------------------------------------------------------------------------ prompts
 
-const PromptBatch = z.object({ prompts: z.array(z.object({ key: z.string(), prompt: z.string().min(40).max(2400) })) });
+export const PromptBatch = z.object({ prompts: z.array(z.object({ key: z.string(), prompt: z.string().min(40).max(2400) })) });
 
 /**
  * Turn short asset briefs into full descriptive prompts, in batches, while the text model is still resident
@@ -245,32 +253,37 @@ export async function writeImagePrompts(w: WorldDefinition, plan: AssetRecord[],
   const todo = plan.filter((r) => !r.imagePrompt && !r.variant);
   const system = imagePromptSystem(writerProfile());
   const BATCH = 6;
-  let written = 0;
-  for (let i = 0; i < todo.length; i += BATCH) {
+  let written = 0, finished = 0;
+  const batches: AssetRecord[][] = [];
+  for (let i = 0; i < todo.length; i += BATCH) batches.push(todo.slice(i, i + BATCH));
+  // Batches run side by side (a hosted model answers several at once); each is kept as soon as it is written.
+  await pool(batches, Math.max(1, genai().config.worldGenParallelism), async (batch) => {
     if (shouldStop?.()) return;
-    const batch = todo.slice(i, i + BATCH);
     const briefs = batch.map((r) => `[${r.key}] ${assetBrief(r, w.concept.artStyle)}${notes?.get(r.key) ? `\nEARLIER ATTEMPTS WERE REJECTED: ${notes.get(r.key)}. Write the prompt so the image avoids this.` : ''}`).join('\n\n');
+    // Exactly one prompt per brief, keyed by the briefs' own keys (enforced by strict structured output).
+    const keys = batch.map((r) => r.key) as [string, ...string[]];
+    const schema = z.object({ prompts: z.array(z.object({ key: z.enum(keys), prompt: z.string().min(40).max(2400) })).min(batch.length).max(batch.length) });
     try {
       const out = await genai().structured('image.prompt', {
         system,
         prompt: `World: ${w.concept.title}: ${w.concept.pitch}\nPalette: ${Object.values(w.concept.palette).join(', ')}.\nWrite one prompt per brief below. Return each with the key shown in brackets.\n\n${briefs}`,
-        schema: PromptBatch,
+        schema,
         name: 'image_prompts',
         maxTokens: 380 * batch.length + 200,
       });
       for (const p of out.prompts) {
         const rec = batch.find((r) => r.key === p.key);
-        if (rec) {
-          rec.imagePrompt = p.prompt.trim();
-          written++;
-        }
+        if (!rec) continue;
+        rec.imagePrompt = p.prompt.trim();
+        w.assets[rec.key] = { ...(w.assets[rec.key] ?? rec), prompt: rec.prompt, imagePrompt: rec.imagePrompt };
+        written++;
       }
     } catch (e) {
       report(`Image prompts batch failed (${(e as Error).message.slice(0, 120)}); using template prompts`);
     }
-    onCount?.(Math.min(todo.length, i + BATCH), todo.length);
+    onCount?.(Math.min(todo.length, ++finished * BATCH), todo.length);
     report(`Wrote ${written}/${todo.length} image prompts`);
-  }
+  });
   for (const r of plan) if (r.imagePrompt) w.assets[r.key] = { ...(w.assets[r.key] ?? r), prompt: r.prompt, imagePrompt: r.imagePrompt };
 }
 

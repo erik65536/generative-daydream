@@ -3,10 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
 import { CONFIG_DIR, DATA_DIR } from '../paths';
-import { AnthropicProvider, ComfyUIProvider, GoogleProvider, LlamaDecisionProvider, OpenAIChatProvider, OpenAIImageProvider, OpenAIResponsesProvider } from './providers';
+import { AnthropicProvider, ComfyUIProvider, GoogleProvider, LlamaDecisionProvider, OpenAIChatProvider, OpenAIDecisionProvider, OpenAIImageProvider, OpenAIResponsesProvider } from './providers';
 import { GpuScheduler } from './gpu';
 import { callContext, priorityOf, PRIORITY_RANK } from './context';
-import { parseModelJson } from './json';
+import { clampToSchema, findLimitViolations, parseModelJson, restoreOptional, pathLabel, resolveRefs, setAtPath, type LimitViolation } from './json';
 import {
   GenAIError, PURPOSES, ProceduralOnly,
   type DecisionAnswer, type DecisionProvider, type DecisionRequest, type GenAIConfig, type ImageProvider, type ImageRequest, type ProviderConfig, type Purpose, type PurposeConfig, type TextProvider, type TextRequest,
@@ -166,7 +166,8 @@ export class GenAI {
   /** Is this purpose served by a decision model (choice/score/yes-no answers) rather than an LLM? */
   isDecision(p: Purpose): boolean {
     const pc = this.config.purposes[p];
-    return !!pc && this.config.providers[pc.provider]?.type === 'llamacpp-decision';
+    const t = pc && this.config.providers[pc.provider]?.type;
+    return t === 'llamacpp-decision' || t === 'openai-decision';
   }
 
   async decide(p: Purpose, req: DecisionRequest): Promise<Record<string, DecisionAnswer>> {
@@ -174,8 +175,9 @@ export class GenAI {
     let prov = this.decisionProviders.get(pc.provider);
     if (!prov) {
       const cfg = this.providerConfig(pc.provider);
-      if (cfg.type !== 'llamacpp-decision') throw new GenAIError(`Provider "${pc.provider}" is not a decision model`, false);
-      prov = new LlamaDecisionProvider(cfg);
+      if (cfg.type === 'openai-decision') prov = new OpenAIDecisionProvider(cfg);
+      else if (cfg.type === 'llamacpp-decision') prov = new LlamaDecisionProvider(cfg);
+      else throw new GenAIError(`Provider "${pc.provider}" is not a decision model`, false);
       this.decisionProviders.set(pc.provider, prov);
     }
     const t0 = Date.now();
@@ -245,6 +247,43 @@ export class GenAI {
     }
   }
 
+  /** Ask the model to rewrite only the fields that break their size limits, keeping their meaning. */
+  private async fitLimits(p: Purpose, parsed: unknown, over: LimitViolation[], root: Record<string, unknown>, system?: string): Promise<unknown> {
+    const pc = this.purpose(p);
+    const provider = this.text_(pc.provider);
+    const fields = over.slice(0, 24);
+    const schema = { type: 'object', properties: Object.fromEntries(fields.map((v, i) => [`f${i}`, resolveRefs(v.schema, root)])), required: fields.map((_, i) => `f${i}`) };
+    const list = fields.map((v, i) => `f${i} (${pathLabel(v.path)}, ${v.limit}):\n${JSON.stringify(v.value)}`).join('\n\n');
+    const t0 = Date.now();
+    try {
+      const raw = await this.exec(p, pc.provider, pc.model, () =>
+        provider.structured(
+          {
+            system,
+            messages: [{ role: 'user', content: `Some fields of your answer are over their size limits. Rewrite each one to fit its limit while keeping its meaning, names and voice: shorter text must still read as complete; a list over its count keeps the most important items (merge where it helps).
+
+${list}
+
+Return a JSON object with the rewritten f0, f1, ... only.` }],
+            schema,
+            schemaName: 'fit_limits',
+            maxTokens: Math.round(Math.min(6000, 300 + fields.reduce((t, v) => t + JSON.stringify(v.value).length / 3, 0))),
+          },
+          pc.model,
+          pc.extraBody,
+        ),
+      );
+      const fixed = parseModelJson(raw) as Record<string, unknown>;
+      fields.forEach((v, i) => {
+        if (fixed && `f${i}` in fixed) parsed = setAtPath(parsed, v.path, fixed[`f${i}`]);
+      });
+      this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: true, attempt: 1, promptChars: list.length, responseChars: raw.length, preview: `fitted ${fields.length} field(s) to their limits` });
+    } catch (e) {
+      this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: false, error: `fit limits: ${(e as Error).message.slice(0, 300)}`, attempt: 1, promptChars: list.length });
+    }
+    return parsed;
+  }
+
   /** Structured generation validated with zod, retried with the validation error as feedback. */
   async structured<T extends z.ZodType>(p: Purpose, opts: StructuredOptions<T>): Promise<z.infer<T>> {
     const pc = this.purpose(p);
@@ -265,7 +304,12 @@ export class GenAI {
             pc.extraBody,
           ),
         );
-        const parsed = parseModelJson(raw);
+        // Fields over their size limits are rewritten on their own (a small request), not by regenerating the
+        // whole answer; anything still over is trimmed as a last resort.
+        let parsed = restoreOptional(parseModelJson(raw), jsonSchema);
+        const over = findLimitViolations(parsed, jsonSchema);
+        if (over.length) parsed = await this.fitLimits(p, parsed, over, jsonSchema, opts.system);
+        parsed = clampToSchema(parsed, jsonSchema);
         const result = opts.schema.safeParse(parsed);
         if (!result.success) throw new Error(`Schema validation failed: ${z.prettifyError(result.error).slice(0, 800)}`);
         const semantic = opts.validate?.(result.data);

@@ -137,7 +137,7 @@ export function applyEdit(w: WorldDefinition, e: StudioEdit): string | null {
 
 export type RewriteTarget = { type: 'npc' | 'quest' | 'zone'; id: string };
 
-const NpcRewrite = z.object({
+export const NpcRewrite = z.object({
   name: text(60),
   title: text(80),
   personality: text(800),
@@ -147,13 +147,13 @@ const NpcRewrite = z.object({
   greeting: text(400),
   barks: z.array(text(200)).max(6),
 });
-const QuestRewrite = z.object({
+export const QuestRewrite = z.object({
   title: text(100),
   summary: text(1500),
   completionText: text(1000),
   objectives: z.array(z.object({ id: z.string(), description: text(300).describe('One short sentence the quest log shows, under 20 words') })),
 });
-const ZoneRewrite = z.object({ name: text(80), description: text(1500), lore: z.string().max(1500) });
+export const ZoneRewrite = z.object({ name: text(80), description: text(1500), lore: z.string().max(1500) });
 
 const REWRITE_SYSTEM = `You are the writer of a role-playing game, revising one piece of an existing world at its owner's request. Follow the owner's direction closely. Keep everything consistent with the world and with the facts given (names of other people and places, what the game requires of the piece). Write vivid, specific text in the world's own voice. Never use generic fantasy defaults unless the world is fantasy.`;
 

@@ -19,7 +19,7 @@ export function userBrief(input: WorldInput): string {
     `USER'S SETTING:\n${input.setting.trim()}`,
     input.story?.trim() ? `USER'S STORY / LORE / QUEST IDEAS:\n${input.story.trim()}` : '',
     input.notes?.trim() ? `USER'S ADDITIONAL NOTES (follow these):\n${input.notes.trim()}` : '',
-    `SCALE: ${input.size} world (${s.towns} towns, ${s.wilds} wilderness areas, ${s.dungeons} dungeons across ${s.regions} regions); ${input.length} game (max level ${l.maxLevel}, ${l.arcs} story arcs).`,
+    `SCALE (for your planning only; never mention these counts, levels, arcs or other game structure in anything the player reads, such as the pitch, intro, descriptions, quests or dialogue): ${input.size} world (${s.towns} towns, ${s.wilds} wilderness areas, ${s.dungeons} dungeons across ${s.regions} regions); ${input.length} game (max level ${l.maxLevel}, ${l.arcs} story arcs).`,
     `NPC COMMUNICATION: ${['NPCs keep to themselves', 'news spreads to friends and family', 'news spreads through whole towns', 'news spreads across the world'][input.communication]}.`,
     `PARTY: ${input.combatMode === 'solo' ? 'the player adventures alone' : input.combatMode === 'party_manual' ? 'the player controls a party of up to four' : 'the player can recruit NPC companions'}.`,
   ]

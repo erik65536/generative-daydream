@@ -313,6 +313,18 @@ export async function inspectionView(png: Buffer, size = 448): Promise<Buffer> {
     .toBuffer();
 }
 
+/** The same inspection as two separate images (the asset on magenta, then its opacity mask), for checkers that
+ * read a side-by-side view as two subjects. */
+export async function inspectionImages(png: Buffer, size = 448): Promise<[Buffer, Buffer]> {
+  // A margin of empty space, so a trimmed asset touching its edges is not mistaken for one cut off by the frame.
+  const m = await sharp(png).metadata();
+  const pad = Math.round(Math.max(m.width ?? 0, m.height ?? 0) * 0.08);
+  png = await sharp(png).extend({ top: pad, bottom: pad, left: pad, right: pad, background: { r: 0, g: 0, b: 0, alpha: 0 } }).png().toBuffer();
+  const subject = await sharp(png).resize(size, size, { fit: 'contain', background: { r: 255, g: 0, b: 255, alpha: 1 } }).flatten({ background: '#ff00ff' }).png().toBuffer();
+  const mask = await sharp(png).resize(size, size, { fit: 'contain', background: { r: 0, g: 0, b: 0, alpha: 0 } }).extractChannel('alpha').toColourspace('b-w').png().toBuffer();
+  return [subject, mask];
+}
+
 /** Reference image for pose variants: the approved sprite on plain light grey, framed like a fresh generation. */
 export async function referenceFrame(png: Buffer, outW: number, outH: number): Promise<{ png: Buffer; figureRatio: number }> {
   const m = await sharp(png).metadata();

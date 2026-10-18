@@ -6,6 +6,7 @@ import path from 'node:path';
 import Anthropic from '@anthropic-ai/sdk';
 import { GenAIError, type DecisionAnswer, type DecisionProvider, type DecisionRequest, type ImageProvider, type ImageRequest, type ProviderConfig, type StructuredRequest, type TextProvider, type TextRequest } from './types';
 import { ROOT_DIR } from '../paths';
+import { strictSchema } from './json';
 
 export function resolveSecret(v?: string): string | undefined {
   if (!v) return undefined;
@@ -115,6 +116,15 @@ export class OpenAIChatProvider implements TextProvider {
 
 // ---------------------------------------------------------------------------- OpenAI Responses API
 
+/** Tokens used on OpenAI this process (for cost reports in tools and logs). */
+export const openaiUsage = { calls: 0, input: 0, cached: 0, output: 0, reasoning: 0, decisionCalls: 0, decisionInput: 0 };
+
+/** Rough spend in dollars at gpt-6-luna prices (flex halves text). */
+export function openaiCost(flex = true): number {
+  const k = flex ? 0.5 : 1;
+  return k * ((openaiUsage.input - openaiUsage.cached) * 0.1 + openaiUsage.cached * 0.01 + openaiUsage.output * 0.5) / 1e6 + (openaiUsage.decisionInput * 0.1) / 1e6;
+}
+
 export class OpenAIResponsesProvider implements TextProvider {
   constructor(private cfg: ProviderConfig) {}
 
@@ -126,8 +136,9 @@ export class OpenAIResponsesProvider implements TextProvider {
         return { role: 'user', content: [{ type: 'input_text', text: m.content }, ...req.images.map((b) => ({ type: 'input_image', image_url: `data:image/png;base64,${b.toString('base64')}` }))] };
       return { role: m.role, content: m.content };
     });
-    const body: Record<string, unknown> = { model: model ?? this.cfg.model, instructions: req.system, input, max_output_tokens: req.maxTokens, ...(this.cfg.extraBody ?? {}), ...extra };
-    if (req.temperature !== undefined && !/^(o\d|gpt-5)/.test(String(body.model))) body.temperature = req.temperature;
+    const body: Record<string, unknown> = { model: model ?? this.cfg.model, instructions: req.system, input, max_output_tokens: req.maxTokens ? req.maxTokens + (this.cfg.reasoningTokens ?? 0) : undefined, ...(this.cfg.serviceTier ? { service_tier: this.cfg.serviceTier } : {}), ...(this.cfg.extraBody ?? {}), ...extra };
+    // Reasoning models take no sampling temperature.
+    if (req.temperature !== undefined && !/^(o\d|gpt-[5-9])/.test(String(body.model))) body.temperature = req.temperature;
     if (format) body.text = { format };
     const data = await httpJson(`${trimSlash(this.cfg.baseUrl ?? 'https://api.openai.com/v1')}/responses`, {
       method: 'POST',
@@ -135,6 +146,15 @@ export class OpenAIResponsesProvider implements TextProvider {
       body: JSON.stringify(body),
       timeoutMs: this.cfg.timeoutMs,
     });
+    const u = data.usage;
+    if (u) {
+      openaiUsage.calls++;
+      openaiUsage.input += u.input_tokens ?? 0;
+      openaiUsage.cached += u.input_tokens_details?.cached_tokens ?? 0;
+      openaiUsage.output += u.output_tokens ?? 0;
+      openaiUsage.reasoning += u.output_tokens_details?.reasoning_tokens ?? 0;
+    }
+    if (data.status === 'incomplete') throw new GenAIError(`Response incomplete (${data.incomplete_details?.reason ?? 'unknown'}); raise maxTokens or reasoningTokens`, false);
     if (typeof data.output_text === 'string') return data.output_text;
     const parts: string[] = [];
     for (const o of data.output ?? []) if (o.type === 'message') for (const c of o.content ?? []) if (c.type === 'output_text') parts.push(c.text);
@@ -147,7 +167,9 @@ export class OpenAIResponsesProvider implements TextProvider {
   }
 
   structured(req: StructuredRequest, model?: string, extra?: Record<string, unknown>) {
-    const mode = this.cfg.structured ?? 'json_schema';
+    const mode = this.cfg.structured ?? 'strict';
+    // Strict structured outputs: the schema is enforced while decoding (see strictSchema for what that covers).
+    if (mode === 'strict') return this.call(req, model, { type: 'json_schema', name: req.schemaName, schema: strictSchema(req.schema as never), strict: true }, extra);
     if (mode === 'json_schema') return this.call(req, model, { type: 'json_schema', name: req.schemaName, schema: req.schema, strict: false }, extra);
     return this.call({ ...req, system: (req.system ?? '') + schemaInstruction(req) }, model, mode === 'json_object' ? { type: 'json_object' } : undefined, extra);
   }
@@ -420,6 +442,48 @@ export class ComfyUIProvider implements ImageProvider {
 // ---------------------------------------------------------------------------- llama.cpp decision models
 
 /** Decision models answer choice / score / yes-no questions with probabilities (llama.cpp `/v1/systemone`). */
+/**
+ * OpenAI decision models (POST /v1/decisions): questions answered independently over shared evidence, as
+ * probabilities. Our question types map onto theirs: choice -> choice, score -> score levels, noul -> predicate.
+ */
+export class OpenAIDecisionProvider implements DecisionProvider {
+  constructor(private cfg: ProviderConfig) {}
+  async decide(req: DecisionRequest, model?: string): Promise<Record<string, DecisionAnswer>> {
+    const key = resolveSecret(this.cfg.apiKey) ?? process.env.OPENAI_API_KEY;
+    const state = typeof req.state === 'string' ? req.state : req.state.map((m) => `${m.role}: ${m.content}`).join('\n');
+    const names = Object.keys(req.questions);
+    const questions = names.map((name) => {
+      const q = req.questions[name]!;
+      if (q.type === 'choice') return { type: 'choice', name, instructions: q.instructions, choices: Object.entries(q.criteria).map(([value, description]) => ({ value, description: description ?? value })) };
+      if (q.type === 'score') return { type: 'score', name, instructions: q.instructions, levels: q.criteria.map((label) => ({ label, description: label })) };
+      return { type: 'predicate', name, instructions: q.instructions };
+    });
+    const content = [{ type: 'input_text', text: state }, ...(req.images ?? []).map((b) => ({ type: 'input_image', image_url: `data:image/png;base64,${b.toString('base64')}` }))];
+    const data = await httpJson(`${trimSlash(this.cfg.baseUrl ?? 'https://api.openai.com/v1')}/decisions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}), ...(this.cfg.headers ?? {}) },
+      body: JSON.stringify({ model: model ?? this.cfg.model ?? 'gpt-6-luna', input: [{ role: 'user', content }], questions, ...(this.cfg.extraBody ?? {}) }),
+      timeoutMs: this.cfg.timeoutMs ?? 120_000,
+    });
+    if (!Array.isArray(data?.answers)) throw new GenAIError(`Decision model returned no answers: ${JSON.stringify(data).slice(0, 300)}`);
+    openaiUsage.decisionCalls++;
+    openaiUsage.decisionInput += data.usage?.input_tokens ?? 0;
+    const out: Record<string, DecisionAnswer> = {};
+    for (const a of data.answers as { type: string; name: string; probability?: number; choice?: string; score?: number; confidence?: number; probabilities?: { value: string; label?: string; probability: number }[] }[]) {
+      const probs = Object.fromEntries((a.probabilities ?? []).map((p) => [p.value, p.probability]));
+      if (a.type === 'predicate') out[a.name] = { type: 'noul', noul: a.probability ?? 0.5 };
+      else if (a.type === 'choice') out[a.name] = { type: 'choice', choice: String(a.choice), probabilities: probs, confidence: a.confidence ?? 0 };
+      else if (a.type === 'score') {
+        const q = req.questions[a.name];
+        const legend = q?.type === 'score' ? Object.fromEntries(q.criteria.map((c, i) => [String(i), c])) : {};
+        out[a.name] = { type: 'score', score: a.score ?? 0, legend, probabilities: probs, confidence: a.confidence ?? 0 };
+      }
+      // A refusal leaves the question unanswered; callers treat missing answers as neutral.
+    }
+    return out;
+  }
+}
+
 export class LlamaDecisionProvider implements DecisionProvider {
   constructor(private cfg: ProviderConfig) {}
   async decide(req: DecisionRequest, model?: string): Promise<Record<string, DecisionAnswer>> {

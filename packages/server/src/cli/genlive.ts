@@ -3,6 +3,7 @@
  *   npx tsx src/cli/genlive.ts "<setting>" [none|essential|full] [--story "..."] [--notes "..."] [--owner <userId> <name>] [--mode solo|party_manual|party_npc]
  */
 import { WorldGenJob, runGeneration } from '../worldgen/pipeline';
+import { openaiCost, openaiUsage } from '../genai/providers';
 
 const args = process.argv.slice(2);
 const opt = (name: string, n = 1) => {
@@ -26,6 +27,7 @@ const timer = setInterval(() => {
 try {
   await runGeneration(job);
   console.log(`DONE ${id} in ${((Date.now() - t0) / 60000).toFixed(1)} min`);
+  console.log(`OpenAI usage: ${JSON.stringify(openaiUsage)} ≈ $${openaiCost().toFixed(3)}`);
 } catch (e) {
   console.error('FAILED', e);
   process.exitCode = 1;

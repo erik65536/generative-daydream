@@ -11,7 +11,7 @@ import { hashOf } from '@gd/shared';
 import type { AssetRecord } from '@gd/shared';
 import { genai } from './service';
 import type { Purpose } from './types';
-import { inspectionView, processSprite, referenceFrame, type ProcessedImage } from './matte';
+import { inspectionImages, inspectionView, processSprite, referenceFrame, type ProcessedImage } from './matte';
 import { profileFor, type AssetKind, type PromptProfile } from './promptprofiles';
 
 export type { ProcessedImage };
@@ -136,7 +136,23 @@ const CRITERIA: Record<AssetKind, string> = {
   portrait: 'a single character portrait, face clearly visible, no text.',
 };
 
-const LEVELS = ['unusable', 'poor', 'mediocre', 'acceptable', 'good', 'excellent'];
+/** Quality levels, each with what it means for a game asset (checkers calibrate on the descriptions). */
+const LEVELS = [
+  'unusable: broken, garbled, the wrong subject, or unreadable at game size',
+  'poor: clear defects such as artefacts, wrong framing, missing parts or leftover background',
+  'mediocre: usable but with noticeable flaws',
+  'acceptable: fits the game, only minor flaws',
+  'good: clean, readable, well made game art that fits its description',
+  'excellent: polished, professional game art',
+];
+const MATCH_LEVELS = [
+  'unrelated: shows something else',
+  'barely: a few elements of the description',
+  'partly: the right kind of thing, but important details differ',
+  'mostly: the subject is right, small details differ',
+  'closely: the subject and its main details match',
+  'exactly: everything described is there',
+];
 
 export interface Review {
   score: number;
@@ -156,24 +172,28 @@ export async function qualityCheck(png: Buffer, kind: AssetKind, description: st
   // Variants are judged on their own: reference conditioning keeps identity, and small checkers compare two
   // images unreliably (they rejected faithful frames). A vision LLM still gets the original for context.
   const refView = reference && !g.isDecision('image.check') ? await inspectionView(reference) : undefined;
-  const images = refView ? [view, refView] : [view];
+  // OpenAI's decision model reads a side-by-side view as two subjects: it gets the asset and its mask apart.
+  const split = !isTex && g.providerConfig(g.purpose('image.check').provider).type === 'openai-decision';
+  const images = split ? await inspectionImages(png) : refView ? [view, refView] : [view];
   try {
     if (g.isDecision('image.check')) {
       const a = await g.decide('image.check', {
         state: isTex
           ? `A generated game texture, shown tiled 2x2. It should depict: "${description}". Requirements: ${CRITERIA[kind]}`
-          : `A generated game asset. Left panel: the cut-out subject on a magenta background (magenta means empty, transparent space). Right panel: its opacity mask (white = opaque). It should depict: "${description}". Requirements: ${CRITERIA[kind]}${refView ? ' The second image shows the original it must match, in the same layout.' : ''}`,
+          : split
+            ? `A generated game asset. Image 1: the cut-out asset on a plain magenta background (magenta is empty, transparent space, not part of the asset). Image 2: the same asset's opacity mask (white = opaque, black = transparent); it is the same single asset, not a second one. It should depict: "${description}". Requirements: ${CRITERIA[kind]}`
+            : `A generated game asset. Left panel: the cut-out subject on a magenta background (magenta means empty, transparent space). Right panel: its opacity mask (white = opaque). It should depict: "${description}". Requirements: ${CRITERIA[kind]}${refView ? ' The second image shows the original it must match, in the same layout.' : ''}`,
         images,
         questions: {
-          quality: { type: 'score', instructions: 'How usable is this image as a polished game asset?', criteria: LEVELS },
-          match: { type: 'score', instructions: 'How well does the image match the description?', criteria: LEVELS },
+          quality: { type: 'score', instructions: 'Judged as a game asset shown small on screen (not as a standalone artwork): how usable is it?', criteria: LEVELS },
+          match: { type: 'score', instructions: 'How well does the image match the description?', criteria: MATCH_LEVELS },
           ...(isTex
             ? {
                 flat: { type: 'noul' as const, instructions: 'Is this a flat top-down surface texture with no objects, horizon or perspective?' },
                 seams: { type: 'noul' as const, instructions: 'Are there visible seams, lines or obvious repeating blotches where the four tiles meet?' },
               }
             : {
-                single: { type: 'noul' as const, instructions: 'Does the image show exactly one subject?' },
+                single: { type: 'noul' as const, instructions: 'Does the image show a single subject: one character, creature, object or item? A pile, stack, set or arrangement that forms one thing counts as one.' },
                 whole: { type: 'noul' as const, instructions: 'Is the whole subject visible, not cut off by the image edge?' },
                 clean: { type: 'noul' as const, instructions: 'Apart from the subject itself, is there any fog, mist, smoke, glow, aura, ground patch, shadow, floor or rectangular background panel? Look at the white area of the mask: anything beyond the subject counts.' },
                 dark: { type: 'noul' as const, instructions: 'Is the subject so dark or murky that its shape and details are hard to make out?' },
@@ -181,6 +201,7 @@ export async function qualityCheck(png: Buffer, kind: AssetKind, description: st
           text: { type: 'noul', instructions: 'Does the image contain any text, letters, watermark or signature?' },
         },
       });
+      if (process.env.GD_DEBUG_CHECK) console.log('[check]', JSON.stringify(Object.fromEntries(Object.entries(a).map(([k, v]) => [k, v.type === 'score' ? +v.score.toFixed(2) : v.type === 'noul' ? +v.noul.toFixed(2) : v.choice]))));
       const lvl = (k: string) => {
         const x = a[k];
         return x?.type === 'score' ? (x.score / (LEVELS.length - 1)) * 10 : 5;

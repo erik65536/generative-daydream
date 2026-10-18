@@ -31,7 +31,7 @@ export async function designRules(run: StepRunner, world: string, input: WorldIn
 
 // ------------------------------------------------------------------------------------ review
 
-const ReviewSchema = z.object({
+export const ReviewSchema = z.object({
   verdict: z.string().max(400),
   revisions: z
     .array(

@@ -14,7 +14,7 @@ export const PURPOSES = [
 ] as const;
 export type Purpose = (typeof PURPOSES)[number];
 
-export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'google' | 'comfyui' | 'openai-image' | 'google-image' | 'llamacpp-decision';
+export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'google' | 'comfyui' | 'openai-image' | 'google-image' | 'llamacpp-decision' | 'openai-decision';
 
 export interface ProviderConfig {
   type: ProviderType;
@@ -23,10 +23,14 @@ export interface ProviderConfig {
   apiKey?: string;
   model?: string;
   /** How to request JSON: native schema, JSON mode, or by prompting only. */
-  structured?: 'json_schema' | 'json_object' | 'prompt';
+  structured?: 'strict' | 'json_schema' | 'json_object' | 'prompt';
   timeoutMs?: number;
   /** Max parallel requests to this provider. */
   concurrency?: number;
+  /** OpenAI: processing tier ("flex" is half price and slower; busy flex capacity is waited out, not billed). */
+  serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
+  /** Reasoning models: output tokens added to every request's limit for the model's thinking (billed only when used). */
+  reasoningTokens?: number;
   /** Extra body parameters merged into every request (e.g. top_p, reasoning settings). */
   extraBody?: Record<string, unknown>;
   headers?: Record<string, string>;

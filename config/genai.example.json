@@ -64,7 +64,14 @@
     "openai": {
       "type": "openai-responses",
       "apiKey": "env:OPENAI_API_KEY",
-      "model": "gpt-5-mini"
+      "model": "gpt-6-luna",
+      "serviceTier": "flex",
+      "structured": "strict",
+      "vision": true,
+      "concurrency": 8,
+      "timeoutMs": 900000,
+      "reasoningTokens": 12000,
+      "_comment": "Hosted text and structured output. Put OPENAI_API_KEY in .env at the repository root. 'flex' is half price; busy capacity is waited out. 'strict' enforces the schema while decoding."
     },
     "openai-images": {
       "type": "openai-image",
@@ -85,6 +92,14 @@
       "type": "google-image",
       "apiKey": "env:GEMINI_API_KEY",
       "model": "gemini-2.5-flash-image"
+    },
+    "openai-decide": {
+      "type": "openai-decision",
+      "apiKey": "env:OPENAI_API_KEY",
+      "model": "gpt-6-luna",
+      "concurrency": 8,
+      "timeoutMs": 120000,
+      "_comment": "OpenAI decisions endpoint (/v1/decisions), e.g. for image.check."
     }
   },
   "purposes": {

@@ -7,3 +7,4 @@ config/server.json
 .env
 coverage/
 data-test/
+config/genai.local-only.json
