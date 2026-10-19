@@ -20,7 +20,7 @@ const ChunkPlanSchema = z.object({
   border: z.string().min(10).max(300).describe('What closes the place in along its outer edges (dense forest, cliffs, a wall)'),
   parts: z.array(z.object({ col: z.number().int(), row: z.number().int(), content: z.string().min(40).max(700) })),
 });
-export type ChunkPlan = z.infer<typeof ChunkPlanSchema> & { cols: number; rows: number };
+export type ChunkPlan = z.infer<typeof ChunkPlanSchema> & { cols: number; rows: number; indoor?: boolean };
 
 export async function planChunks(w: WorldDefinition, zone: ZoneDef, cols: number, rows: number): Promise<ChunkPlan> {
   const n = needsOf(w, zone);
@@ -45,7 +45,7 @@ The game draws its own people, creatures, chests, loot, shrines and signs, so ne
     name: 'chunk_plan',
     maxTokens: 3000,
   });
-  return { ...out, cols, rows };
+  return { ...out, cols, rows, indoor: !!zone.indoor };
 }
 
 const CAMERA =

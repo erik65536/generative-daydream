@@ -43,6 +43,32 @@ ruts" drew rail-like lines, so long parallel marks on the ground are left out. N
 it. Fixes like this must be general rules for Luna, never patches for one zone. The game draws people,
 creatures, chests, loot, shrines and signs itself, so the painting never includes them.
 
+## Reading the painting back
+
+`zonepaint.ts`, run with `zonelab read <world> <zone> <image> <out> --check --place`:
+
+1. **Luna reads** the painting and names, as an object detector would: walkable surfaces, connectors (stairs,
+   ramps, bridges), blocked surfaces, the enterable structure ("house", "office room"), the entrance, a scale
+   object of known height, and landmarks. She can reject the picture.
+2. **SAM 3 detects** every term. Where detections overlap, the most specific one (the smallest object) decides
+   the pixel: a pier mask spanning the water between its arms loses to the water, and a "water" mask spread
+   over a wet street loses to the street.
+3. **MoGe normals** keep only flat, upward-facing ground. Connectors are walkable although they slope.
+4. **Clearance** for a character's feet, then the largest connected region. Doorways are **portals**: a door
+   joins the floor at its foot to the floor beyond the wall (looked for straight up, within 4 m), as in most
+   isometric games. This connects rooms behind full-height walls. In towns, where doors lead into buildings,
+   nothing is joined.
+5. **Luna checks** the colouring (an overlay without markers) and names causes in detector terms, never terms
+   already used: a cut-off area gets the thing that joins it (a doorway, a bridge landing). One cached
+   re-read applies them.
+6. **Luna places** buildings, exits, people and features at numbered candidate spots: entrances (grouped by the
+   structure detection they sit on, with doors closer than a metre merged), edge exits, landmarks, and open
+   ground spread evenly (never on stairs). Markers are sized for the downscaled view and never cover each other.
+
+A painting rule asking for knee-height cutaway walls was tried and dropped: Krea ignored it, and portals made
+it unnecessary. Krea's 1728 px windows already paint at about 41 px/m against the game's 47, so the upscale
+factor should come from the measured scale, not a fixed 2×.
+
 ## Rejected (and why)
 
 - **Plain noise-mask inpainting** (SetLatentNoiseMask), for Qwen and for Krea: the model barely sees the known

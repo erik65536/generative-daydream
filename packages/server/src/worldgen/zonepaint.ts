@@ -155,11 +155,17 @@ export async function checkReading(png: Buffer, overlayJpg: Buffer, read: Painti
     system: 'You are the level designer of a 2D isometric RPG checking which parts of a painted level the game lets people walk on. Judge only what you see.',
     prompt: `Image 1 is the level. Image 2 is the same level coloured by the game: green = people can walk there; yellow = walkable surface too narrow or cut off from the rest; red = blocked; blue = not flat (walls, roofs' slopes, objects); uncoloured = not recognised.
 It was found by looking for walkable: ${read.walkable.join(', ')}; connectors: ${(read.connectors ?? []).join(', ') || 'none'}; blocked: ${read.notWalkable.join(', ')}.
-Is the colouring right for walking around this level? Ignore small fringes along edges and objects. Name only real mistakes: walkable ground that is not green (a street, a stair, a bridge cut off) or green where nobody can walk (water, roofs, boats, furniture). For each, give the short everyday name of the thing as an object detector would call it ("stone stairs", "wooden boat", "water"), never a label or code.`,
+Is the colouring right for walking around this level? Ignore small fringes along edges and objects. Name only real mistakes: walkable ground that is not green (a street, a stair, a bridge cut off) or green where nobody can walk (water, roofs, boats, furniture).
+For each mistake, name the cause, not the symptom. An area that is yellow (cut off) is usually missing the thing that joins it to the rest: name that (a doorway, a gap in a wall, the end of a bridge, a ramp), not the area itself. Never suggest a name that is already in the lists above: the detector already looked for it, so if such a surface is still wrongly coloured, describe it differently by how it looks. For each, give the short everyday name of the thing as an object detector would call it ("stone stairs", "wooden boat", "water"), never a label or code.`,
     schema: CheckSchema,
     name: 'reading_check',
     images: [view, marked],
     maxTokens: 1200,
+    validate: (c) => {
+      const used = new Set([...read.walkable, ...(read.connectors ?? []), ...read.notWalkable].map((t) => t.toLowerCase()));
+      const again = [...c.addWalkable, ...c.addConnectors, ...c.addBlocked].filter((t) => used.has(t.toLowerCase()));
+      return again.length ? `Already looked for: ${again.join(', ')}. Name what joins the cut-off area or describe the surface differently.` : null;
+    },
   });
 }
 
@@ -421,6 +427,7 @@ export interface ZoneReading {
   blocked: Mask; // not-walkable surfaces
   flat: Mask; // flat, upward-facing surfaces (MoGe)
   link: Mask; // connectors (stairs, ramps, bridges)
+  portals: { x: number; y: number; a: number; b: number }[]; // doorways joining floors on both sides of a wall (painting px)
   walkableShare: number;
   regions: number[]; // sizes of the walkable regions (share of the picture) before keeping the largest
   doors: Spot[]; // entrances whose foot touches the walkable ground
@@ -506,10 +513,42 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
   for (let i = 0; i < clear.length; i++) clear[i] = dist[i]! >= radius ? 1 : 0;
   // The walkable mask is where a character's centre may stand (so collision is a plain lookup).
   const { label, sizes } = components(clear);
-  const order = sizes.map((s, i) => [s, i] as const).slice(1).sort((a, b) => b[0] - a[0]);
+  // Portals: a doorway in a wall joins the floor at its foot to the floor beyond the wall, as in most isometric
+  // games (the wall hides the floor running through it). For each detected entrance, look straight down from its
+  // foot and straight up past the wall (up to 4 m) for walkable regions; two different ones are joined. Where a door
+  // leads into a building (a town) there is no floor beyond it, so nothing is joined.
+  const parent = sizes.map((_, i) => i);
+  const find = (i: number): number => (parent[i] === i ? i : (parent[i] = find(parent[i]!)));
+  const portals: { x: number; y: number; a: number; b: number }[] = [];
+  if (read.entrance) {
+    const reachPx = Math.round((4 * (pxPerMetre ?? 25)) / S);
+    for (const bx of await segBoxes(read.entrance, 60)) {
+      const cx = Math.round(bx.x + bx.w / 2);
+      const regionAt = (y0: number, dir: 1 | -1) => {
+        for (let d = 0; d <= reachPx; d++) {
+          const y = y0 + d * dir;
+          if (y < 0 || y >= AH) return 0;
+          for (const dx of [0, -2, 2]) {
+            const l = label[y * AW + Math.min(AW - 1, Math.max(0, cx + dx))]!;
+            if (l) return l;
+          }
+        }
+        return 0;
+      };
+      const a = regionAt(bx.y + bx.h, 1), b = regionAt(bx.y, -1);
+      if (a && b && find(a) !== find(b)) {
+        parent[find(a)] = find(b);
+        portals.push({ x: Math.round(cx * S), y: Math.round((bx.y + bx.h) * S), a, b });
+      }
+    }
+  }
+  const joined = new Map<number, number>();
+  for (let l = 1; l < sizes.length; l++) joined.set(find(l), (joined.get(find(l)) ?? 0) + sizes[l]!);
+  const order = [...joined.entries()].map(([root, s]) => [s, root] as const).sort((a, b) => b[0] - a[0]);
   const main = order[0]?.[1] ?? 0;
   const walkable = new Uint8Array(AW * AH);
-  for (let i = 0; i < walkable.length; i++) walkable[i] = main && label[i] === main ? 1 : 0;
+  for (let i = 0; i < walkable.length; i++) walkable[i] = main && label[i] && find(label[i]!) === main ? 1 : 0;
+  say(`${portals.length} doorway portals join separate floors`);
   const total = AW * AH;
   const walkableShare = walkable.reduce((a, b) => a + b, 0) / total;
   const regions = order.slice(0, 6).map(([s]) => s / total);
@@ -594,7 +633,7 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
     { name: 'entrances', ok: doors.length >= (opts.needDoors ?? 0), detail: `${doors.length} reachable (need ${opts.needDoors ?? 0})` },
     { name: 'exits', ok: exits.length >= 1, detail: `${exits.length} openings at the edges (${exits.map((e) => e.label).join(', ')})` },
   ];
-  return { read, walkable, ground, blocked, flat, link, walkableShare, regions, doors, doorsRejected, landmarks, exits, pxPerMetre, upscale, checks };
+  return { read, walkable, ground, blocked, flat, link, portals, walkableShare, regions, doors, doorsRejected, landmarks, exits, pxPerMetre, upscale, checks };
 }
 
 // ---------------------------------------------------------------------------------------------- overlay
@@ -618,7 +657,7 @@ export async function overlay(png: Buffer, r: ZoneReading, width = 1600, markers
   const mark = (s: Spot, color: string, prefix: string) =>
     `<g><circle cx="${s.x * k}" cy="${s.y * k}" r="${R}" fill="${color}" stroke="#000" stroke-width="${R / 7}"/><text x="${s.x * k}" y="${s.y * k + F * 0.36}" font-size="${(prefix + s.n).length > 2 ? F * 0.8 : F}" font-family="Arial" font-weight="bold" text-anchor="middle" fill="#000">${prefix}${s.n}</text></g>`;
   const h = Math.round(IH * k);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">${!markers ? "" : r.doors.map((d) => mark(d, '#ffd400', 'D')).join('')}${!markers ? "" : r.landmarks.map((d) => mark(d, '#ff7ad9', 'L')).join('')}${!markers ? "" : r.exits.map((d) => mark(d, '#4db8ff', 'E')).join('')}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">${!markers ? "" : r.doors.map((d) => mark(d, '#ffd400', 'D')).join('')}${!markers ? "" : r.landmarks.map((d) => mark(d, '#ff7ad9', 'L')).join('')}${!markers ? "" : r.exits.map((d) => mark(d, '#4db8ff', 'E')).join('')}${r.portals.map((p) => `<rect x="${p.x * k - R * 0.35}" y="${p.y * k - R * 0.35}" width="${R * 0.7}" height="${R * 0.7}" transform="rotate(45 ${p.x * k} ${p.y * k})" fill="#00ffff" stroke="#000" stroke-width="2"/>`).join('')}</svg>`;
   const base = await sharp(png).composite([{ input: tint }]).png().toBuffer();
   return sharp(base).resize(width).composite([{ input: Buffer.from(svg) }]).jpeg({ quality: 86 }).toBuffer();
 }
