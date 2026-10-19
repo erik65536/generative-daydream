@@ -114,6 +114,7 @@ const ReadSchema = z.object({
   walkable: z.array(z.string().max(40)).min(1).max(5).describe('Short names of the surfaces people walk on, as an object detector would call them: "cobblestone street", "wooden pier", "carpet", "dirt path", "grass"'),
   connectors: z.array(z.string().max(40)).max(4).describe('Sloping surfaces people walk on to get between levels: "stone stairs", "wooden ramp", "bridge". Empty if none'),
   notWalkable: z.array(z.string().max(40)).max(5).describe('Surfaces that might be mistaken for ground but are not walkable: "water", "roof", "table", "lava"'),
+  structure: z.string().max(40).describe('What the enterable buildings or rooms look like from outside, as one short noun: "house", "shop", "office room", "hut". Empty if there are none'),
   entrance: z.string().max(40).describe('What the entrances to buildings or rooms look like, as one short noun: "door", "doorway", "cave mouth", "glass door". Empty if there are none'),
   scale: z.object({ object: z.string().max(40), metres: z.number().min(0.3).max(12) }).describe('A common object that appears several times with a well-known real height, and that height (e.g. door 2.1, office chair 1.0, barrel 1.0)'),
   landmarks: z.array(z.object({ term: z.string().max(40), why: z.string().max(120) })).max(10).describe('Distinctive things worth placing people or features at (a fountain, a forge, a fish stall, a campfire, a reception desk), as short detector names'),
@@ -407,6 +408,10 @@ export interface Spot {
   x: number; // painting pixels
   y: number;
   label: string;
+  /** Entrances: the building (structure detection) it belongs to, and its centre in analysis pixels. */
+  building?: number;
+  cx?: number;
+  cy?: number;
 }
 
 export interface ZoneReading {
@@ -415,6 +420,7 @@ export interface ZoneReading {
   ground: Mask; // raw walkable surfaces
   blocked: Mask; // not-walkable surfaces
   flat: Mask; // flat, upward-facing surfaces (MoGe)
+  link: Mask; // connectors (stairs, ramps, bridges)
   walkableShare: number;
   regions: number[]; // sizes of the walkable regions (share of the picture) before keeping the largest
   doors: Spot[]; // entrances whose foot touches the walkable ground
@@ -519,11 +525,35 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
       let near = false;
       for (let y = fy; y <= Math.min(AH - 1, fy + reach) && !near; y++)
         for (let x = Math.max(0, b.x - reach); x <= Math.min(AW - 1, b.x + b.w + reach) && !near; x++) if (walkable[y * AW + x]) near = true;
-      if (near) doors.push({ n: doors.length + 1, x: Math.round((b.x + b.w / 2) * S), y: Math.round((b.y + b.h) * S), label: read.entrance });
+      if (near) doors.push({ n: doors.length + 1, x: Math.round((b.x + b.w / 2) * S), y: Math.round((b.y + b.h) * S), label: read.entrance, cy: b.y + b.h / 2, cx: b.x + b.w / 2 });
       else doorsRejected++;
     }
   }
-  say(`entrances: ${doors.length} usable, ${doorsRejected} not reachable`);
+  // Which building each entrance belongs to: the structure detection that contains the middle of the door (or the
+  // nearest one), so two doors in one facade read as one building.
+  if (read.structure && doors.length) {
+    const blds = await segInstances(read.structure, 40);
+    for (const d of doors) {
+      const x = Math.round(d.cx!), y = Math.round(d.cy!);
+      let best = -1, bd = Infinity;
+      blds.forEach((b, j) => {
+        if (b.mask[y * AW + x]) (best = j), (bd = 0);
+        if (bd === 0) return;
+        for (let r = 1; r <= 12; r += 3)
+          for (const [dx, dy] of [[r, 0], [-r, 0], [0, -r], [0, r]] as const) {
+            const xx = x + dx, yy = y + dy;
+            if (xx >= 0 && yy >= 0 && xx < AW && yy < AH && b.mask[yy * AW + xx] && r < bd) (bd = r), (best = j);
+          }
+      });
+      if (best >= 0) d.building = best + 1;
+    }
+  }
+  // Doors closer than a metre are one entrance seen twice.
+  const metre = (pxPerMetre ?? 25) / S;
+  for (let i = doors.length - 1; i >= 0; i--)
+    if (doors.slice(0, i).some((o) => Math.hypot(o.cx! - doors[i]!.cx!, o.cy! - doors[i]!.cy!) < metre)) doors.splice(i, 1);
+  doors.forEach((d, i) => (d.n = i + 1));
+  say(`entrances: ${doors.length} usable, ${doorsRejected} not reachable, in ${new Set(doors.map((d) => d.building ?? -d.n)).size} buildings`);
 
   const landmarks: Spot[] = [];
   for (const l of read.landmarks) {
@@ -564,7 +594,7 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
     { name: 'entrances', ok: doors.length >= (opts.needDoors ?? 0), detail: `${doors.length} reachable (need ${opts.needDoors ?? 0})` },
     { name: 'exits', ok: exits.length >= 1, detail: `${exits.length} openings at the edges (${exits.map((e) => e.label).join(', ')})` },
   ];
-  return { read, walkable, ground, blocked, flat, walkableShare, regions, doors, doorsRejected, landmarks, exits, pxPerMetre, upscale, checks };
+  return { read, walkable, ground, blocked, flat, link, walkableShare, regions, doors, doorsRejected, landmarks, exits, pxPerMetre, upscale, checks };
 }
 
 // ---------------------------------------------------------------------------------------------- overlay
@@ -600,6 +630,7 @@ export interface Candidate {
   x: number; // painting pixels
   y: number;
   what: string;
+  building?: number;
 }
 
 /**
@@ -608,17 +639,23 @@ export interface Candidate {
  */
 export function candidates(r: ZoneReading, open = 24): Candidate[] {
   const S = IW / AW;
+  // Markers must not cover each other in the view Luna sees (a marker's radius is IW/55): entrances and ways out
+  // always stay; a landmark that would sit on another marker is dropped, and landmarks are renumbered.
+  const gap = (2.2 * IW) / 55;
   const out: Candidate[] = [
-    ...r.doors.map((d) => ({ id: `D${d.n}`, x: d.x, y: d.y, what: `entrance (${d.label})` })),
+    ...r.doors.map((d) => ({ id: `D${d.n}`, x: d.x, y: d.y, what: `entrance (${d.label})${d.building ? `, building B${d.building}` : ''}`, building: d.building })),
     ...r.exits.map((e) => ({ id: `E${e.n}`, x: e.x, y: e.y, what: `way out at the ${e.label} edge` })),
-    ...r.landmarks.map((l) => ({ id: `L${l.n}`, x: l.x, y: l.y, what: l.label })),
   ];
+  let ln = 0;
+  for (const l of r.landmarks) if (out.every((c) => Math.hypot(c.x - l.x, c.y - l.y) >= gap)) out.push({ id: `L${++ln}`, x: l.x, y: l.y, what: l.label });
   const pts: [number, number][] = [];
-  for (let i = 0; i < r.walkable.length; i += 37) if (r.walkable[i]) pts.push([(i % AW) * S, ((i / AW) | 0) * S]);
+  // Open ground only: never on stairs, ramps or bridges.
+  for (let i = 0; i < r.walkable.length; i += 37) if (r.walkable[i] && !r.link[i]) pts.push([(i % AW) * S, ((i / AW) | 0) * S]);
   const dist = pts.map(([x, y]) => out.reduce((m, c) => Math.min(m, Math.hypot(x - c.x, y - c.y)), Infinity));
   for (let n = 1; n <= open && pts.length; n++) {
     let k = 0;
     for (let i = 1; i < pts.length; i++) if (dist[i]! > dist[k]!) k = i;
+    if (dist[k]! < gap) break;
     const [x, y] = pts[k]!;
     out.push({ id: `P${n}`, x: Math.round(x), y: Math.round(y), what: 'open ground' });
     for (let i = 0; i < pts.length; i++) dist[i] = Math.min(dist[i]!, Math.hypot(pts[i]![0] - x, pts[i]![1] - y));
@@ -663,7 +700,7 @@ The numbered circles are the spots the game can use: D = an entrance into a buil
 ${cands.map((c) => `${c.id}: ${c.what}`).join('\n')}
 
 Place everything this place needs, each at the spot that suits it best, as a level designer would:
-- Buildings that can be entered, one D spot each (different spots): ${n.buildings.map((b) => `${b.name} (${b.purpose})`).join('; ') || 'none'}.
+- Buildings that can be entered, one D spot each (different spots). Entrances with the same B number were detected as one structure: use two of them only where the picture clearly shows separate units (a terrace of homes, a row of shops), never two doors of one house: ${n.buildings.map((b) => `${b.name} (${b.purpose})`).join('; ') || 'none'}.
 - Ways out, one E spot each: ${n.exits.map((e) => `to ${e.to}`).join('; ') || 'none'}.
 - People (near their work, home or a fitting landmark; never on a D or E spot): ${n.npcs.map((p) => `${p.name}, ${p.title} (${p.role})`).join('; ') || 'none'}.
 - Features (chests, shrines, signs and so on; L or P spots): ${n.features.join('; ') || 'none'}.
