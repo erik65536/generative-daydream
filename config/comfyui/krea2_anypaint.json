@@ -1,0 +1,16 @@
+{
+  "1": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{checkpoint}}", "weight_dtype": "default" } },
+  "2": { "class_type": "LoraLoaderModelOnly", "inputs": { "model": ["1", 0], "lora_name": "krea2_anypaint_rank32.safetensors", "strength_model": 1 } },
+  "3": { "class_type": "Krea2AnyPaintModelPatch", "inputs": { "model": ["2", 0], "kv_cache": true } },
+  "4": { "class_type": "CLIPLoader", "inputs": { "clip_name": "qwen3vl_4b_fp8_scaled.safetensors", "type": "krea2", "device": "default" } },
+  "5": { "class_type": "VAELoader", "inputs": { "vae_name": "qwen_image_vae.safetensors" } },
+  "6": { "class_type": "LoadImage", "inputs": { "image": "{{init}}" } },
+  "15": { "class_type": "LoadImage", "inputs": { "image": "{{mask}}" } },
+  "16": { "class_type": "ImageToMask", "inputs": { "image": ["15", 0], "channel": "red" } },
+  "7": { "class_type": "Krea2AnyPaintPrepare", "inputs": { "source": ["6", 0], "left": 0, "top": 0, "right": 0, "bottom": 0, "reference_max_edge": "{{refmax}}", "boundary_redraw_px": "{{redraw}}", "generated_mask": ["16", 0] } },
+  "8": { "class_type": "Krea2AnyPaintEncode", "inputs": { "clip": ["4", 0], "prompt": "{{prompt}}", "vae": ["5", 0], "semantic_reference": ["7", 0], "known_image": ["7", 1], "keep_mask": ["7", 3], "vlm_reference": true } },
+  "9": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["4", 0], "text": "" } },
+  "11": { "class_type": "KSampler", "inputs": { "seed": "{{seed}}", "steps": 8, "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": 1, "model": ["3", 0], "positive": ["8", 0], "negative": ["9", 0], "latent_image": ["8", 1] } },
+  "12": { "class_type": "VAEDecode", "inputs": { "samples": ["11", 0], "vae": ["5", 0] } },
+  "14": { "class_type": "SaveImage", "inputs": { "filename_prefix": "gd/krea_anypaint", "images": ["12", 0] } }
+}
