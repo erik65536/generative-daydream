@@ -458,16 +458,27 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
   // A surface named both as ground and as a connector is a connector (it may slope).
   const linkTerms = read.connectors ?? [];
   const walkTerms = read.walkable.filter((t) => !linkTerms.includes(t));
+  const links: { mask: Mask; area: number }[] = [];
   for (const [terms, c] of [[walkTerms, WALK], [linkTerms, LINK], [read.notWalkable, BLOCK]] as const)
     for (const t of terms) {
       const inst = await segInstances(t, 20);
       n += inst.length;
       vote(inst, c);
+      if (c === LINK) links.push(...inst);
     }
+  // A connector exists to cross an obstacle: where it overlaps a blocker (a bridge's own masonry read as a wall,
+  // the water under it), the connector wins whatever the sizes.
+  for (const { mask } of links) for (let i = 0; i < mask.length; i++) if (mask[i] && cls[i] === BLOCK) cls[i] = LINK;
   // Close hairline gaps where masks of different surfaces meet (pier against quay, path against grass).
   const ground = close(cls.map((c) => (c === WALK || c === LINK ? 1 : 0)), 3);
   const link = cls.map((c) => (c === LINK ? 1 : 0));
   const blocked = cls.map((c) => (c === BLOCK ? 1 : 0));
+  if (process.env.ZP_DEBUG) {
+    const rgb = Buffer.alloc(AW * AH * 3);
+    const col = [[0, 0, 0], [40, 200, 70], [240, 220, 0], [220, 40, 40]];
+    for (let i = 0; i < cls.length; i++) rgb.set(col[cls[i]!]!, i * 3);
+    await sharp(rgb, { raw: { width: AW, height: AH, channels: 3 } }).png().toFile(`${process.env.ZP_DEBUG}_cls.png`);
+  }
   say(`${n} detections: ground ${ground.reduce((a, b) => a + b, 0)} px, connectors ${link.reduce((a, b) => a + b, 0)} px, blocked ${blocked.reduce((a, b) => a + b, 0)} px`);
 
   // Geometry: walkable ground is flat and faces up. MoGe's normals tell floor from walls, partitions, trunks and
@@ -506,11 +517,36 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
   const upscale = pxPerMetre ? GAME_PX_PER_M / pxPerMetre : null;
   say(`scale: ${heights.length} × ${read.scale.object}, ${pxPerMetre?.toFixed(1)} px/m, upscale ${upscale?.toFixed(2)}`);
 
+  // The approach onto a connector slopes too (the bank rising to a bridge, the landing of a stair): ground within a
+  // metre of a connector that is ground (even sloping) is walkable, so stairs and bridges meet the ground they lead to.
+  {
+    const notLink = link.map((v) => (v ? 0 : 1));
+    const dLink = distanceToEdge(notLink);
+    const metre = (pxPerMetre ?? 25) / S;
+    // Gaps between a connector and the ground it meets (a seam neither detection covers) are closed too, but only
+    // gaps: an unrecognised object beside a stair stays out.
+    const bridged = close(open, Math.ceil(metre));
+    // Blockers thinner than half a metre right by a connector are detection slivers (a rock edge across a bridge
+    // head), not obstacles: ignore them there. Thin walls elsewhere are untouched.
+    const solidBlock = openMask(blocked, Math.max(1, Math.round(metre / 4)));
+    for (let i = 0; i < open.length; i++) {
+      if (open[i] || dLink[i]! > metre) continue;
+      const sliver = blocked[i] && !solidBlock[i];
+      if ((!blocked[i] || sliver) && (ground[i] || bridged[i] || sliver)) open[i] = 1;
+    }
+  }
   // Clearance: a character's feet (about 0.35 m radius) must fit; then keep the largest region.
   const radius = Math.max(2, ((pxPerMetre ?? 25) * 0.35) / S);
   const dist = distanceToEdge(open);
   const clear = new Uint8Array(AW * AH);
   for (let i = 0; i < clear.length; i++) clear[i] = dist[i]! >= radius ? 1 : 0;
+  if (process.env.ZP_DEBUG) {
+    const dump = (m: Mask, n: string) => sharp(Buffer.from(m.map((v) => v * 255)), { raw: { width: AW, height: AH, channels: 1 } }).png().toFile(`${process.env.ZP_DEBUG}_${n}.png`);
+    await dump(open, "open");
+    await dump(clear, "clear");
+    await dump(link, "link");
+    await dump(flat, "flat");
+  }
   // The walkable mask is where a character's centre may stand (so collision is a plain lookup).
   const { label, sizes } = components(clear);
   // Portals: a doorway in a wall joins the floor at its foot to the floor beyond the wall, as in most isometric
@@ -597,7 +633,14 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
   const landmarks: Spot[] = [];
   for (const l of read.landmarks) {
     for (const b of await segBoxes(l.term, 6)) {
-      if (b.area >= 6) landmarks.push({ n: landmarks.length + 1, x: Math.round((b.x + b.w / 2) * S), y: Math.round((b.y + b.h) * S), label: l.term });
+      if (b.area < 6) continue;
+      // Only landmarks people can reach: walkable ground within a metre of the landmark's foot (nothing is placed in
+      // areas cut off from the rest).
+      const fx = Math.round(b.x + b.w / 2), fy = Math.min(AH - 1, b.y + b.h - 1), m = Math.ceil((pxPerMetre ?? 25) / S);
+      let reach = false;
+      for (let y = Math.max(0, fy - m); y <= Math.min(AH - 1, fy + m) && !reach; y++)
+        for (let x = Math.max(0, fx - m); x <= Math.min(AW - 1, fx + m) && !reach; x++) if (walkable[y * AW + x]) reach = true;
+      if (reach) landmarks.push({ n: landmarks.length + 1, x: Math.round(fx * S), y: Math.round((b.y + b.h) * S), label: l.term });
     }
   }
 
