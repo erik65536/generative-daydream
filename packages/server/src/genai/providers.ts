@@ -356,6 +356,15 @@ export class OpenAIImageProvider implements ImageProvider {
 
 // ---------------------------------------------------------------------------- ComfyUI
 
+/** The turbo model's sampling schedule. */
+const TURBO_SIGMAS = [1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0];
+
+/** A schedule that starts partway in (img2img): the start level, then the rest of the schedule below it. */
+function sigmasFrom(all: number[], denoise: number): string {
+  if (denoise >= 1) return all.join(', ');
+  return [denoise, ...all.filter((s) => s < denoise)].join(', ');
+}
+
 export class ComfyUIProvider implements ImageProvider {
   private template: unknown;
   private editTemplate: unknown;
@@ -419,7 +428,13 @@ export class ComfyUIProvider implements ImageProvider {
       if (!this.editTemplate) throw new GenAIError('This image provider has no editWorkflow for reference images.', false);
       for (let i = 0; i < req.references.length; i++) refs[`ref_${i + 1}`] = await this.upload(base, req.references[i]!);
     }
-    const workflow = this.fill(req.references?.length ? this.withReferences(req.references.length) : this.template, {
+    const inpaint = !!req.init && !!req.mask;
+    if (inpaint && !this.cfg.inpaintWorkflow) throw new GenAIError('This image provider has no inpaintWorkflow.', false);
+    if (inpaint) {
+      refs.init = await this.upload(base, req.init!);
+      refs.mask = await this.upload(base, req.mask!);
+    }
+    const workflow = this.fill(inpaint ? JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, this.cfg.inpaintWorkflow!), 'utf8')) : req.references?.length ? this.withReferences(req.references.length) : this.template, {
       ...refs,
       prompt: req.prompt,
       negative: req.negativePrompt ?? '',
@@ -429,7 +444,30 @@ export class ComfyUIProvider implements ImageProvider {
       checkpoint: model ?? this.cfg.checkpoint ?? this.cfg.model ?? 'sd_xl_base_1.0.safetensors',
       steps: this.cfg.steps ?? 28,
       cfg: this.cfg.cfg ?? 6.5,
+      sigmas: sigmasFrom(this.cfg.sigmas ?? TURBO_SIGMAS, req.denoise ?? 1),
+      // References are encoded at their own size (callers give them the output's size, a multiple of 32), so the
+      // edit keeps their exact scale and position.
+      refres: 0,
     });
+    return this.run(base, workflow);
+  }
+
+  /** Whether this provider can upscale images (an upscaleWorkflow, e.g. SeedVR2, is configured). */
+  get supportsUpscale() {
+    return !!this.cfg.upscaleWorkflow;
+  }
+
+  /** Upscale an image by `scale` with the upscale workflow (SeedVR2 restores detail rather than blurring). */
+  async upscale(png: Buffer, scale: number, seed: number): Promise<Buffer> {
+    if (!this.cfg.upscaleWorkflow) throw new GenAIError('This image provider has no upscaleWorkflow.', false);
+    const base = trimSlash(this.cfg.baseUrl ?? 'http://127.0.0.1:8188');
+    const template = JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, this.cfg.upscaleWorkflow), 'utf8'));
+    const workflow = this.fill(template, { ref_1: await this.upload(base, png), scale, seed, checkpoint: this.cfg.upscaleModel ?? 'seedvr2_3b_int8_convrot.safetensors' });
+    return this.run(base, workflow);
+  }
+
+  /** Queue a workflow and wait for its first image. */
+  private async run(base: string, workflow: unknown): Promise<Buffer> {
     const queued = await httpJson(`${base}/prompt`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },

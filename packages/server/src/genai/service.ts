@@ -345,6 +345,17 @@ Return a JSON object with the rewritten f0, f1, ... only.` }],
     return text;
   }
 
+  /** Upscale an image with the purpose's provider (null when it cannot upscale). */
+  async upscale(p: Purpose, png: Buffer, scale: number, seed = 1): Promise<Buffer | null> {
+    const pc = this.purpose(p);
+    const provider = this.image_(pc.provider);
+    if (!(provider instanceof ComfyUIProvider) || !provider.supportsUpscale) return null;
+    const t0 = Date.now();
+    const buf = await this.exec(p, pc.provider, pc.model, () => provider.upscale(png, scale, seed));
+    this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: true, attempt: 1, promptChars: 0, responseChars: buf.length });
+    return buf;
+  }
+
   async image(p: Purpose, req: Omit<ImageRequest, 'width' | 'height'> & Partial<Pick<ImageRequest, 'width' | 'height'>>): Promise<Buffer> {
     const pc = this.purpose(p);
     const provider = this.image_(pc.provider);

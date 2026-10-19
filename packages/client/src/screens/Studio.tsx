@@ -352,6 +352,11 @@ function ZoneDetail({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
             <div className="row wrap" style={{ gap: 6 }}>
               <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.task({ kind: 'direct', tilesetIds, guidance: look }, 'Redesign every element of this place (ground, walls, props) and repaint them? This takes a while.').then(() => setLook(''))}>Redesign the look</button>
               <button className="btn sm ghost" disabled={ctx.busy} onClick={() => ctx.task({ kind: 'paint', keys: zoneArt(), reroll: true }, 'Repaint every image of this place (surfaces, props and its people) with new seeds?')}>Repaint all its art</button>
+              {z.blueprint && (
+                <button className="btn sm ghost" disabled={ctx.busy} title={z.backdrop ? 'Paint the whole place again as one illustration (new seed, same art direction)' : 'Paint the whole place as one illustration'} onClick={() => ctx.task({ kind: 'paint', keys: [`bd_${z.id}`], reroll: false }, `${z.backdrop ? 'Repaint' : 'Paint'} ${z.name} as one illustration? This takes several minutes.`)}>
+                  {z.backdrop ? 'Repaint its painting' : 'Paint this place'}
+                </button>
+              )}
             </div>
           </div>
           {z.kind !== 'interior' && <Rebuild ctx={ctx} z={z} />}

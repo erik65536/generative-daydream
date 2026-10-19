@@ -56,6 +56,14 @@ export interface ProviderConfig {
   alphaPrompt?: string;
   /** ComfyUI: workflow used when a request carries reference images ({{ref_1}}.. placeholders on LoadImage nodes). */
   editWorkflow?: string;
+  /** ComfyUI: workflow that upscales one image ({{ref_1}}, {{scale}}, {{seed}}, {{checkpoint}}), e.g. SeedVR2. */
+  upscaleWorkflow?: string;
+  /** ComfyUI: edit workflow that starts from an image with a per-pixel strength mask ({{init}}, {{mask}}). */
+  inpaintWorkflow?: string;
+  /** Sampling schedule of the inpaint workflow's model (defaults to the Qwen turbo schedule). */
+  sigmas?: number[];
+  /** The upscaler's model file. */
+  upscaleModel?: string;
   /** Prompt profile id (wording tuned per model family); defaults by checkpoint name. */
   promptProfile?: string;
   /** Supports image inputs (for image.check). */
@@ -153,6 +161,11 @@ export interface ImageRequest {
   transparent?: boolean;
   /** Reference images (PNG) for models that can condition on them (pose variants, consistent characters). */
   references?: Buffer[];
+  /** Inpainting: the starting image, and a greyscale mask of how freely each pixel may change (black keeps it). */
+  init?: Buffer;
+  mask?: Buffer;
+  /** Inpainting: start this far into the noise schedule (1 = from pure noise; lower keeps more of the start image). */
+  denoise?: number;
 }
 
 export interface TextProvider {

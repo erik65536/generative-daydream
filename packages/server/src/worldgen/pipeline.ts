@@ -418,6 +418,7 @@ export function artPhases(): Omit<JobPhase, 'status'>[] {
     { id: 'art_props', label: 'Props and landmarks', detail: 'Furniture, signs, shrines, trees and the things that make each place itself' },
     { id: 'art_characters', label: 'Characters', detail: 'Heroes, people, creatures and bosses' },
     { id: 'art_items', label: 'Item icons', detail: 'Weapons, armor, potions and treasures' },
+    { id: 'art_places', label: 'Painted places', detail: 'Each place painted as one illustration' },
   ];
 }
 

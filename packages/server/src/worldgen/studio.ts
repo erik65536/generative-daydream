@@ -302,6 +302,8 @@ export async function runStudioJob(job: WorldGenJob, w: WorldDefinition, task: S
     saveWorld(w);
     // Paint only what the new map or new people need (new props, new portraits).
     paint = new Set(planAssets(w, 'full').filter((r) => !r.ref && !stale.has(r.key)).map((r) => r.key));
+    // The new map needs a new painting (once its props are painted).
+    paint.add(`bd_${task.zoneId}`);
   } else {
     paint = new Set(task.keys);
     if (task.reroll && !resumed) {

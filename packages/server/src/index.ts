@@ -419,11 +419,12 @@ app.get('/api/worlds/:id/setup', auth, (req, res) => {
 app.get('/api/worlds/:id/assets/:file', (req, res) => {
   const id = String(req.params.id);
   const file = String(req.params.file);
-  if (!/^[\w-]+$/.test(id) || !/^[\w.-]+\.png$/.test(file)) return void res.status(400).end();
+  if (!/^[\w-]+$/.test(id) || !/^[\w.-]+\.(png|webp)$/.test(file)) return void res.status(400).end();
   const p = path.join(store.worldAssetDir(id), file);
   if (!fs.existsSync(p)) return void res.status(404).end();
-  // Revalidate: art can be repainted from the studio under the same file name.
-  res.setHeader('Cache-Control', 'no-cache');
+  // Revalidate: art can be repainted from the studio under the same file name. Paintings of places carry a
+  // version in their name, so they can be kept.
+  res.setHeader('Cache-Control', file.endsWith('.webp') ? 'public, max-age=31536000, immutable' : 'no-cache');
   res.sendFile(p);
 });
 

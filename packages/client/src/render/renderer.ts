@@ -1,7 +1,7 @@
 /** Isometric 2D renderer and mouse input for the game view. */
 import {
   ALLY_PASS_COST, GROUND, OBJ, findPath, isWalkableGround, objBlocks, objOpaque, propIndex, SURFACE_BASE, PROP_COVER, PROP_COVER_TALL, reachable, rx, skillRange, hasLineOfSight,
-  type EntityView, type FeatureDef, type FxEvent, type TilesetDef, type TileRole, type Vec2,
+  type Backdrop, type EntityView, type FeatureDef, type FxEvent, type TilesetDef, type TileRole, type Vec2,
 } from '@gd/shared';
 import type { GameClient } from '../net/game';
 import { TEX, hexToRgb, imageTexture, mix, proceduralTexture, rgb, shade, strHash } from './textures';
@@ -911,13 +911,21 @@ export class Renderer {
     const minY = Math.max(0, Math.floor(Math.min(...corners.map((c) => c.y))) - 2);
     const maxY = Math.min(z.height - 1, Math.ceil(Math.max(...corners.map((c) => c.y))) + 4);
 
-    // 1. Ground chunks
+    // 1. Ground: the place's painting, or chunks of tiled surfaces
     this.setWorldTransform();
-    for (let cy = Math.floor(minY / CHUNK); cy <= Math.floor(maxY / CHUNK); cy++)
-      for (let cx = Math.floor(minX / CHUNK); cx <= Math.floor(maxX / CHUNK); cx++) {
-        const c = this.chunkCanvas(cx, cy) as (HTMLCanvasElement & { wx: number; wy: number }) | null;
-        if (c) ctx.drawImage(c, c.wx, c.wy);
-      }
+    const painted = this.backdrop();
+    // Darkness for a moment while the painting arrives, rather than a flash of tiles.
+    if (!painted && this.awaitingPainting()) return;
+    if (painted) {
+      const k = 1 / (painted.bd.scale ?? 1);
+      ctx.drawImage(painted.img, -painted.bd.ox, -painted.bd.oy, painted.img.naturalWidth * k, painted.img.naturalHeight * k);
+    }
+    else
+      for (let cy = Math.floor(minY / CHUNK); cy <= Math.floor(maxY / CHUNK); cy++)
+        for (let cx = Math.floor(minX / CHUNK); cx <= Math.floor(maxX / CHUNK); cx++) {
+          const c = this.chunkCanvas(cx, cy) as (HTMLCanvasElement & { wx: number; wy: number }) | null;
+          if (c) ctx.drawImage(c, c.wx, c.wy);
+        }
     // 2. Animated water shimmer
     const W = z.width;
     ctx.save();
@@ -991,7 +999,61 @@ export class Renderer {
 
   // ---------------------------------------------------------------------------- statics
 
+  /** Developer option: draw places from their tiles even when they have a painting. */
+  usePaintings = true;
+
+  /** The place's painting and its cut-outs, when it has them and both have loaded. */
+  private backdrop(): { bd: Backdrop; img: HTMLImageElement; atlas: HTMLImageElement } | null {
+    const bd = this.client.state.zone?.backdrop;
+    if (!bd || !this.usePaintings) return null;
+    const img = loadImage(this.client.assetUrl(bd.image)), atlas = loadImage(this.client.assetUrl(bd.atlas));
+    return img && atlas ? { bd, img, atlas } : null;
+  }
+
+  /** When the place's painting started loading (to wait for it briefly rather than flash the tiles). */
+  private paintingWait: { zoneId: string; since: number } | null = null;
+
+  /** The place has a painting that is still loading (for at most a few seconds). */
+  private awaitingPainting(): boolean {
+    const z = this.client.state.zone;
+    if (!z?.backdrop || !this.usePaintings || this.backdrop()) return false;
+    if (this.paintingWait?.zoneId !== z.id) this.paintingWait = { zoneId: z.id, since: performance.now() };
+    return performance.now() - this.paintingWait.since < 6000;
+  }
+
+  /**
+   * A painted place: every wall and standing thing is a cut-out of the painting drawn at its own depth, so
+   * people pass behind and in front of what the painting shows (the painting itself is the ground).
+   */
+  private collectPieces(list: Drawable[], painted: NonNullable<ReturnType<Renderer['backdrop']>>, minX: number, maxX: number, minY: number, maxY: number) {
+    const st = this.client.state;
+    const ctx = this.ctx;
+    const { bd, atlas } = painted;
+    const k = 1 / (bd.scale ?? 1);
+    const occluders = [...st.entities.values()].filter((e) => e.ownerUserId === st.userId || e.inCombat).map((e) => this.client.entityPos(e));
+    for (const [x, y, depth, , , sx, sy, w, h, px, py] of bd.pieces as number[][] as [number, number, number, number, number, number, number, number, number, number, number][]) {
+      if (x < minX - 3 || x > maxX + 1 || y < minY - 3 || y > maxY + 1) continue;
+      const dx = px * k - bd.ox, dy = py * k - bd.oy;
+      // Tall things in front of the party turn see-through, as walls and trees always have.
+      const dw = w * k, dh = h * k;
+      const hides = dh > 44 && occluders.some((o) => {
+        const p = iso(o.x, o.y);
+        return depth > o.x + o.y + 0.2 && p.x > dx - 6 && p.x < dx + dw + 6 && p.y - 60 < dy + dh && p.y > dy;
+      });
+      list.push({
+        depth,
+        draw: () => {
+          if (hides) ctx.globalAlpha = 0.35;
+          ctx.drawImage(atlas, sx, sy, w, h, dx, dy, dw, dh);
+          ctx.globalAlpha = 1;
+        },
+      });
+    }
+  }
+
   private collectStatics(list: Drawable[], minX: number, maxX: number, minY: number, maxY: number, ts: TilesetDef) {
+    const painted = this.backdrop();
+    if (painted) return this.collectPieces(list, painted, minX, maxX, minY, maxY);
     const st = this.client.state;
     const z = st.zone!;
     const W = z.width;

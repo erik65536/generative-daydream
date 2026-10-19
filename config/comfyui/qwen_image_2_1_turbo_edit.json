@@ -1,7 +1,7 @@
 {
  "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "gd/gd", "images": [ "457", 0 ] } },
  "451": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{checkpoint}}", "weight_dtype": "default" } },
- "452": { "class_type": "TextEncodeQwenImage21", "inputs": { "clip": [ "453", 0 ], "prompt": "{{prompt}}", "negative_prompt": "", "resolution": 1024, "vae": [ "454", 0 ], "images.image_1": [ "500", 0 ] } },
+ "452": { "class_type": "TextEncodeQwenImage21", "inputs": { "clip": [ "453", 0 ], "prompt": "{{prompt}}", "negative_prompt": "", "resolution": "{{refres}}", "vae": [ "454", 0 ], "images.image_1": [ "500", 0 ] } },
  "453": { "class_type": "CLIPLoader", "inputs": { "clip_name": "qwen3vl_8b_int8_convrot.safetensors", "type": "qwen_image", "device": "default" } },
  "454": { "class_type": "VAELoader", "inputs": { "vae_name": "qwen_image_2.1_vae_bf16.safetensors" } },
  "456": { "class_type": "EmptyLatentImage", "inputs": { "width": "{{width}}", "height": "{{height}}", "batch_size": 1 } },

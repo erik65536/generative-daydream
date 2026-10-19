@@ -212,6 +212,8 @@ export function rebuildZoneMap(w: WorldDefinition, zoneId: string, opts: { plan?
     const enc = lay.map.encode();
     const groups = new Set(z.spawns.map((s) => s.groupId)).size - new Set(placed.spawns.map((s) => s.groupId)).size;
     Object.assign(z, { width: lay.map.w, height: lay.map.h, ground: enc.ground, objects: enc.objects, variation: enc.variation, entry: lay.entry, layout: plan, indoor: plan.enclosed || undefined, features: placed.feats, spawns: placed.spawns });
+    // A painting of the old map no longer fits.
+    delete z.backdrop;
     for (const n of w.npcs) {
       const p = placed.npcPos.get(n.id);
       if (p) Object.assign(n, { x: p.x, y: p.y });

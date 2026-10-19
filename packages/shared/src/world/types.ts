@@ -163,6 +163,28 @@ export interface Blueprint {
   areas: BlueprintArea[];
 }
 
+/**
+ * A place painted as one illustration: the painting is drawn as the ground, and everything a person can stand
+ * behind is cut out of it (pieces in the atlas) and drawn at that thing's depth, so people pass in front of and
+ * behind painted walls and furniture.
+ */
+export interface Backdrop {
+  /** Asset keys of the painting and of the cut-outs atlas. */
+  image: string;
+  atlas: string;
+  width: number;
+  height: number;
+  /** Pixel position of tile (0,0)'s centre in game pixels (64x32 pixel tiles). */
+  ox: number;
+  oy: number;
+  /** The art direction it was painted from (kept for repaints). */
+  brief?: string;
+  /** Image pixels per game pixel (2: painted at twice the game's resolution). Atlas and painting positions are in image pixels. */
+  scale?: number;
+  /** Cut-outs: [tile x, tile y, depth, kind (0 wall, 1 prop), footprint, atlas x, atlas y, w, h, painting x, painting y]. */
+  pieces: number[][];
+}
+
 export const TILE_ROLES = ['floor', 'floorAlt', 'path', 'water', 'wall', 'tree', 'rock', 'plant', 'light', 'furniture', 'rubble', 'pillar', 'door', 'chest', 'exit', 'shrine', 'sign', 'lever', 'bed'] as const;
 export type TileRole = (typeof TILE_ROLES)[number];
 
@@ -293,6 +315,8 @@ export interface ZoneDef {
   layout?: ZoneLayoutPlan;
   /** The floor plan this zone was built from (props and surfaces are in its tileset). */
   blueprint?: Blueprint;
+  /** The place painted as one illustration (cleared whenever its map is rebuilt). */
+  backdrop?: Backdrop;
   /** Position on the world map (0..1). Interiors share their parent's. */
   mapPos: { x: number; y: number };
   /** Zones directly connected (for the world map). */

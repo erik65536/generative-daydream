@@ -14,9 +14,37 @@ import path from 'node:path';
 import { worldAssetDir } from '../storage';
 import { RoleDefSchema, normColors } from './schemas';
 import { conceptSummary } from './prompts';
+import { paintBackdrop } from './backdrops';
+import { canPaintPlaces } from './painter';
 
 /** Bump when the pipeline improves enough that existing art should be repainted. */
 export const ART_VERSION = 2;
+
+/**
+ * Paint each place that has a floor plan but no painting yet (or, with `only`, the places named there as
+ * bd_<zoneId>). Needs an image model that can edit, inpaint and upscale; otherwise places keep their tiles.
+ */
+export async function paintPlaces(w: WorldDefinition, report: (msg: string) => void, progress?: ArtProgress, onAsset?: () => void, shouldStop?: () => boolean, only?: Set<string>): Promise<void> {
+  if (!canPaintPlaces()) return;
+  const todo = w.zones.filter((z) => z.kind !== 'interior' && z.blueprint && (only ? only.has(`bd_${z.id}`) : !z.backdrop));
+  if (!todo.length) return;
+  progress?.phase('art_places', { done: 0, total: todo.length });
+  let done = 0;
+  for (const z of todo) {
+    if (shouldStop?.()) return;
+    try {
+      // A repaint asked for by name gets a new seed (and keeps the art direction it was painted from).
+      const again = !!only && !!z.backdrop;
+      await paintBackdrop(w, z, { detail: 0, report, seed: again ? Date.now() % 1_000_000 : 7, brief: again ? z.backdrop?.brief : undefined });
+      report(`Painted ${z.name}`);
+    } catch (e) {
+      if (e instanceof BudgetExceeded) throw e;
+      report(`${z.name} could not be painted (${(e as Error).message.slice(0, 160)}); it keeps its tiles`);
+    }
+    progress?.count('art_places', ++done);
+    onAsset?.();
+  }
+}
 
 const PRESENTATIONS = ['feminine', 'masculine', 'androgynous'] as const;
 /** Player heroes come in each presentation the player can choose; the class look itself stays gender-neutral. */
@@ -372,6 +400,8 @@ export async function generateArt(w: WorldDefinition, level: 'essential' | 'full
     }
   }
   await repairWeak(w, plan, report, onAsset, shouldStop);
+  // Last: every planned place painted as one illustration, once its props and surfaces are painted.
+  await paintPlaces(w, (m) => report(m, 1), progress, onAsset, shouldStop, only);
 }
 
 /**

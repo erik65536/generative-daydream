@@ -27,6 +27,7 @@ export function DevPanel({ renderer, hudHidden, setHudHidden, onClose }: { rende
         <button className="btn sm" onClick={() => setHudHidden(!hudHidden)}>{hudHidden ? 'Show HUD' : 'Hide HUD'}</button>
         <button className="btn sm" onClick={() => renderer && (renderer.devZoom = !renderer.devZoom)}>Far zoom</button>
         <button className="btn sm" onClick={() => (c.send({ t: 'dev', action: 'peace', on: !peace }), setPeace(!peace))}>{peace ? 'Peaceful ✓' : 'Peaceful'}</button>
+        <button className="btn sm" title="Show places from their painting, or from their tiles" onClick={() => renderer && (renderer.usePaintings = !renderer.usePaintings)}>Painting on/off</button>
       </div>
       <input className="input" placeholder="Find a place…" value={q} onChange={(e) => setQ(e.target.value)} />
       <div className="dev-zones">
