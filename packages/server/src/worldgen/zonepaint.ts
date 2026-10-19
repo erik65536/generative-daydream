@@ -112,6 +112,7 @@ const ReadSchema = z.object({
   usable: z.boolean().describe('False if this picture cannot work as the place (wrong place, no clear walkable ground, not a top-down isometric view, a picture of a building rather than a level)'),
   problems: z.array(z.string().max(200)).max(5),
   walkable: z.array(z.string().max(40)).min(1).max(5).describe('Short names of the surfaces people walk on, as an object detector would call them: "cobblestone street", "wooden pier", "carpet", "dirt path", "grass"'),
+  connectors: z.array(z.string().max(40)).max(4).describe('Sloping surfaces people walk on to get between levels: "stone stairs", "wooden ramp", "bridge". Empty if none'),
   notWalkable: z.array(z.string().max(40)).max(5).describe('Surfaces that might be mistaken for ground but are not walkable: "water", "roof", "table", "lava"'),
   entrance: z.string().max(40).describe('What the entrances to buildings or rooms look like, as one short noun: "door", "doorway", "cave mouth", "glass door". Empty if there are none'),
   scale: z.object({ object: z.string().max(40), metres: z.number().min(0.3).max(12) }).describe('A common object that appears several times with a well-known real height, and that height (e.g. door 2.1, office chair 1.0, barrel 1.0)'),
@@ -131,6 +132,40 @@ An object detector (SAM 3) will find things in it from short English names you g
     images: [view],
     maxTokens: 1500,
   });
+}
+
+const CheckSchema = z.object({
+  correct: z.boolean().describe('True if the colouring is right everywhere that matters for walking around'),
+  mistakes: z.array(z.string().max(200)).max(6).describe('Each wrongly coloured area, in plain words'),
+  addWalkable: z.array(z.string().max(40)).max(4).describe('Detector names of flat surfaces people walk on that are not green but should be'),
+  addConnectors: z.array(z.string().max(40)).max(4).describe('Detector names of stairs, ramps or bridges that are not green but should be'),
+  addBlocked: z.array(z.string().max(40)).max(4).describe('Detector names of things coloured green that people cannot walk on (water, roofs, boats, furniture)'),
+});
+export type ReadingCheck = z.infer<typeof CheckSchema>;
+
+/**
+ * Luna checks the walkability colouring against the painting and names what to look for differently. She answers
+ * in detector terms, so a correction is just another read (SAM results are cached).
+ */
+export async function checkReading(png: Buffer, overlayJpg: Buffer, read: PaintingRead): Promise<ReadingCheck> {
+  const view = await sharp(png).resize({ width: 1600 }).jpeg({ quality: 85 }).toBuffer();
+  const marked = await sharp(overlayJpg).resize({ width: 1600 }).jpeg({ quality: 85 }).toBuffer();
+  return genai().structured('world.design', {
+    system: 'You are the level designer of a 2D isometric RPG checking which parts of a painted level the game lets people walk on. Judge only what you see.',
+    prompt: `Image 1 is the level. Image 2 is the same level coloured by the game: green = people can walk there; yellow = walkable surface too narrow or cut off from the rest; red = blocked; blue = not flat (walls, roofs' slopes, objects); uncoloured = not recognised.
+It was found by looking for walkable: ${read.walkable.join(', ')}; connectors: ${(read.connectors ?? []).join(', ') || 'none'}; blocked: ${read.notWalkable.join(', ')}.
+Is the colouring right for walking around this level? Ignore small fringes along edges and objects. Name only real mistakes: walkable ground that is not green (a street, a stair, a bridge cut off) or green where nobody can walk (water, roofs, boats, furniture). For each, give the short everyday name of the thing as an object detector would call it ("stone stairs", "wooden boat", "water"), never a label or code.`,
+    schema: CheckSchema,
+    name: 'reading_check',
+    images: [view, marked],
+    maxTokens: 1200,
+  });
+}
+
+/** The read with a check's corrections applied. */
+export function applyCheck(read: PaintingRead, c: ReadingCheck): PaintingRead {
+  const add = (a: string[], b: string[]) => [...new Set([...a, ...b])];
+  return { ...read, walkable: add(read.walkable, c.addWalkable), connectors: add(read.connectors ?? [], c.addConnectors), notWalkable: add(read.notWalkable, c.addBlocked) };
 }
 
 // ---------------------------------------------------------------------------------------------- masks
@@ -170,6 +205,22 @@ async function segmenter(png: Buffer) {
     }
   };
   return {
+    /** Every detected object as its own mask (analysis size) with its area. */
+    segInstances: async (term: string, max: number): Promise<{ mask: Mask; area: number }[]> => {
+      const out: { mask: Mask; area: number }[] = [];
+      await each(term, max, (raw, aw, ah, ax, ay) => {
+        const m = new Uint8Array(AW * AH);
+        let area = 0;
+        for (let y = 0; y < ah; y++)
+          for (let x = 0; x < aw; x++)
+            if (raw[y * aw + x]! > 127 && ay + y < AH && ax + x < AW) {
+              m[(ay + y) * AW + ax + x] = 1;
+              area++;
+            }
+        if (area) out.push({ mask: m, area });
+      });
+      return out;
+    },
     segUnion: async (term: string, max: number): Promise<Mask> => {
       const out = new Uint8Array(AW * AH);
       await each(term, max, (raw, aw, ah, ax, ay) => {
@@ -380,35 +431,31 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
   const meta = await sharp(png).metadata();
   useSize(meta.width!, meta.height!);
   const S = IW / AW; // painting px per analysis px
-  const { segUnion, segBoxes } = await segmenter(png);
-  // Ground: the union of every walkable surface, minus everything that is not walkable.
-  const groundParts: Mask[] = [];
-  for (const t of read.walkable) groundParts.push(await segUnion(t, 20));
-  const blockedParts: Mask[] = [];
-  for (const t of read.notWalkable) blockedParts.push(await segUnion(t, 20));
-  // Close hairline gaps where masks of different surfaces meet (pier against quay, path against grass).
-  const ground = close(union(groundParts), 3);
-  // Where a blocker overlaps the ground it must be a solid blob (not speckle: wet stone read as water) that carries
-  // on beyond the ground (the void outside a building, the sea): an island of "water" inside a street is a misread.
-  const raw = union(blockedParts);
-  const overlap = new Uint8Array(AW * AH);
-  for (let i = 0; i < overlap.length; i++) overlap[i] = raw[i]! & ground[i]!;
-  const solid = openMask(overlap, 4);
-  const { label: ol, sizes: os } = components(solid);
-  const anchored = new Uint8Array(os.length);
-  for (let i = 0; i < solid.length; i++) {
-    if (!ol[i] || anchored[ol[i]!]) continue;
-    const x = i % AW, y = (i / AW) | 0;
-    for (const [dx, dy] of [[-2, 0], [2, 0], [0, -2], [0, 2]] as const) {
-      const xx = x + dx, yy = y + dy;
-      if (xx < 0 || yy < 0 || xx >= AW || yy >= AH) continue;
-      const j = yy * AW + xx;
-      if (raw[j] && !ground[j]) anchored[ol[i]!] = 1;
+  const { segInstances, segBoxes } = await segmenter(png);
+  // Every detected object votes for its class (walkable ground, connector, blocker). Where detections overlap, the
+  // most specific one (the smallest object) wins: a pier mask that spans the water between its arms loses to the
+  // water, a "water" mask spread over a whole wet street loses to the street.
+  const WALK = 1, LINK = 2, BLOCK = 3;
+  const cls = new Uint8Array(AW * AH);
+  const best = new Float64Array(AW * AH).fill(Infinity);
+  const vote = (list: { mask: Mask; area: number }[], c: number) => {
+    for (const { mask, area } of list) for (let i = 0; i < mask.length; i++) if (mask[i] && area < best[i]!) (best[i] = area), (cls[i] = c);
+  };
+  let n = 0;
+  // A surface named both as ground and as a connector is a connector (it may slope).
+  const linkTerms = read.connectors ?? [];
+  const walkTerms = read.walkable.filter((t) => !linkTerms.includes(t));
+  for (const [terms, c] of [[walkTerms, WALK], [linkTerms, LINK], [read.notWalkable, BLOCK]] as const)
+    for (const t of terms) {
+      const inst = await segInstances(t, 20);
+      n += inst.length;
+      vote(inst, c);
     }
-  }
-  const blocked = new Uint8Array(AW * AH);
-  for (let i = 0; i < blocked.length; i++) blocked[i] = ground[i] ? (ol[i] && anchored[ol[i]!] ? 1 : 0) : raw[i]!;
-  say(`ground: ${groundParts.length} masks, blocked: ${blockedParts.length}`);
+  // Close hairline gaps where masks of different surfaces meet (pier against quay, path against grass).
+  const ground = close(cls.map((c) => (c === WALK || c === LINK ? 1 : 0)), 3);
+  const link = cls.map((c) => (c === LINK ? 1 : 0));
+  const blocked = cls.map((c) => (c === BLOCK ? 1 : 0));
+  say(`${n} detections: ground ${ground.reduce((a, b) => a + b, 0)} px, connectors ${link.reduce((a, b) => a + b, 0)} px, blocked ${blocked.reduce((a, b) => a + b, 0)} px`);
 
   // Geometry: walkable ground is flat and faces up. MoGe's normals tell floor from walls, partitions, trunks and
   // brambles whatever they look like. MoGe assumes a perspective camera, so the floor's normal drifts across the
@@ -437,7 +484,8 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
     await dump(blocked, 'blocked');
   }
   const open = new Uint8Array(AW * AH);
-  for (let i = 0; i < open.length; i++) open[i] = ground[i]! && !blocked[i] && flat[i] ? 1 : 0;
+  // Connectors (stairs, ramps, bridges) slope by nature: they are walkable without being flat.
+  for (let i = 0; i < open.length; i++) open[i] = ground[i]! && !blocked[i] && (flat[i] || link[i]) ? 1 : 0;
 
   // Scale: the median height of the reference object.
   const heights = (await segBoxes(read.scale.object, 30)).filter((b) => b.area > 8).map((b) => b.h * S).sort((a, b) => a - b);
@@ -522,7 +570,7 @@ export async function analyseZone(png: Buffer, read: PaintingRead, opts: { repor
 // ---------------------------------------------------------------------------------------------- overlay
 
 /** The painting with walkable ground in green, blocked surfaces in red and numbered markers. */
-export async function overlay(png: Buffer, r: ZoneReading, width = 1600): Promise<Buffer> {
+export async function overlay(png: Buffer, r: ZoneReading, width = 1600, markers = true): Promise<Buffer> {
   const meta = await sharp(png).metadata();
   useSize(meta.width!, meta.height!);
   const rgba = Buffer.alloc(AW * AH * 4);
@@ -535,10 +583,127 @@ export async function overlay(png: Buffer, r: ZoneReading, width = 1600): Promis
   }
   const tint = await sharp(rgba, { raw: { width: AW, height: AH, channels: 4 } }).resize(IW, IH).png().toBuffer();
   const k = width / IW;
+  // Markers sized to the output, so labels sit inside their circles and stay readable on a downscaled view.
+  const R = Math.max(14, width / 70), F = R * 0.8;
   const mark = (s: Spot, color: string, prefix: string) =>
-    `<g><circle cx="${s.x * k}" cy="${s.y * k}" r="11" fill="${color}" stroke="#000" stroke-width="2"/><text x="${s.x * k}" y="${s.y * k + 5}" font-size="13" font-family="Arial" font-weight="bold" text-anchor="middle" fill="#000">${prefix}${s.n}</text></g>`;
+    `<g><circle cx="${s.x * k}" cy="${s.y * k}" r="${R}" fill="${color}" stroke="#000" stroke-width="${R / 7}"/><text x="${s.x * k}" y="${s.y * k + F * 0.36}" font-size="${(prefix + s.n).length > 2 ? F * 0.8 : F}" font-family="Arial" font-weight="bold" text-anchor="middle" fill="#000">${prefix}${s.n}</text></g>`;
   const h = Math.round(IH * k);
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">${r.doors.map((d) => mark(d, '#ffd400', 'D')).join('')}${r.landmarks.map((d) => mark(d, '#ff7ad9', 'L')).join('')}${r.exits.map((d) => mark(d, '#4db8ff', 'E')).join('')}</svg>`;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">${!markers ? "" : r.doors.map((d) => mark(d, '#ffd400', 'D')).join('')}${!markers ? "" : r.landmarks.map((d) => mark(d, '#ff7ad9', 'L')).join('')}${!markers ? "" : r.exits.map((d) => mark(d, '#4db8ff', 'E')).join('')}</svg>`;
   const base = await sharp(png).composite([{ input: tint }]).png().toBuffer();
   return sharp(base).resize(width).composite([{ input: Buffer.from(svg) }]).jpeg({ quality: 86 }).toBuffer();
+}
+
+// ---------------------------------------------------------------------------------------------- placement
+
+export interface Candidate {
+  id: string; // D1 (entrance), E1 (way out), L1 (landmark), P1 (open ground)
+  x: number; // painting pixels
+  y: number;
+  what: string;
+}
+
+/**
+ * Numbered spots Luna can choose from: entrances, ways out and landmarks found in the painting, plus open ground
+ * spread evenly over the walkable area (farthest-point sampling), so there is always somewhere for everyone.
+ */
+export function candidates(r: ZoneReading, open = 24): Candidate[] {
+  const S = IW / AW;
+  const out: Candidate[] = [
+    ...r.doors.map((d) => ({ id: `D${d.n}`, x: d.x, y: d.y, what: `entrance (${d.label})` })),
+    ...r.exits.map((e) => ({ id: `E${e.n}`, x: e.x, y: e.y, what: `way out at the ${e.label} edge` })),
+    ...r.landmarks.map((l) => ({ id: `L${l.n}`, x: l.x, y: l.y, what: l.label })),
+  ];
+  const pts: [number, number][] = [];
+  for (let i = 0; i < r.walkable.length; i += 37) if (r.walkable[i]) pts.push([(i % AW) * S, ((i / AW) | 0) * S]);
+  const dist = pts.map(([x, y]) => out.reduce((m, c) => Math.min(m, Math.hypot(x - c.x, y - c.y)), Infinity));
+  for (let n = 1; n <= open && pts.length; n++) {
+    let k = 0;
+    for (let i = 1; i < pts.length; i++) if (dist[i]! > dist[k]!) k = i;
+    const [x, y] = pts[k]!;
+    out.push({ id: `P${n}`, x: Math.round(x), y: Math.round(y), what: 'open ground' });
+    for (let i = 0; i < pts.length; i++) dist[i] = Math.min(dist[i]!, Math.hypot(pts[i]![0] - x, pts[i]![1] - y));
+  }
+  return out;
+}
+
+const SPOT_COLOUR: Record<string, string> = { D: '#ffd400', E: '#4db8ff', L: '#ff7ad9', P: '#ffffff' };
+
+/** The painting with every candidate as a large, labelled marker (sized for a downscaled view). */
+export async function candidateView(png: Buffer, cands: Candidate[], width = 1600): Promise<Buffer> {
+  const meta = await sharp(png).metadata();
+  const k = width / meta.width!;
+  const h = Math.round(meta.height! * k);
+  const R = width / 55;
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">${cands
+    .map((c) => {
+      const fs = c.id.length > 2 ? R * 0.75 : R * 0.9;
+      return `<g><circle cx="${c.x * k}" cy="${c.y * k}" r="${R}" fill="${SPOT_COLOUR[c.id[0]!] ?? '#fff'}" stroke="#000" stroke-width="${R / 7}"/><text x="${c.x * k}" y="${c.y * k + fs * 0.36}" font-size="${fs}" font-family="Arial" font-weight="bold" text-anchor="middle" fill="#000">${c.id}</text></g>`;
+    })
+    .join('')}</svg>`;
+  return sharp(png).resize(width).composite([{ input: Buffer.from(svg) }]).jpeg({ quality: 88 }).toBuffer();
+}
+
+const PlacementSchema = z.object({
+  buildings: z.array(z.object({ name: z.string(), spot: z.string().describe('A D spot: the entrance that leads inside it'), why: z.string().max(160) })),
+  exits: z.array(z.object({ to: z.string(), spot: z.string().describe('An E spot'), why: z.string().max(160) })),
+  people: z.array(z.object({ name: z.string(), spot: z.string(), why: z.string().max(160) })),
+  features: z.array(z.object({ feature: z.string(), spot: z.string(), why: z.string().max(160) })),
+  problems: z.array(z.string().max(200)).max(5).describe('Anything the place needs that this painting cannot provide'),
+});
+export type Placement = z.infer<typeof PlacementSchema>;
+
+/** Luna looks at the numbered spots and decides where every building, way out, person and feature goes. */
+export async function placeInZone(w: WorldDefinition, z: ZoneDef, png: Buffer, cands: Candidate[]): Promise<Placement> {
+  const n = needsOf(w, z);
+  const ids = new Set(cands.map((c) => c.id));
+  return genai().structured('world.design', {
+    system: 'You are the level designer of a 2D isometric RPG. Each place is one painting; you decide where the game puts things in it. Judge only what you see.',
+    prompt: `This painting is ${z.name}: ${z.description}
+The numbered circles are the spots the game can use: D = an entrance into a building or room, E = a way out at the edge of the picture, L = a landmark, P = open ground.
+${cands.map((c) => `${c.id}: ${c.what}`).join('\n')}
+
+Place everything this place needs, each at the spot that suits it best, as a level designer would:
+- Buildings that can be entered, one D spot each (different spots): ${n.buildings.map((b) => `${b.name} (${b.purpose})`).join('; ') || 'none'}.
+- Ways out, one E spot each: ${n.exits.map((e) => `to ${e.to}`).join('; ') || 'none'}.
+- People (near their work, home or a fitting landmark; never on a D or E spot): ${n.npcs.map((p) => `${p.name}, ${p.title} (${p.role})`).join('; ') || 'none'}.
+- Features (chests, shrines, signs and so on; L or P spots): ${n.features.join('; ') || 'none'}.
+Match buildings to entrances whose building looks right for them (a big building for an inn, a small one for a home). Spread people out. If something cannot be placed sensibly, say so in problems.`,
+    schema: PlacementSchema,
+    name: 'zone_placement',
+    images: [await candidateView(png, cands)],
+    maxTokens: 2500,
+    validate: (p) => {
+      const all = [...p.buildings.map((b) => b.spot), ...p.exits.map((e) => e.spot), ...p.people.map((x) => x.spot), ...p.features.map((f) => f.spot)];
+      const bad = all.filter((s) => !ids.has(s));
+      if (bad.length) return `Unknown spots: ${bad.join(', ')}. Use only the listed ids.`;
+      const doors = p.buildings.map((b) => b.spot);
+      if (new Set(doors).size !== doors.length) return 'Each building needs its own entrance (D spot).';
+      return null;
+    },
+  });
+}
+
+/** The painting with the placement drawn on it: names next to their spots. */
+export async function placementView(png: Buffer, cands: Candidate[], p: Placement, width = 2400): Promise<Buffer> {
+  const meta = await sharp(png).metadata();
+  const k = width / meta.width!;
+  const h = Math.round(meta.height! * k);
+  const at = new Map(cands.map((c) => [c.id, c]));
+  const items = [
+    ...p.buildings.map((b) => [b.spot, b.name, '#ffd400'] as const),
+    ...p.exits.map((e) => [e.spot, `to ${e.to}`, '#4db8ff'] as const),
+    ...p.people.map((x) => [x.spot, x.name, '#7dff7d'] as const),
+    ...p.features.map((f) => [f.spot, f.feature, '#ff7ad9'] as const),
+  ];
+  const F = width / 90;
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${h}">${items
+    .map(([id, label, col], i) => {
+      const c = at.get(id);
+      if (!c) return '';
+      const x = c.x * k, y = c.y * k, dy = (i % 3) * F * 1.1;
+      return `<circle cx="${x}" cy="${y}" r="${F * 0.5}" fill="${col}" stroke="#000" stroke-width="2"/><text x="${x + F * 0.7}" y="${y - F * 0.4 + dy}" font-size="${F}" font-family="Arial" font-weight="bold" fill="${col}" stroke="#000" stroke-width="${F / 6}" paint-order="stroke">${esc(label)}</text>`;
+    })
+    .join('')}</svg>`;
+  return sharp(png).resize(width).composite([{ input: Buffer.from(svg) }]).jpeg({ quality: 88 }).toBuffer();
 }

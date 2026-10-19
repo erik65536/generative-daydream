@@ -123,10 +123,28 @@ if (cmd === 'read') {
   const rf = `${out}_reading.json`;
   const read = fs.existsSync(rf) && !a.includes('--reread') ? JSON.parse(fs.readFileSync(rf, 'utf8')).read : await zp.readPainting(w, z, png);
   say(`read: ${JSON.stringify(read)}`);
-  const r = await zp.analyseZone(png, read, { report: say, needDoors: zp.needsOf(w, z).buildings.length });
+  let r = await zp.analyseZone(png, read, { report: say, needDoors: zp.needsOf(w, z).buildings.length });
   fs.writeFileSync(`${out}_overlay.jpg`, await zp.overlay(png, r, 2400));
-  fs.writeFileSync(rf, JSON.stringify({ read, checks: r.checks, doors: r.doors, landmarks: r.landmarks, exits: r.exits, pxPerMetre: r.pxPerMetre, upscale: r.upscale }, null, 2));
+  if (a.includes('--check')) {
+    // One correction pass: Luna checks the colouring and names terms to add.
+    const c = await zp.checkReading(png, await zp.overlay(png, r, 1600, false), r.read);
+    say(`check: ${JSON.stringify(c)}`);
+    if (!c.correct && c.addWalkable.length + c.addConnectors.length + c.addBlocked.length) {
+      r = await zp.analyseZone(png, zp.applyCheck(r.read, c), { report: say, needDoors: zp.needsOf(w, z).buildings.length });
+      fs.writeFileSync(`${out}_overlay_checked.jpg`, await zp.overlay(png, r, 2400));
+    }
+  }
+  fs.writeFileSync(rf, JSON.stringify({ read: r.read, checks: r.checks, doors: r.doors, landmarks: r.landmarks, exits: r.exits, pxPerMetre: r.pxPerMetre, upscale: r.upscale }, null, 2));
   for (const c of r.checks) say(`${c.ok ? 'PASS' : 'FAIL'} ${c.name}: ${c.detail}`);
+  if (a.includes('--place')) {
+    // Luna chooses where everything goes from numbered candidate spots.
+    const cands = zp.candidates(r);
+    fs.writeFileSync(`${out}_spots.jpg`, await zp.candidateView(png, cands, 2400));
+    const p = await zp.placeInZone(w, z, png, cands);
+    fs.writeFileSync(`${out}_placement.json`, JSON.stringify(p, null, 2));
+    fs.writeFileSync(`${out}_placement.jpg`, await zp.placementView(png, cands, p));
+    say(`placed ${p.buildings.length} buildings, ${p.exits.length} exits, ${p.people.length} people, ${p.features.length} features; problems: ${p.problems.join(' | ') || 'none'}`);
+  }
 }
 if (cmd === 'flatten') {
   const { flattenVignette } = await import('../worldgen/outpaint');
