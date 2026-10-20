@@ -151,5 +151,12 @@
     "dailyTotalUsd": 3,
     "adminsUnlimited": true,
     "_comment": "Daily budgets for paid (cloud) models in dollars: per player (an administrator can set each player's own on the Users page) and for the whole server. Administrators are unlimited unless given their own budget. Providers may set \"pricing\": {\"inputPerM\", \"cachedPerM\", \"outputPerM\"}; OpenAI providers default to gpt-6-luna prices."
+  },
+  "animation": {
+    "_comment": "Actor animation (docs/world-art.md, Characters in motion): a 3D model, rig and clip sheets in eight directions per character and creature, made in the background after the art. Paths are this machine's. python: one with numpy, scipy and Pillow (ComfyUI's embedded Python). library: Quaternius' Universal Animation Library (CC0, the glTF from its Unreal-Godot folder). skintokens (optional, for animals and other bodies): a SkinTokens checkout with its own venv; device cuda takes the GPU alone (about 14 GB), cpu takes 12-18 minutes per creature. Leave this block out to keep still images.",
+    "python": "C:/path/to/ComfyUI/python_embeded/python.exe",
+    "library": "C:/path/to/UAL1_Standard.glb",
+    "skintokens": { "dir": "C:/path/to/skintokens", "python": "C:/path/to/skintokens/.venv/Scripts/python.exe", "device": "cuda" },
+    "scale": 2
   }
 }
