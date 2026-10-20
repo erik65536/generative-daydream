@@ -1,5 +1,4 @@
 /** Concrete GenAI provider adapters. */
-import crypto from 'node:crypto';
 import { chargeUsage } from './spend';
 import { Agent, fetch as undiciFetch } from 'undici';
 import fs from 'node:fs';
@@ -259,7 +258,7 @@ export class AnthropicProvider implements TextProvider {
 
 // ---------------------------------------------------------------------------- Google Gemini
 
-export class GoogleProvider implements TextProvider, ImageProvider {
+export class GoogleProvider implements TextProvider {
   constructor(private cfg: ProviderConfig) {}
 
   private async call(model: string, body: Record<string, unknown>): Promise<any> {
@@ -314,82 +313,22 @@ export class GoogleProvider implements TextProvider, ImageProvider {
     });
     return this.text_(data);
   }
-
-  async generate(req: ImageRequest, model?: string, extra?: Record<string, unknown>): Promise<Buffer> {
-    const data = await this.call(model ?? this.cfg.model ?? 'gemini-2.5-flash-image', {
-      contents: [{ role: 'user', parts: [{ text: `${req.prompt}${req.negativePrompt ? `\nAvoid: ${req.negativePrompt}` : ''}` }] }],
-      generationConfig: { responseModalities: ['IMAGE'] },
-      ...extra,
-    });
-    for (const p of data?.candidates?.[0]?.content?.parts ?? []) if (p.inlineData?.data) return Buffer.from(p.inlineData.data, 'base64');
-    throw new GenAIError('Gemini returned no image');
-  }
-}
-
-// ---------------------------------------------------------------------------- OpenAI images
-
-export class OpenAIImageProvider implements ImageProvider {
-  constructor(private cfg: ProviderConfig) {}
-  async generate(req: ImageRequest, model?: string, extra?: Record<string, unknown>): Promise<Buffer> {
-    const key = resolveSecret(this.cfg.apiKey) ?? process.env.OPENAI_API_KEY;
-    const m = model ?? this.cfg.model ?? 'gpt-image-1';
-    const ratio = req.width / req.height;
-    const size = ratio > 1.2 ? '1536x1024' : ratio < 0.83 ? '1024x1536' : '1024x1024';
-    const body: Record<string, unknown> = { model: m, prompt: req.prompt, size, n: 1, ...(this.cfg.extraBody ?? {}), ...extra };
-    if (m.startsWith('dall-e')) {
-      body.response_format = 'b64_json';
-      body.size = '1024x1024';
-    } else if (req.transparent) body.background = 'transparent';
-    const data = await httpJson(`${trimSlash(this.cfg.baseUrl ?? 'https://api.openai.com/v1')}/images/generations`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(key ? { authorization: `Bearer ${key}` } : {}) },
-      body: JSON.stringify(body),
-      timeoutMs: this.cfg.timeoutMs ?? 240_000,
-    });
-    const b64 = data?.data?.[0]?.b64_json;
-    if (b64) return Buffer.from(b64, 'base64');
-    const url = data?.data?.[0]?.url;
-    if (url) return Buffer.from(await (await fetch(url)).arrayBuffer());
-    throw new GenAIError('No image in response');
-  }
 }
 
 // ---------------------------------------------------------------------------- ComfyUI
 
-/** The turbo model's sampling schedule. */
-const TURBO_SIGMAS = [1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0];
-
-/** A schedule that starts partway in (img2img): the start level, then the rest of the schedule below it. */
-function sigmasFrom(all: number[], denoise: number): string {
-  if (denoise >= 1) return all.join(', ');
-  return [denoise, ...all.filter((s) => s < denoise)].join(', ');
-}
-
+/**
+ * ComfyUI runs the asset workflow (config/comfyui/krea2_cutout.json): Krea 2 paints the subject on its chroma-key
+ * backdrop and the cutter model (BiRefNet) marks it, in one queued job; the result is the painting with the mask as
+ * its alpha channel.
+ */
 export class ComfyUIProvider implements ImageProvider {
   private template: unknown;
-  private editTemplate: unknown;
   constructor(private cfg: ProviderConfig) {
-    const wf = cfg.workflow ? path.resolve(ROOT_DIR, cfg.workflow) : path.join(ROOT_DIR, 'config', 'comfyui', 'sdxl_txt2img.json');
-    this.template = JSON.parse(fs.readFileSync(wf, 'utf8'));
-    if (cfg.editWorkflow) this.editTemplate = JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, cfg.editWorkflow), 'utf8'));
-  }
-
-  /** Whether this provider can condition on reference images. */
-  get supportsReferences() {
-    return !!this.editTemplate;
-  }
-
-  /** Upload a reference image into ComfyUI's input folder; returns the name LoadImage expects. */
-  private async upload(base: string, png: Buffer): Promise<string> {
-    const name = `ref_${crypto.createHash('sha1').update(png).digest('hex').slice(0, 16)}.png`;
-    const form = new FormData();
-    form.append('image', new Blob([new Uint8Array(png)], { type: 'image/png' }), name);
-    form.append('subfolder', 'gd_refs');
-    form.append('overwrite', 'true');
-    const res = await fetch(`${base}/upload/image`, { method: 'POST', body: form });
-    if (!res.ok) throw new GenAIError(`ComfyUI upload failed: ${res.status} ${await res.text().catch(() => '')}`);
-    const out = (await res.json()) as { name: string; subfolder?: string };
-    return out.subfolder ? `${out.subfolder}/${out.name}` : out.name;
+    const file = cfg.workflow ?? 'config/comfyui/krea2_cutout.json';
+    this.template = JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, file), 'utf8'));
+    if (!Object.values(this.template as Record<string, { class_type?: string }>).some((n) => n.class_type === 'RemoveBackground'))
+      throw new GenAIError(`ComfyUI workflow ${file} has no cutter (RemoveBackground): art needs the painting with its cutout mask, as config/comfyui/krea2_cutout.json makes`, false);
   }
 
   private fill(node: unknown, vars: Record<string, string | number>): unknown {
@@ -403,66 +342,18 @@ export class ComfyUIProvider implements ImageProvider {
     return node;
   }
 
-  /**
-   * The edit workflow with `n` reference images: the template wires one ({{ref_1}} into a LoadImage that feeds
-   * the encoder's images.image_1); more are added the same way (images.image_2, …).
-   */
-  private withReferences(n: number): unknown {
-    const wf = JSON.parse(JSON.stringify(this.editTemplate)) as Record<string, { class_type: string; inputs: Record<string, unknown> }>;
-    const loadId = Object.keys(wf).find((k) => wf[k]!.class_type === 'LoadImage' && wf[k]!.inputs.image === '{{ref_1}}');
-    const encId = Object.keys(wf).find((k) => Array.isArray(wf[k]!.inputs['images.image_1']));
-    if (!loadId || !encId) return wf;
-    for (let i = 2; i <= n; i++) {
-      const id = `${loadId}_${i}`;
-      if (wf[id]) continue;
-      wf[id] = { class_type: 'LoadImage', inputs: { image: `{{ref_${i}}}` } };
-      wf[encId]!.inputs[`images.image_${i}`] = [id, 0];
-    }
-    return wf;
-  }
-
   async generate(req: ImageRequest, model?: string): Promise<Buffer> {
     const base = trimSlash(this.cfg.baseUrl ?? 'http://127.0.0.1:8188');
-    const refs: Record<string, string> = {};
-    if (req.references?.length) {
-      if (!this.editTemplate) throw new GenAIError('This image provider has no editWorkflow for reference images.', false);
-      for (let i = 0; i < req.references.length; i++) refs[`ref_${i + 1}`] = await this.upload(base, req.references[i]!);
-    }
-    const inpaint = !!req.init && !!req.mask;
-    if (inpaint && !this.cfg.inpaintWorkflow) throw new GenAIError('This image provider has no inpaintWorkflow.', false);
-    if (inpaint) {
-      refs.init = await this.upload(base, req.init!);
-      refs.mask = await this.upload(base, req.mask!);
-    }
-    const workflow = this.fill(inpaint ? JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, this.cfg.inpaintWorkflow!), 'utf8')) : req.references?.length ? this.withReferences(req.references.length) : this.template, {
-      ...refs,
+    const workflow = this.fill(this.template, {
       prompt: req.prompt,
-      negative: req.negativePrompt ?? '',
       seed: req.seed,
       width: req.width,
       height: req.height,
-      checkpoint: model ?? this.cfg.checkpoint ?? this.cfg.model ?? 'sd_xl_base_1.0.safetensors',
-      steps: this.cfg.steps ?? 28,
-      cfg: this.cfg.cfg ?? 6.5,
-      sigmas: sigmasFrom(this.cfg.sigmas ?? TURBO_SIGMAS, req.denoise ?? 1),
-      // References are encoded at their own size (callers give them the output's size, a multiple of 32), so the
-      // edit keeps their exact scale and position.
-      refres: 0,
+      checkpoint: model ?? this.cfg.checkpoint ?? this.cfg.model ?? 'krea2_turbo_fp8_scaled.safetensors',
+      steps: this.cfg.steps ?? 8,
+      cfg: this.cfg.cfg ?? 1,
+      cutter: this.cfg.cutter ?? 'birefnet.safetensors',
     });
-    return this.run(base, workflow);
-  }
-
-  /** Whether this provider can upscale images (an upscaleWorkflow, e.g. SeedVR2, is configured). */
-  get supportsUpscale() {
-    return !!this.cfg.upscaleWorkflow;
-  }
-
-  /** Upscale an image by `scale` with the upscale workflow (SeedVR2 restores detail rather than blurring). */
-  async upscale(png: Buffer, scale: number, seed: number): Promise<Buffer> {
-    if (!this.cfg.upscaleWorkflow) throw new GenAIError('This image provider has no upscaleWorkflow.', false);
-    const base = trimSlash(this.cfg.baseUrl ?? 'http://127.0.0.1:8188');
-    const template = JSON.parse(fs.readFileSync(path.resolve(ROOT_DIR, this.cfg.upscaleWorkflow), 'utf8'));
-    const workflow = this.fill(template, { ref_1: await this.upload(base, png), scale, seed, checkpoint: this.cfg.upscaleModel ?? 'seedvr2_3b_int8_convrot.safetensors' });
     return this.run(base, workflow);
   }
 

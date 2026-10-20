@@ -72,20 +72,53 @@ like the painting they stand in. The game never paints past the walkable ground;
 
 ## The image pipeline (characters, objects, icons)
 
-1. **Plan** (`art.ts`, `planAssets`): heroes in every presentation, people, creatures, bosses, the objects the
-   game draws over every painting (`obj_chest` with its open variant, `obj_sign`, `obj_waypoint`), item icons.
-   Variants ride along: walk and attack poses. Assets are repainted when missing, failed, changed, or made by an
-   older pipeline (`ART_VERSION`).
-2. **Prompts**: Luna writes one observer-style paragraph per asset, following the image model's prompt profile
-   (`genai/promptprofiles.ts`). Subjects stand alone: no scenery, fog or glows, studio-lit.
-3. **Generate**: variants are painted from the approved base image as a reference (`editWorkflow`).
-4. **Clean** (`genai/matte.ts`): cutout when the model has no alpha, matte cleanup, backdrop, darkness and fog
-   detection.
-5. **Check**: the checker sees the cutout on magenta beside its alpha mask. Rejects are repainted with new
-   seeds; the best attempt is kept.
+Everything is painted with Krea 2, like the places, so the art is one style. Krea has no transparency: each asset
+is painted on a plain chroma-key backdrop and cut out of it.
 
-In a build, image work runs on the build's GPU queue (`worldgen/gpu.ts`), which keeps using the loaded model
-while there is work for it; loading and unloading is the GPU scheduler's job (`genai/gpu.ts`).
+1. **Plan** (`art.ts`, `planAssets`): heroes in every presentation, people, creatures, bosses, the objects the
+   game draws over every painting (`obj_chest`, `obj_sign`, `obj_waypoint`), and item icons. Every actor is one
+   base image in a neutral standing pose, the view the 3D animation step builds the rigged figure from: **front**
+   for people and upright figures, **side** (in profile, facing left) for animals and other body plans. The
+   plan records it in `asset.view` (people are planned as front; Luna picks a creature's view). Assets are
+   repainted when missing, failed, changed, or made by an older pipeline (`ART_VERSION`).
+2. **Prompts** (`genai/images.ts`): Luna writes one observer-style paragraph per asset (subjects stand alone: no
+   scenery, fog, glows or cast shadow, studio-lit) and, in the same answer, picks its **backdrop**: green
+   (#00b140), blue (#0047bb) or magenta (#ff00ff), whichever hue the subject uses least along its outline,
+   highlights and glows. For a mostly see-through subject (glass, crystal, a ghost) the backdrop shows through
+   it, so Luna picks the key colour closest to the colour it should look inside. The prompt ends with the
+   backdrop sentence, colour and hex included (`genai/cutout.ts`, `backdropSentence`).
+3. **Paint and mark** (`config/comfyui/krea2_cutout.json`): one ComfyUI job paints with Krea 2 Turbo (people
+   832×1216, side views 1216×832, props and icons 1024×1024) and runs BiRefNet (ComfyUI's built-in Remove
+   Background, `background_removal/birefnet.safetensors`) on the result; it returns the untouched painting with
+   BiRefNet's mask as alpha.
+4. **Cut** (`genai/cutout.ts`): the backdrop's colour field is estimated from the pixels joined to the image
+   border. BiRefNet says where the subject is; the key says how opaque each edge pixel is (`alpha =
+   (C−B)·(F−B)/|F−B|²` against the nearby subject colour F), with the backdrop's own shadows counted as backdrop.
+   Sizeable patches of backdrop inside the subject (the middle of a ring, the gaps in a swarm) are cut out. The
+   backdrop is un-mixed from soft edges (`F = (C − (1−a)·B) / a`, kept between the pixel's colour and the
+   subject's, and any backdrop hue beyond the subject's own removed), so no coloured fringe is left on hair,
+   fur or thin dark edges. Separate pieces (coins in a heap, a swarm, floating stones) are all kept.
+5. **Score the cut** (no model): against the key. If the subject is patterned in the key colour, the key cannot
+   judge it: the next attempt uses another key colour. Rejected when backdrop is left behind (more than 2.5% of
+   the cutout's opacity, or a separate piece that is mostly backdrop) or the subject is cut away (more than 6%).
+   Also: cut off by the frame, too small.
+6. **Check the content**: the checker (Luna's decision model) sees the painting on its backdrop and judges the
+   subject, match to the brief, framing, darkness, text, and the pose (front or side, neutral, whole body); for
+   side views it says which way the creature faces, and one facing right is mirrored. It never judges the cut:
+   in the bake-off it flagged clean cutouts as often as bad ones.
+7. **Keep**: attempts repeat with new seeds up to `maxAttempts`; the best one is trimmed (actors kept up to 768 px
+   on their long side, props 512, icons 256) and saved. Weak results are repaired with a rewritten prompt that
+   names what went wrong.
+
+The bake-off behind these choices (13 subjects, 4 backdrop strategies, 8 cutters, scored automatically, by Luna
+and by eye): the key-based score agreed with the eye on 93% of the cutouts on chroma backdrops (no false alarms),
+Luna's cutout check on 59%; Lucida and BiRefNet dynamic-matting made glass see-through, SAM 3 dropped all but one
+piece of a swarm. Neutral grey or white backdrops make the score blind (silver, highlights and beards look like
+backdrop).
+
+In a build, image work runs on the build's GPU queue (`worldgen/gpu.ts`) with the places, on the same Krea model;
+loading and unloading is the GPU scheduler's job (`genai/gpu.ts`). Animation (walk and attack) is not painted:
+it comes from the 3D-rigged sprite sheets built from the base view; until then the game draws the base image.
 
 ## Characters in motion
 
@@ -169,3 +202,4 @@ Owners open `#/world/<id>/studio` to see and change everything a world is made o
   plan, `--redo=render|clips|rig|mesh` to redo from a step).
 - `src/cli/placepeek.ts`: a settled place's painting with its walkable ground and everything placed in it marked.
 - `src/cli/sheet.ts`: contact sheet of any folder of PNGs on magenta.
+- `src/cli/paintpeek.ts`: paint a few of a world's assets into a scratch folder (the world is not changed) and draw a contact sheet: each painting, its cutout on dark and on a loud colour, and its scores.

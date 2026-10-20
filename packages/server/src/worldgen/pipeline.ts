@@ -437,7 +437,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
           progress.set(`art:${priority}`, done / total);
         },
         shouldStop: () => failed || job.cancelled || workerState.yieldRequested,
-        gpu: (work) => gpu.run('qwen', priority, work),
+        gpu: (work) => gpu.run('krea', priority, work),
       }));
     job.begin('art');
     const people = art((x) => !x.key.startsWith('spr_origin_') && x.kind !== 'icon', 10);

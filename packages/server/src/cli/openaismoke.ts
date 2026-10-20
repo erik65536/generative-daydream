@@ -1,18 +1,14 @@
 /**
  * Quick checks of the configured cloud models with timings and cost: a world concept (structured output),
- * image prompts for a few assets, and the art checker on images with known quality.
+ * and image prompts (with their backdrops and views) for a few assets.
  *
  *   tsx src/cli/openaismoke.ts [worldIdForImages]
  */
-import type { AssetKind } from '../genai/promptprofiles';
-import fs from 'node:fs';
-import path from 'node:path';
 import { genai } from '../genai/service';
 import { openaiCost, openaiUsage } from '../genai/providers';
-import { qualityCheck } from '../genai/images';
 import { ConceptSchema } from '../worldgen/schemas';
 import { conceptPrompt, SYSTEM } from '../worldgen/prompts';
-import { loadWorld, worldAssetDir } from '../storage';
+import { loadWorld } from '../storage';
 import { planAssets, writeImagePrompts } from '../worldgen/art';
 
 const g = genai();
@@ -32,20 +28,13 @@ console.log(`concept (${secs(t0)}): "${concept.title}" — ${concept.pitch}\n  a
 const worldId = process.argv[2] ?? 'w_livemvd05zun';
 const w = loadWorld(worldId);
 if (w) {
-  const plan = planAssets({ ...w, assets: {} }, 'full').filter((r) => !r.ref).filter((_, i) => i % 40 === 0).slice(0, 6);
+  const plan = planAssets({ ...w, assets: {} }, 'full').filter((_, i) => i % 40 === 0).slice(0, 6);
   t0 = t();
   await writeImagePrompts(w, plan, () => {});
   console.log(`\nimage prompts (${secs(t0)}):`);
-  for (const r of plan) console.log(`- ${r.key}: ${(r.imagePrompt ?? '(none)').slice(0, 220)}…`);
+  for (const r of plan) console.log(`- ${r.key} [${r.backdrop ?? '?'}${r.view ? `, ${r.view}` : ''}]: ${(r.imagePrompt ?? '(none)').slice(0, 220)}…`);
 
-  const dir = worldAssetDir(w.id);
-  for (const key of ['spr_npc_n_brenda_kowalski_0', 'obj_chest']) {
-    const a = w.assets[key];
-    if (!a?.file || !fs.existsSync(path.join(dir, a.file))) continue;
-    t0 = t();
-    const r = await qualityCheck(fs.readFileSync(path.join(dir, a.file)), a.kind as AssetKind, a.prompt);
-    console.log(`\ncheck ${key} (${secs(t0)}): score ${r?.score.toFixed(1)} ${r?.problems.join('; ') || 'no problems'}`);
-  }
 }
-console.log(`\nusage: ${JSON.stringify(openaiUsage)}  ≈ $${openaiCost().toFixed(4)}`);
+console.log(`
+usage: ${JSON.stringify(openaiUsage)}  ≈ $${openaiCost().toFixed(4)}`);
 process.exit(0);

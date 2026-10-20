@@ -4,7 +4,7 @@ import { checkBudget } from './spend';
 import path from 'node:path';
 import { z } from 'zod';
 import { CONFIG_DIR, DATA_DIR } from '../paths';
-import { AnthropicProvider, ComfyUIProvider, GoogleProvider, LlamaDecisionProvider, OpenAIChatProvider, OpenAIDecisionProvider, OpenAIImageProvider, OpenAIResponsesProvider, OpenAITranscribeProvider } from './providers';
+import { AnthropicProvider, ComfyUIProvider, GoogleProvider, LlamaDecisionProvider, OpenAIChatProvider, OpenAIDecisionProvider, OpenAIResponsesProvider, OpenAITranscribeProvider } from './providers';
 import { GpuScheduler } from './gpu';
 import { callContext, priorityOf, PRIORITY_RANK } from './context';
 import { clampToSchema, findLimitViolations, parseModelJson, restoreOptional, pathLabel, resolveRefs, setAtPath, type LimitViolation } from './json';
@@ -228,11 +228,8 @@ export class GenAI {
     const cfg = this.providerConfig(name);
     switch (cfg.type) {
       case 'comfyui': p = new ComfyUIProvider(cfg); break;
-      case 'openai-image': p = new OpenAIImageProvider(cfg); break;
-      case 'google-image':
-      case 'google': p = new GoogleProvider(cfg); break;
       case 'procedural': throw new ProceduralOnly();
-      default: throw new GenAIError(`Provider "${name}" (${cfg.type}) cannot generate images`, false);
+      default: throw new GenAIError(`Provider "${name}" (${cfg.type}) cannot generate images (assets need a ComfyUI provider)`, false);
     }
     this.imageProviders.set(name, p);
     return p;
@@ -358,17 +355,6 @@ Return a JSON object with the rewritten f0, f1, ... only.` }],
     return text;
   }
 
-  /** Upscale an image with the purpose's provider (null when it cannot upscale). */
-  async upscale(p: Purpose, png: Buffer, scale: number, seed = 1): Promise<Buffer | null> {
-    const pc = this.purpose(p);
-    const provider = this.image_(pc.provider);
-    if (!(provider instanceof ComfyUIProvider) || !provider.supportsUpscale) return null;
-    const t0 = Date.now();
-    const buf = await this.exec(p, pc.provider, pc.model, () => provider.upscale(png, scale, seed));
-    this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: true, attempt: 1, promptChars: 0, responseChars: buf.length });
-    return buf;
-  }
-
   async image(p: Purpose, req: Omit<ImageRequest, 'width' | 'height'> & Partial<Pick<ImageRequest, 'width' | 'height'>>): Promise<Buffer> {
     const pc = this.purpose(p);
     const provider = this.image_(pc.provider);
@@ -377,10 +363,9 @@ Return a JSON object with the rewritten f0, f1, ... only.` }],
       ...req,
       width: req.width ?? pc.width ?? 1024,
       height: req.height ?? pc.height ?? 1024,
-      negativePrompt: [req.negativePrompt, pc.negativePrompt].filter(Boolean).join(', '),
     };
     try {
-      const buf = await this.exec(p, pc.provider, pc.model, () => provider.generate(full, pc.model, pc.extraBody));
+      const buf = await this.exec(p, pc.provider, pc.model, () => provider.generate(full, pc.model));
       this.log({ at: t0, purpose: p, provider: pc.provider, ms: Date.now() - t0, ok: true, attempt: 1, promptChars: req.prompt.length, responseChars: buf.length });
       return buf;
     } catch (e) {

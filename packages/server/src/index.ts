@@ -9,7 +9,9 @@ import { COMBAT_MODES, DIFFICULTIES, GAME_LENGTHS, WORLD_SIZES, type ClientMessa
 import { CLIENT_DIST, CONFIG_DIR } from './paths';
 import * as store from './storage';
 import { genai, reloadGenAI } from './genai/service';
-import { imagePromptSystem, writerProfile } from './genai/images';
+import { imagePromptSystem } from './genai/images';
+import { backdropSentence, cutout, finishCutout } from './genai/cutout';
+import { sendAsset } from './assetroute';
 import { resumeWorldGeneration, startWorldGeneration } from './worldgen/pipeline';
 import { activeJob, ACTIVE, enqueue, JobConflict, latestJob, logSince, logTail, queuePosition, requestCancel, type JobKind } from './jobs/queue';
 import { startWorker } from './jobs/worker';
@@ -417,14 +419,8 @@ app.get('/api/worlds/:id/setup', auth, (req, res) => {
 
 app.get('/api/worlds/:id/assets/:file', (req, res) => {
   const id = String(req.params.id);
-  const file = String(req.params.file);
-  if (!/^[\w-]+$/.test(id) || !/^[\w.-]+\.(png|webp)$/.test(file)) return void res.status(400).end();
-  const p = path.join(store.worldAssetDir(id), file);
-  if (!fs.existsSync(p)) return void res.status(404).end();
-  // Revalidate: art can be repainted from the studio under the same file name. Paintings of places carry a
-  // version in their name, so they can be kept.
-  res.setHeader('Cache-Control', file.endsWith('.webp') ? 'public, max-age=31536000, immutable' : 'no-cache');
-  res.sendFile(p);
+  if (!/^[\w-]+$/.test(id)) return void res.status(400).end();
+  sendAsset(res, store.worldAssetDir(id), String(req.params.file));
 });
 
 // ------------------------------------------------------------------------------ instances
@@ -522,11 +518,12 @@ app.post('/api/genai/test', auth, async (req, res) => {
       return void res.json({ ok: true, ms: Date.now() - t0, json: answers });
     }
     if (purpose === 'image.prompt') {
-      const text = await g.text('image.prompt', { system: imagePromptSystem(writerProfile()), messages: [{ role: 'user', content: 'Brief: a game character sprite, full body. Subject: a lantern-bearing night watchman in a patched oilskin coat. Art style: painterly dark fantasy.' }], maxTokens: 400 });
+      const text = await g.text('image.prompt', { system: imagePromptSystem(), messages: [{ role: 'user', content: 'Brief: a game character sprite, full body. Subject: a lantern-bearing night watchman in a patched oilskin coat. Art style: painterly dark fantasy.' }], maxTokens: 400 });
       return void res.json({ ok: true, ms: Date.now() - t0, text });
     }
     if (purpose.startsWith('image.') && purpose !== 'image.check') {
-      const buf = await g.image(purpose as 'image.sprite', { prompt: 'a friendly lantern-bearing traveler, full body, plain gray background', seed: 42, width: 512, height: 768 });
+      const painting = await g.image(purpose as 'image.sprite', { prompt: `A painterly game character: a friendly lantern-bearing traveler, full body, seen from the front. ${backdropSentence('green')}`, seed: 42, width: 832, height: 1216 });
+      const buf = (await finishCutout(await cutout(painting), 512)).png;
       return void res.json({ ok: true, ms: Date.now() - t0, image: `data:image/png;base64,${buf.toString('base64')}` });
     }
     if (purpose === 'image.check' || purpose === 'npc.dialogue' || purpose === 'narration') {
@@ -547,7 +544,7 @@ const devClient = process.env.GD_DEV_CLIENT;
 if (devClient) app.get(/^\/(?!api|ws).*/, (req, res) => res.redirect(devClient + req.originalUrl));
 else if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));
-  app.get(/^\/(?!api|ws).*/, (_req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html')));
+  app.get(/^\/(?!api|ws).*/, (_req, res) => res.sendFile(path.join(CLIENT_DIST, 'index.html'), { dotfiles: 'allow' }));
 }
 
 // ------------------------------------------------------------------------------ websocket

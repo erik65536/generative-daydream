@@ -14,7 +14,7 @@ const PURPOSE_HELP: Record<string, string> = {
   'image.sprite': 'Characters, creatures and the objects drawn over places.',
   'image.icon': 'Item icons (full art mode).',
   'image.check': 'Scores generated images and triggers regeneration (a vision LLM or a decision model).',
-  'image.prompt': 'Writes long descriptive prompts for image models that want them (Qwen Image, Flux, Krea).',
+  'image.prompt': 'Writes the Krea prompt of every character, creature, object and icon, and picks its chroma-key backdrop.',
 };
 
 export function Settings({ me }: { me: Me }) {

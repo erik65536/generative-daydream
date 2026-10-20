@@ -26,11 +26,11 @@ packages/shared   Fixed game rules shared by server and client: attributes, dama
                   types, NPC action vocabulary, stats & combat math, protocol, pathfinding.
 packages/server   TypeScript (Node) authoritative game server.
   genai/          Provider layer: OpenAI-compatible chat, OpenAI Responses, Anthropic, Google Gemini, ComfyUI,
-                  OpenAI images, Gemini images, llama.cpp decision models, procedural. Structured output with zod
-                  validation, JSON repair, retry-with-feedback, concurrency limits, call log, and a GPU scheduler
-                  that keeps one local model resident at a time. Image pipeline: LLM-written descriptive prompts,
-                  native alpha or background removal, cut-off detection, scoring by a decision
-                  model or vision LLM, regenerate until good enough.
+                  llama.cpp decision models, procedural. Structured output with zod validation, JSON repair,
+                  retry-with-feedback, concurrency limits, call log, and a GPU scheduler that keeps one local model
+                  resident at a time. Image pipeline: LLM-written prompts with a chroma-key backdrop per asset,
+                  Krea 2 + BiRefNet in one ComfyUI job, cut against the known backdrop (edges un-mixed), the cut
+                  scored without a model, content checked by a decision model or vision LLM, repainted until good.
   worldgen/       Generation as a task graph: concept → rules ∥ atlas → creatures → story → every place's
                   people and lore → assembly → balancing; places are painted, read and furnished on the GPU
                   meanwhile (from the atlas on), then characters, objects and icons.
@@ -82,18 +82,18 @@ Each purpose maps to a provider:
 | `npc.dialogue` | Optional separate speech model | Only when `combineNpcDecisionAndDialogue` is false |
 | `image.sprite` / `image.icon` | Characters, objects and item icons | ComfyUI, OpenAI images, Gemini images |
 | `image.check` | Scoring generated images | Decision model or vision LLM; heuristics run regardless |
-| `image.prompt` | Writing long descriptive prompts for the image model | Used when the image provider has `"promptStyle": "descriptive"` |
+| `image.prompt` | Writing each asset's Krea prompt, its chroma-key backdrop and (creatures) its view | Any text model |
 
-Provider types: `openai-chat` (OpenAI and any OpenAI-compatible server: llama.cpp, LM Studio, vLLM, Ollama, OpenRouter), `llamacpp-decision` (llama.cpp `/v1/systemone` decision models), `openai-responses`, `anthropic` (official SDK, structured outputs, server-side refusal fallbacks enabled — set `"extraBody": {"fallbacks": false}` to disable), `google`, `comfyui`, `openai-image`, `google-image`, `procedural`. API keys can be literal or `"env:VAR_NAME"`. `structured` can be `json_schema` (native constrained decoding), `json_object`, or `prompt` (schema in the prompt only) for servers without schema support.
+Provider types: `openai-chat` (OpenAI and any OpenAI-compatible server: llama.cpp, LM Studio, vLLM, Ollama, OpenRouter), `llamacpp-decision` (llama.cpp `/v1/systemone` decision models), `openai-responses`, `anthropic` (official SDK, structured outputs, server-side refusal fallbacks enabled — set `"extraBody": {"fallbacks": false}` to disable), `google`, `comfyui` (all images), `procedural`. API keys can be literal or `"env:VAR_NAME"`. `structured` can be `json_schema` (native constrained decoding), `json_object`, or `prompt` (schema in the prompt only) for servers without schema support.
 
-World generation runs text and image work side by side: places are painted (on the local ComfyUI) as soon as they have a name, while the story is still being written. Places need ComfyUI with Krea 2, SAM 3, MoGe 2 and SeedVR2 (`config/comfyui/`); its address is the comfyui provider's `baseUrl` (or `COMFY_URL`). Providers that share a `"gpu"` group never run at the same time: before switching models the engine unloads the resident one (llama.cpp router `/models/unload`, ComfyUI `/free`), and when it takes the GPU it also evicts anything another process left loaded. Image providers can set `"promptStyle": "descriptive"` (long observer-style paragraphs, for Qwen Image / Flux / Krea) or `"tags"` (SDXL), and `"alpha": "native"` (the model outputs transparency) or `"cutout"` (background removed in code).
+World generation runs text and image work side by side: places are painted (on the local ComfyUI) as soon as they have a name, while the story is still being written. Places need ComfyUI with Krea 2, SAM 3, MoGe 2 and SeedVR2 (`config/comfyui/`); its address is the comfyui provider's `baseUrl` (or `COMFY_URL`). Providers that share a `"gpu"` group never run at the same time: before switching models the engine unloads the resident one (llama.cpp router `/models/unload`, ComfyUI `/free`), and when it takes the GPU it also evicts anything another process left loaded. Characters, creatures, objects and icons are painted with Krea 2 too, cut out with BiRefNet and the known backdrop (`config/comfyui/krea2_cutout.json`, see `docs/world-art.md`).
 
 ## Local setup (16 GB VRAM)
 
 `config/genai.example.json` matches the tested local setup:
 
 1. **llama.cpp in router mode** (`llama-server --models-dir .\models --port 9931 --parallel 1 --ctx-size 16384 --cache-type-k q8_0 --cache-type-v q8_0`) serving a text/vision LLM (tested: Qwen3.8-27B IQ3_S) and a decision model (tested: vllm-d3-flash). `--parallel 1` matters: the default splits the context into 4 slots of 4k, too small for town generation.
-2. **ComfyUI** on `http://127.0.0.1:8188` with Qwen Image 2.1 Turbo (int8, native transparency, `config/comfyui/qwen_image_2_1_turbo_t2i.json`). Krea 2 Turbo and SDXL workflows are included as alternatives. Workflows are API-format JSON with `{{prompt}}`, `{{negative}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{checkpoint}}`, `{{steps}}`, `{{cfg}}` placeholders.
+2. **ComfyUI** on `http://127.0.0.1:8188` with Krea 2 Turbo (`krea2_turbo_fp8_scaled.safetensors`, with its Qwen3-VL text encoder and VAE) and BiRefNet (`background_removal/birefnet.safetensors` from Comfy-Org/BiRefNet, ComfyUI's built-in Remove Background) for all art, plus SAM 3, MoGe 2 and SeedVR2 for reading and finishing places. The asset workflow is API-format JSON with `{{prompt}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{checkpoint}}`, `{{steps}}`, `{{cfg}}`, `{{cutter}}` placeholders.
 
 All three share the GPU group `local`, so only one is loaded at a time.
 

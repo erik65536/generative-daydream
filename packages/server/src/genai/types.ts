@@ -9,12 +9,12 @@ export const PURPOSES = [
   'image.sprite', // characters, monsters, objects
   'image.icon', // item icons
   'image.check', // vision model judging generated images
-  'image.prompt', // LLM that turns asset briefs into prompts in the image model's preferred style
+  'image.prompt', // LLM that turns asset briefs into Krea prompts and picks each one's chroma-key backdrop
   'speech.input', // speech-to-text: what a player says to the people of the world
 ] as const;
 export type Purpose = (typeof PURPOSES)[number];
 
-export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'google' | 'comfyui' | 'openai-image' | 'google-image' | 'llamacpp-decision' | 'openai-decision' | 'openai-transcribe';
+export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'google' | 'comfyui' | 'llamacpp-decision' | 'openai-decision' | 'openai-transcribe';
 
 export interface ProviderConfig {
   type: ProviderType;
@@ -38,7 +38,7 @@ export interface ProviderConfig {
   /** Extra body parameters merged into every request (e.g. top_p, reasoning settings). */
   extraBody?: Record<string, unknown>;
   headers?: Record<string, string>;
-  /** ComfyUI: path to an API-format workflow JSON with {{placeholders}}. */
+  /** ComfyUI: path to an API-format workflow JSON with {{placeholders}} (assets: the painting with the cutter mask as alpha). */
   workflow?: string;
   /** ComfyUI: checkpoint/model name substituted into {{checkpoint}}. */
   checkpoint?: string;
@@ -46,27 +46,8 @@ export interface ProviderConfig {
   cfg?: number;
   /** Strip <think>...</think> blocks emitted by reasoning models. */
   stripThinking?: boolean;
-  /**
-   * Image models: how prompts are written. 'tags' = comma-separated keywords (SDXL style);
-   * 'descriptive' = a long observer-style paragraph written by the image.prompt LLM (Qwen Image, Flux, Krea).
-   */
-  promptStyle?: 'tags' | 'descriptive';
-  /** Image models: 'native' when the model outputs real transparency, 'cutout' to remove a flat background in code. */
-  alpha?: 'native' | 'cutout';
-  /** Text wrapped around sprite prompts to request transparency, with {prompt} as the placeholder. */
-  alphaPrompt?: string;
-  /** ComfyUI: workflow used when a request carries reference images ({{ref_1}}.. placeholders on LoadImage nodes). */
-  editWorkflow?: string;
-  /** ComfyUI: workflow that upscales one image ({{ref_1}}, {{scale}}, {{seed}}, {{checkpoint}}), e.g. SeedVR2. */
-  upscaleWorkflow?: string;
-  /** ComfyUI: edit workflow that starts from an image with a per-pixel strength mask ({{init}}, {{mask}}). */
-  inpaintWorkflow?: string;
-  /** Sampling schedule of the inpaint workflow's model (defaults to the Qwen turbo schedule). */
-  sigmas?: number[];
-  /** The upscaler's model file. */
-  upscaleModel?: string;
-  /** Prompt profile id (wording tuned per model family); defaults by checkpoint name. */
-  promptProfile?: string;
+  /** ComfyUI: background-removal model substituted into {{cutter}} (default birefnet.safetensors). */
+  cutter?: string;
   /** Supports image inputs (for image.check). */
   vision?: boolean;
   /**
@@ -91,7 +72,6 @@ export interface PurposeConfig {
   /** image.*: generation size. */
   width?: number;
   height?: number;
-  negativePrompt?: string;
   extraBody?: Record<string, unknown>;
 }
 
@@ -171,19 +151,9 @@ export interface StructuredRequest extends TextRequest {
 
 export interface ImageRequest {
   prompt: string;
-  negativePrompt?: string;
   width: number;
   height: number;
   seed: number;
-  /** Hint for providers that support transparent backgrounds. */
-  transparent?: boolean;
-  /** Reference images (PNG) for models that can condition on them (pose variants, consistent characters). */
-  references?: Buffer[];
-  /** Inpainting: the starting image, and a greyscale mask of how freely each pixel may change (black keeps it). */
-  init?: Buffer;
-  mask?: Buffer;
-  /** Inpainting: start this far into the noise schedule (1 = from pure noise; lower keeps more of the start image). */
-  denoise?: number;
 }
 
 export interface TextProvider {
@@ -193,7 +163,7 @@ export interface TextProvider {
 }
 
 export interface ImageProvider {
-  generate(req: ImageRequest, model?: string, extra?: Record<string, unknown>): Promise<Buffer>;
+  generate(req: ImageRequest, model?: string): Promise<Buffer>;
 }
 
 export class GenAIError extends Error {

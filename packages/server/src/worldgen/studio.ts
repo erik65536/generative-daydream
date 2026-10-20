@@ -215,14 +215,14 @@ export async function runStudioJob(job: WorldGenJob, w: WorldDefinition, task: S
   if (!resumed) job.plan(first ? [first, ART_PHASE] : [ART_PHASE]);
   job.step = first?.label ?? 'Painting';
   let paint = new Set<string>();
-  if (firstDone) paint = new Set(planAssets(w, 'full').filter((r) => !r.ref).map((r) => r.key));
+  if (firstDone) paint = new Set(planAssets(w, 'full').map((r) => r.key));
   else if (task.kind === 'rewrite') {
     job.phase('rewrite');
     const before = new Map(listArt(w).map((a) => [a.key, a.brief]));
     job.push(await rewrite(w, task.target, task.guidance), 'step');
     saveWorld(w);
     // Repaint whatever the new text changed (a person's look).
-    for (const a of listArt(w)) if (!a.ref && before.get(a.key) !== a.brief) paint.add(a.key);
+    for (const a of listArt(w)) if (before.get(a.key) !== a.brief) paint.add(a.key);
   } else {
     paint = new Set(task.keys);
     if (task.reroll && !resumed) {
