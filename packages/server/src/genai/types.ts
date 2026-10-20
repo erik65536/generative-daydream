@@ -2,11 +2,10 @@
 
 export const PURPOSES = [
   'world.design', // concept, atlas, story — needs the smartest model
-  'world.content', // per-zone NPCs, quests, tilesets — many calls
+  'world.content', // per-place people, quests, lore — many calls
   'npc.decision', // structured NPC action choice at runtime
   'npc.dialogue', // optional separate spoken-response model
   'narration', // flavor text for actions, quest updates
-  'image.texture', // ground / wall textures
   'image.sprite', // characters, monsters, objects
   'image.icon', // item icons
   'image.check', // vision model judging generated images
@@ -32,6 +31,8 @@ export interface ProviderConfig {
   serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
   /** Prices in dollars per million tokens (cached input defaults to a tenth, output to five times input). Paid providers are metered against users' daily budgets. */
   pricing?: { inputPerM: number; cachedPerM?: number; outputPerM?: number; perMinute?: number };
+  /** Prices for other models asked of this provider per call (e.g. a stronger fallback model), by model name. */
+  modelPricing?: Record<string, { inputPerM: number; cachedPerM?: number; outputPerM?: number }>;
   /** Reasoning models: output tokens added to every request's limit for the model's thinking (billed only when used). */
   reasoningTokens?: number;
   /** Extra body parameters merged into every request (e.g. top_p, reasoning settings). */
@@ -81,6 +82,8 @@ export interface PurposeConfig {
   temperature?: number;
   maxTokens?: number;
   retries?: number;
+  /** A stronger model of the same provider to fall back to when an answer is not good enough (null: no fallback). */
+  strongModel?: string | null;
   /** image.check: minimum score (0-10) to accept an image. */
   minScore?: number;
   /** image.*: max generation attempts per asset. */

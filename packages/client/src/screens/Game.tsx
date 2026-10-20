@@ -48,7 +48,7 @@ function handleClick(r: Renderer, info: HoverInfo, button: number, ev?: MouseEve
   if (!charId) return;
   const tgt = st.targeting;
   if (tgt) {
-    const point = info.tile ? { x: info.tile.x, y: info.tile.y } : undefined;
+    const point = info.point ?? undefined;
     const targetId = info.entityId;
     if (tgt.skillId) {
       const s = rx(c.r).skill.get(tgt.skillId);
@@ -82,10 +82,7 @@ function handleClick(r: Renderer, info: HoverInfo, button: number, ev?: MouseEve
     c.send({ t: 'interact', targetId: (info.lootId ?? info.featureId)!, charId, inspect: !!ev?.shiftKey });
     return;
   }
-  if (info.tile) {
-    const at = !st.combat && info.point ? info.point : info.tile;
-    c.send({ t: 'move', x: at.x, y: at.y, charId: st.combat ? undefined : charId });
-  }
+  if (info.point) c.send({ t: 'move', x: info.point.x, y: info.point.y, charId: st.combat ? undefined : charId });
   void r;
 }
 

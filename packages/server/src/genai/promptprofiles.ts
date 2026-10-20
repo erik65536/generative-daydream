@@ -8,7 +8,7 @@ import path from 'node:path';
 import type { AssetRecord } from '@gd/shared';
 import { ROOT_DIR } from '../paths';
 
-export type AssetKind = AssetRecord['kind'];
+export type AssetKind = Exclude<AssetRecord['kind'], 'painting'>;
 
 export interface PromptProfile {
   id: string;
@@ -56,7 +56,6 @@ const PROFILES: Record<string, PromptProfile> = {
     alphaWrap: '{prompt}',
     cutoutSuffix: ', isolated on a plain flat light gray background',
     negative: {
-      texture: 'perspective, horizon, objects, people, text, frame, border, vignette',
       sprite: `cropped, cut off, multiple characters, ${NO_SCENE}`,
       object: `cropped, multiple objects, people, ${NO_SCENE}`,
       icon: `hands, people, multiple items, ${NO_SCENE}`,

@@ -3,12 +3,13 @@
  * Synchronous and deterministic given the host's RNG; shared by real-time play, combat and the balance simulator.
  */
 import {
-  applyDamage, expectedDamage, flatDamage, hasLineOfSight, healAmount, isBasic, potency, refDpa, resolveStatusId, rollDamage, rx, skillAp, skillRange, statusDot, tilesInRadius,
+  SPACING, applyDamage, expectedDamage, flatDamage, healAmount, isBasic, potency, refDpa, resolveStatusId, rollDamage, rx, skillAp, skillRange, statusDot, tilesInRadius,
   type ActiveStatus, type DamageEffect, type Effect, type FxEvent, type ItemBaseDef, type ItemInstance, type Rng, type Ruleset, type SkillDef, type StatBlock, type Surface,
 } from '@gd/shared';
 import type { Actor } from './actors';
 import { CharActor, MonsterActor, NpcActor } from './actors';
 import type { ZoneMap } from './worldctx';
+
 
 export interface EffectHost {
   r: Ruleset;
@@ -16,7 +17,7 @@ export interface EffectHost {
   now(): number;
   actorsInZone(zoneId: string): Actor[];
   zoneMap(zoneId: string): ZoneMap;
-  /** Walkable and unoccupied. */
+  /** Walkable ground nobody (else) stands on, in metres. */
   isFree(zoneId: string, x: number, y: number, ignoreId?: string): boolean;
   fx(zoneId: string, events: FxEvent[]): void;
   surfaces(zoneId: string): Surface[];
@@ -83,7 +84,7 @@ export function checkSkill(host: EffectHost, use: SkillUse, opts: { inCombat: bo
   if (skill.cost && user instanceof CharActor && (user.pools[skill.cost.poolId] ?? 0) < skill.cost.amount) return `Not enough ${rx(r).pool.get(skill.cost.poolId)?.name ?? 'energy'}.`;
   const range = skillRange(skill, stats);
   const map = host.zoneMap(user.zoneId);
-  const los = (p: { x: number; y: number }) => hasLineOfSight(user, p, (x, y) => map.opaque[y * map.def.width + x] === 1);
+  const los = (p: { x: number; y: number }) => map.nav.sees(user, p);
   switch (skill.targeting) {
     case 'self':
       return null;
@@ -107,7 +108,7 @@ export function checkSkill(host: EffectHost, use: SkillUse, opts: { inCombat: bo
       if (!p) return 'Choose a location.';
       if (dist(user, p) > range + 0.01) return 'Out of range.';
       if (range > 2 && !los(p)) return 'No line of sight.';
-      if (skill.effects.some((e) => e.kind === 'teleport') && !host.isFree(user.zoneId, Math.round(p.x), Math.round(p.y), user.id)) return 'Cannot land there.';
+      if (skill.effects.some((e) => e.kind === 'teleport') && !host.isFree(user.zoneId, p.x, p.y, user.id)) return 'Cannot land there.';
       return null;
     }
   }
@@ -120,20 +121,20 @@ export function canReviveWith(r: Ruleset, effects: Effect[]): boolean {
   return r.revive === 'heal' && effects.some((e) => e.kind === 'heal');
 }
 
+/** A free spot right next to the target (the nearest to the user), for a dash. */
 function findLandingNear(host: EffectHost, user: Actor, target: Actor): { x: number; y: number } | null {
   let best: { x: number; y: number } | null = null;
   let bd = Infinity;
-  for (let dy = -1; dy <= 1; dy++)
-    for (let dx = -1; dx <= 1; dx++) {
-      if (!dx && !dy) continue;
-      const x = Math.round(target.x) + dx, y = Math.round(target.y) + dy;
-      if (!host.isFree(user.zoneId, x, y, user.id)) continue;
-      const d = Math.hypot(x - user.x, y - user.y);
-      if (d < bd) {
-        bd = d;
-        best = { x, y };
-      }
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    const x = target.x + Math.cos(a) * (SPACING + 0.05), y = target.y + Math.sin(a) * (SPACING + 0.05);
+    if (!host.isFree(user.zoneId, x, y, user.id)) continue;
+    const d = Math.hypot(x - user.x, y - user.y);
+    if (d < bd) {
+      bd = d;
+      best = { x, y };
     }
+  }
   return best;
 }
 
@@ -203,14 +204,14 @@ function teleport(host: EffectHost, a: Actor, x: number, y: number) {
 function push(host: EffectHost, from: { x: number; y: number }, t: Actor, distance: number) {
   const dx = t.x - from.x, dy = t.y - from.y;
   const len = Math.hypot(dx, dy) || 1;
-  let x = Math.round(t.x), y = Math.round(t.y);
-  for (let i = 1; i <= distance; i++) {
-    const nx = Math.round(t.x + (dx / len) * i), ny = Math.round(t.y + (dy / len) * i);
+  let x = t.x, y = t.y;
+  for (let i = 1; i <= distance * 4; i++) {
+    const nx = t.x + (dx / len) * i * 0.25, ny = t.y + (dy / len) * i * 0.25;
     if (!host.isFree(t.zoneId, nx, ny, t.id)) break;
     x = nx;
     y = ny;
   }
-  if (x !== Math.round(t.x) || y !== Math.round(t.y)) teleport(host, t, x, y);
+  if (x !== t.x || y !== t.y) teleport(host, t, x, y);
 }
 
 // ------------------------------------------------------------------------------------ the effect engine
@@ -362,7 +363,7 @@ export function executeSkill(host: EffectHost, use: SkillUse, inCombat: boolean)
   host.fx(user.zoneId, [{ kind: ranged && skill.targeting !== 'self' ? 'projectile' : 'skill', sourceId: user.id, targetId: use.target?.id, x: user.x, y: user.y, tx: center.x, ty: center.y, skillId: skill.id, fx: skill.fx, radius: skill.radius, element: skillElement(host.r, skill, stats) }]);
   // Movement effects first.
   for (const e of skill.effects) {
-    if (e.kind === 'teleport' && use.point) teleport(host, user, Math.round(use.point.x), Math.round(use.point.y));
+    if (e.kind === 'teleport' && use.point) teleport(host, user, use.point.x, use.point.y);
     if (e.kind === 'dash' && use.target) {
       const land = findLandingNear(host, user, use.target);
       if (land) teleport(host, user, land.x, land.y);
@@ -381,8 +382,9 @@ export function createSurface(host: EffectHost, zoneId: string, center: { x: num
   if (!def || !r.systems.surfaces) return;
   const map = host.zoneMap(zoneId);
   const list = host.surfaces(zoneId);
-  for (const t of tilesInRadius(center.x, center.y, radius, map.def.width, map.def.height)) {
-    if (map.solid[t.y * map.def.width + t.x]) continue;
+  // Surfaces lie in square-metre patches on the ground.
+  for (const t of tilesInRadius(center.x, center.y, radius, Math.ceil(map.nav.width), Math.ceil(map.nav.height))) {
+    if (!map.nav.walkable(t.x, t.y)) continue;
     const i = list.findIndex((s) => s.x === t.x && s.y === t.y);
     let result: string | null = surfaceId;
     if (i >= 0) {

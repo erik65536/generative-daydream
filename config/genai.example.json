@@ -127,7 +127,9 @@
       "provider": "llm",
       "temperature": 0.9,
       "maxTokens": 8000,
-      "retries": 2
+      "retries": 2,
+      "strongModel": "gpt-6.1-sol",
+      "_comment": "strongModel: asked once, only when a painted place still cannot be used after Luna's reading check, before it is repainted. Defaults to gpt-6.1-sol on an OpenAI provider; null turns it off. It is charged at its OpenAI list price ($2 input, $0.10 cached, $10 output per million tokens; flex halves them); a provider can override that with \"modelPricing\": {\"gpt-6.1-sol\": {\"inputPerM\", \"cachedPerM\", \"outputPerM\"}}."
     },
     "world.content": {
       "provider": "llm",
@@ -156,12 +158,6 @@
       "temperature": 0.7,
       "maxTokens": 4000,
       "retries": 1
-    },
-    "image.texture": {
-      "provider": "comfy-qwen",
-      "width": 1024,
-      "height": 1024,
-      "maxAttempts": 3
     },
     "image.sprite": {
       "provider": "comfy-qwen",

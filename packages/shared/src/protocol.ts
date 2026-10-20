@@ -6,10 +6,10 @@ import type { MonsterArchetype, NpcRole } from './rules/actors';
 import type { DifficultyId } from './ruleset/types';
 
 export interface Motion {
-  /** Tile path, starting from the position at `t0`. */
+  /** Waypoints in ground metres, starting from the position at `t0`. */
   path: { x: number; y: number }[];
   from: { x: number; y: number };
-  /** Tiles per second. */
+  /** Metres per second. */
   speed: number;
   /** Server timestamp (ms) when movement began. */
   t0: number;
@@ -69,7 +69,7 @@ export interface FeatureState {
   empty?: boolean;
 }
 
-export type ZoneView = Omit<ZoneDef, 'spawns' | 'lore' | 'features'> & {
+export type ZoneView = Omit<ZoneDef, 'spawns' | 'lore' | 'features' | 'design'> & {
   features: FeatureDef[];
 };
 

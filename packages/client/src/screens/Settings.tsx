@@ -7,12 +7,11 @@ type GenaiInfo = Awaited<ReturnType<typeof api.genai>>;
 
 const PURPOSE_HELP: Record<string, string> = {
   'world.design': 'Concept, map, main story, monsters. Use your smartest model.',
-  'world.content': 'Towns, residents, side quests, tilesets, names. Many calls.',
+  'world.content': 'Towns, residents, side quests, lore, names. Many calls.',
   'npc.decision': 'Runtime NPC choice of actions + speech (structured JSON), or a decision model that picks actions while the LLM speaks.',
   'npc.dialogue': 'Optional separate speech model (used when combineNpcDecisionAndDialogue is false).',
   narration: 'Short flavor text.',
-  'image.texture': 'Ground and wall textures.',
-  'image.sprite': 'Characters, monsters and props.',
+  'image.sprite': 'Characters, creatures and the objects drawn over places.',
   'image.icon': 'Item icons (full art mode).',
   'image.check': 'Scores generated images and triggers regeneration (a vision LLM or a decision model).',
   'image.prompt': 'Writes long descriptive prompts for image models that want them (Qwen Image, Flux, Krea).',

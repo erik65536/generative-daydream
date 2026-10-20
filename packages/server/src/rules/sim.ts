@@ -3,34 +3,31 @@
  * Used by the balance loop and by tests. Synchronous and deterministic for a given seed.
  */
 import {
-  Rng, rx,
+  Nav, Rng, makeNav, rx,
   type BossDef, type CharacterState, type CombatMode, type DifficultyId, type FxEvent, type ItemInstance, type MonsterFamily, type MonsterRole,
-  type MonsterRuntime, type Ruleset, type SkillDef, type SpawnDef, type Surface, type TilesetDef, type ZoneDef,
+  type MonsterRuntime, type Ruleset, type SkillDef, type SpawnDef, type Surface, type ZoneDef,
 } from '@gd/shared';
 import { Actor, CharActor, MonsterActor } from '../game/actors';
 import { Combat, type CombatHost } from '../game/combat';
 import { createCharacter, levelUpTo, restoreFully } from '../game/characters';
 import { makeItem } from '../game/loot';
 import type { ZoneMap } from '../game/worldctx';
+import { isFree, nearestFree } from '../game/space';
 import { partySizeFor, type PackMember } from './encounters';
 
 const ARENA_W = 22;
 const ARENA_H = 18;
 
+/** A walled arena (metres) with four square pillars to fight around. */
 function arena(seed: string): ZoneMap {
-  const n = ARENA_W * ARENA_H;
-  const solid = new Uint8Array(n);
-  const opaque = new Uint8Array(n);
   const rng = new Rng(`arena:${seed}`);
-  for (let i = 0; i < 4; i++) {
-    const x = rng.int(8, 13), y = rng.int(3, ARENA_H - 4);
-    solid[y * ARENA_W + x] = 1;
-    opaque[y * ARENA_W + x] = 1;
-  }
-  for (let x = 0; x < ARENA_W; x++) for (const y of [0, ARENA_H - 1]) solid[y * ARENA_W + x] = opaque[y * ARENA_W + x] = 1;
-  for (let y = 0; y < ARENA_H; y++) for (const x of [0, ARENA_W - 1]) solid[y * ARENA_W + x] = opaque[y * ARENA_W + x] = 1;
-  const def = { id: 'arena', name: 'Arena', kind: 'dungeon', width: ARENA_W, height: ARENA_H, features: [], spawns: [] } as unknown as ZoneDef;
-  return { def, ground: new Uint8Array(n), objects: new Uint8Array(n), tileset: {} as TilesetDef, features: new Map(), solid, opaque };
+  const pillars = Array.from({ length: 4 }, () => ({ x: rng.int(8, 13) + 0.5, y: rng.int(3, ARENA_H - 4) + 0.5 }));
+  // Walls and pillars are a metre thick; a person's centre keeps a body's width from them.
+  const near = (x: number, y: number, by: number) => pillars.some((p) => Math.max(Math.abs(p.x - x), Math.abs(p.y - y)) < 0.5 + by);
+  const inside = (x: number, y: number, by: number) => x > 1 + by && y > 1 + by && x < ARENA_W - 1 - by && y < ARENA_H - 1 - by;
+  const nav = makeNav(ARENA_W, ARENA_H, (x, y) => inside(x, y, 0.35) && !near(x, y, 0.35), (x, y) => inside(x, y, 0) && !near(x, y, 0));
+  const def = { id: 'arena', name: 'Arena', kind: 'dungeon', width: ARENA_W, height: ARENA_H, features: [], spawns: [], nav } as unknown as ZoneDef;
+  return { def, nav: new Nav(nav), features: new Map() };
 }
 
 export interface FightTelemetry {
@@ -71,8 +68,7 @@ class SimHost implements CombatHost {
   actorsInZone() { return this.actors; }
   zoneMap() { return this.map; }
   isFree(_z: string, x: number, y: number, ignoreId?: string) {
-    if (x < 0 || y < 0 || x >= ARENA_W || y >= ARENA_H || this.map.solid[y * ARENA_W + x]) return false;
-    return !this.actors.some((a) => a.id !== ignoreId && (a.alive() || a.downed()) && Math.round(a.x) === x && Math.round(a.y) === y);
+    return isFree(this.map.nav, this.actors, { x, y }, ignoreId);
   }
   fx(_z: string, _e: FxEvent[]) {}
   surfaces() { return this.surfaceList; }
@@ -86,7 +82,7 @@ class SimHost implements CombatHost {
   actorMoved() {}
   broadcastCombat() {}
   combatEnded(_c: Combat, victory: boolean) { this.ended = { victory }; }
-  checkTrapsAlong() { return -1; }
+  checkTrapsAlong() { return null; }
   commandCompanions() { return false; }
   sendError() {}
   playersInCombat() { return []; }
@@ -205,6 +201,11 @@ export function runFight(r: Ruleset, spec: FightSpec): FightResult {
     return new MonsterActor(spawn, rt, family, boss, 'arena', r, () => spec.difficulty);
   });
   host.actors = [...chars, ...monsters];
+  // Everyone starts on open ground, a body's width apart.
+  for (const a of host.actors) {
+    const p = nearestFree(host.map.nav, host.actors, a, a);
+    if (p) [a.x, a.y] = [p.x, p.y];
+  }
   const maxHp = chars.reduce((s, c) => s + c.stats().maxHp, 0);
   const combat = new Combat(`sim_${spec.seed}`, 'arena', host);
   for (const a of host.actors) combat.add(a);

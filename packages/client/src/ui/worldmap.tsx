@@ -130,13 +130,12 @@ async function paintMap(canvas: HTMLCanvasElement, world: ClientWorld, zones: Zo
   ctx.fillStyle = sea;
   ctx.fillRect(0, 0, MAP_W, MAP_H);
 
-  const textures = await Promise.all(zones.map((z) => {
-    const ts = world.tilesets[z.tilesetId];
-    const url = c.assetUrl(ts?.roles.floor.asset);
+  const paintings = await Promise.all(zones.map((z) => {
+    const url = c.assetUrl(z.painting?.image);
     return url ? loadImage(url) : Promise.resolve(null);
   }));
 
-  // Each territory: its ground art (or its colours), masked to its shape.
+  // Each territory: the place's own painting, masked to its shape.
   const { gw, gh, owner, edge, inland } = t;
   const tmp = document.createElement('canvas');
   tmp.width = MAP_W;
@@ -150,16 +149,22 @@ async function paintMap(canvas: HTMLCanvasElement, world: ClientWorld, zones: Zo
     const z = zones[i]!;
     tc.globalCompositeOperation = 'source-over';
     tc.clearRect(0, 0, MAP_W, MAP_H);
-    const ts = world.tilesets[z.tilesetId];
-    const img = textures[i];
+    const img = paintings[i];
     if (img) {
-      const pat = tc.createPattern(img, 'repeat')!;
-      // Ground art at map scale: one texture tile is about a fifth of a territory.
-      const s = 46 / Math.max(img.width, 1);
-      pat.setTransform(new DOMMatrix().scale(s));
-      tc.fillStyle = pat;
-    } else tc.fillStyle = ts?.roles.floor.colors[0] ?? '#4a4a44';
-    tc.fillRect(0, 0, MAP_W, MAP_H);
+      // Scaled to cover the territory's bounds.
+      let x0 = gw, y0 = gh, x1 = 0, y1 = 0;
+      for (let k = 0; k < owner.length; k++)
+        if (owner[k] === i) {
+          const gx = k % gw, gy = (k / gw) | 0;
+          [x0, y0, x1, y1] = [Math.min(x0, gx), Math.min(y0, gy), Math.max(x1, gx), Math.max(y1, gy)];
+        }
+      const bx = (x0 * MAP_W) / gw, by = (y0 * MAP_H) / gh, bw = ((x1 - x0 + 1) * MAP_W) / gw, bh = ((y1 - y0 + 1) * MAP_H) / gh;
+      const s = Math.max(bw / img.width, bh / img.height);
+      tc.drawImage(img, bx + (bw - img.width * s) / 2, by + (bh - img.height * s) / 2, img.width * s, img.height * s);
+    } else {
+      tc.fillStyle = '#4a4a44';
+      tc.fillRect(0, 0, MAP_W, MAP_H);
+    }
     const md = mc.createImageData(gw, gh);
     for (let k = 0; k < owner.length; k++) if (owner[k] === i) md.data[k * 4 + 3] = 255;
     mc.putImageData(md, 0, 0);

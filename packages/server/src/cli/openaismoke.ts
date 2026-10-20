@@ -4,6 +4,7 @@
  *
  *   tsx src/cli/openaismoke.ts [worldIdForImages]
  */
+import type { AssetKind } from '../genai/promptprofiles';
 import fs from 'node:fs';
 import path from 'node:path';
 import { genai } from '../genai/service';
@@ -21,7 +22,7 @@ const secs = (t0: number) => `${((performance.now() - t0) / 1000).toFixed(1)}s`;
 let t0 = t();
 const concept = await g.structured('world.design', {
   system: SYSTEM,
-  prompt: conceptPrompt({ setting: 'A sunken lighthouse city where the tide never goes out; bell-ringers keep the drowned spirits asleep.', size: 'small', length: 'short', communication: 2, combatMode: 'party_npc', art: 'full' }),
+  prompt: conceptPrompt({ setting: 'A sunken lighthouse city where the tide never goes out; bell-ringers keep the drowned spirits asleep.', size: 'small', length: 'short', communication: 2, combatMode: 'party_npc' }),
   schema: ConceptSchema,
   name: 'world_concept',
   maxTokens: 4000,
@@ -38,11 +39,11 @@ if (w) {
   for (const r of plan) console.log(`- ${r.key}: ${(r.imagePrompt ?? '(none)').slice(0, 220)}…`);
 
   const dir = worldAssetDir(w.id);
-  for (const key of ['spr_npc_n_brenda_kowalski_0', 'tex_ts_d0_0_water', 'obj_ts_t0_0_sign']) {
+  for (const key of ['spr_npc_n_brenda_kowalski_0', 'obj_chest']) {
     const a = w.assets[key];
     if (!a?.file || !fs.existsSync(path.join(dir, a.file))) continue;
     t0 = t();
-    const r = await qualityCheck(fs.readFileSync(path.join(dir, a.file)), a.kind, a.prompt);
+    const r = await qualityCheck(fs.readFileSync(path.join(dir, a.file)), a.kind as AssetKind, a.prompt);
     console.log(`\ncheck ${key} (${secs(t0)}): score ${r?.score.toFixed(1)} ${r?.problems.join('; ') || 'no problems'}`);
   }
 }

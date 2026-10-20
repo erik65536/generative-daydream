@@ -104,6 +104,26 @@ export class Job {
     this.yieldPoint();
   }
 
+  /** Start one stage, leaving the others as they are (stages of a build run side by side). */
+  begin(id: string, counts?: { done?: number; total?: number }) {
+    const p = this.phases.find((x) => x.id === id);
+    if (!p || p.status === 'done') return;
+    if (p.status !== 'active') p.startedAt = Date.now();
+    p.status = 'active';
+    if (counts) Object.assign(p, counts);
+    this.touch();
+  }
+
+  /** Finish one stage. */
+  end(id: string) {
+    const p = this.phases.find((x) => x.id === id);
+    if (!p || p.status === 'done') return;
+    p.status = 'done';
+    p.startedAt ??= Date.now();
+    p.endedAt = Date.now();
+    this.touch();
+  }
+
   /** Update a stage's item counts. */
   count(id: string, done: number, total?: number) {
     const p = this.phases.find((x) => x.id === id);

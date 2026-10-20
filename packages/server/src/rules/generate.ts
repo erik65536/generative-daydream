@@ -1,31 +1,32 @@
 /**
- * Ruleset design with an LLM: four structured steps (core, gear, classes, one tree per class), each with a
- * procedural fallback, then compile → (world binding) → balance → AI review of flavour/structure → rebalance.
+ * Ruleset design with an LLM: structured steps (core, gear, classes, then every class's tree side by side), then
+ * compile → (world binding) → balance → AI review of flavour/structure → rebalance.
  */
 import { z } from 'zod';
 import type { Ruleset, WorldInput } from '@gd/shared';
 import type { Purpose } from '../genai/types';
-import type { Genre } from '../worldgen/genres';
-import { defaultClasses, defaultCore, defaultGear, defaultTree } from './defaults';
 import { ClassTreeIntentSchema, ClassesIntentSchema, CoreIntentSchema, GearIntentSchema, SKILL_EFFECT_KINDS, STAT_EFFECTS, type RulesetIntent } from './intent';
 import * as RP from './prompts';
 
-/** Runs one structured LLM step (provided by the pipeline: it retries, then stops the build; the last argument is only for purposes configured without a model). */
-export type StepRunner = <T extends z.ZodType>(purpose: Purpose, label: string, opts: { prompt: string; schema: T; name: string; maxTokens?: number; system?: string }, fallback: () => z.infer<T>) => Promise<z.infer<T>>;
+/** Runs one structured LLM step (provided by the pipeline: it retries, then stops the build). */
+export type StepRunner = <T extends z.ZodType>(purpose: Purpose, label: string, opts: { prompt: string; schema: T; name: string; maxTokens?: number; system?: string }) => Promise<z.infer<T>>;
 
-export async function designRules(run: StepRunner, world: string, input: WorldInput, genre: Genre, onClass?: (i: number, n: number) => void): Promise<RulesetIntent> {
-  const core = await run('world.design', 'Rules: core', { prompt: RP.corePrompt(world, input), schema: CoreIntentSchema, name: 'rules_core', maxTokens: 6000, system: RP.RULES_SYSTEM }, () => defaultCore(genre));
+export async function designRules(run: StepRunner, world: string, input: WorldInput, onStep?: (done: number, total: number) => void): Promise<RulesetIntent> {
+  const core = await run('world.design', 'Rules: core', { prompt: RP.corePrompt(world, input), schema: CoreIntentSchema, name: 'rules_core', maxTokens: 6000, system: RP.RULES_SYSTEM });
   if (!core.slots.some((s) => s.kind === 'weapon')) core.slots.unshift({ name: 'Weapon', kind: 'weapon' });
-  const gear = await run('world.content', 'Rules: gear & peoples', { prompt: RP.gearPrompt(world, core), schema: GearIntentSchema, name: 'rules_gear', maxTokens: 6000, system: RP.RULES_SYSTEM }, () => defaultGear(genre));
+  const gear = await run('world.content', 'Rules: gear & peoples', { prompt: RP.gearPrompt(world, core), schema: GearIntentSchema, name: 'rules_gear', maxTokens: 6000, system: RP.RULES_SYSTEM });
   const n = input.rules?.classes;
-  const classes = await run('world.design', 'Rules: classes', { prompt: RP.classesPrompt(world, core, gear, n ? [n, n] : [3, 5]), schema: ClassesIntentSchema, name: 'rules_classes', maxTokens: 4000, system: RP.RULES_SYSTEM }, () => defaultClasses(genre));
+  const classes = await run('world.design', 'Rules: classes', { prompt: RP.classesPrompt(world, core, gear, n ? [n, n] : [3, 5]), schema: ClassesIntentSchema, name: 'rules_classes', maxTokens: 4000, system: RP.RULES_SYSTEM });
   if (n && classes.classes.length > n) classes.classes = classes.classes.slice(0, n);
-  const trees = [];
-  for (let i = 0; i < classes.classes.length; i++) {
-    const c = classes.classes[i]!;
-    onClass?.(i, classes.classes.length);
-    trees.push(await run('world.content', `Rules: ${c.name} skills`, { prompt: RP.treePrompt(world, core, c), schema: ClassTreeIntentSchema, name: 'rules_tree', maxTokens: 6000, system: RP.RULES_SYSTEM }, () => defaultTree(genre, c.role, c.name)));
-  }
+  // Every class's skill tree is designed at the same time.
+  let done = 3;
+  const total = 3 + classes.classes.length;
+  onStep?.(done, total);
+  const trees = await Promise.all(classes.classes.map(async (c) => {
+    const tree = await run('world.content', `Rules: ${c.name} skills`, { prompt: RP.treePrompt(world, core, c), schema: ClassTreeIntentSchema, name: 'rules_tree', maxTokens: 6000, system: RP.RULES_SYSTEM });
+    onStep?.(++done, total);
+    return tree;
+  }));
   return { core, gear, classes, trees };
 }
 
@@ -80,7 +81,7 @@ BALANCE REPORT
 ${reportText(r)}
 
 Propose up to 8 revisions that make the rules more fun, clearer or more fitting (rename or re-describe things, change a rarely used skill's effect mix, give a dull passive better stat picks). Leave numbers to the engine. Return an empty list if the rules are good.`;
-  const out = await run('world.design', 'Rules: review', { prompt, schema: ReviewSchema, name: 'rules_review', maxTokens: 3000, system: RP.REVIEW_SYSTEM }, () => ({ verdict: 'kept', revisions: [] }));
+  const out = await run('world.design', 'Rules: review', { prompt, schema: ReviewSchema, name: 'rules_review', maxTokens: 3000, system: RP.REVIEW_SYSTEM });
   if (!out.revisions.length) return null;
   const next: RulesetIntent = JSON.parse(JSON.stringify(intent));
   const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();

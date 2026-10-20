@@ -70,6 +70,8 @@ export interface StructuredOptions<T extends z.ZodType> {
   temperature?: number;
   maxTokens?: number;
   images?: Buffer[];
+  /** Ask this model of the purpose's provider instead of its configured one (e.g. a stronger model as a fallback). */
+  model?: string;
   /** Extra semantic validation; return an error string to trigger a retry. */
   validate?: (v: z.infer<T>) => string | null;
 }
@@ -91,6 +93,16 @@ export class GenAI {
 
   purpose(p: Purpose): PurposeConfig {
     return this.config.purposes[p] ?? { provider: 'procedural' };
+  }
+
+  /**
+   * The stronger model a purpose may fall back to when its usual answer is not good enough: the purpose's
+   * `strongModel` (null turns the fallback off), else gpt-6.1-sol on an OpenAI provider, else none.
+   */
+  strongModel(p: Purpose): string | undefined {
+    const pc = this.purpose(p);
+    if (pc.strongModel !== undefined) return pc.strongModel ?? undefined;
+    return this.config.providers[pc.provider]?.type === 'openai-responses' ? 'gpt-6.1-sol' : undefined;
   }
 
   providerConfig(name: string): ProviderConfig {
@@ -294,16 +306,17 @@ Return a JSON object with the rewritten f0, f1, ... only.` }],
     const jsonSchema = z.toJSONSchema(opts.schema, { unrepresentable: 'any' }) as Record<string, unknown>;
     delete jsonSchema.$schema;
     const retries = pc.retries ?? 2;
+    const model = opts.model ?? pc.model;
     const messages = [...(opts.history ?? []), { role: 'user' as const, content: opts.prompt }];
     let lastErr: Error | null = null;
     for (let attempt = 1; attempt <= retries + 1; attempt++) {
       const t0 = Date.now();
       let raw = '';
       try {
-        raw = await this.exec(p, pc.provider, pc.model, () =>
+        raw = await this.exec(p, pc.provider, model, () =>
           provider.structured(
             { system: opts.system, messages, schema: jsonSchema, schemaName: opts.name, temperature: opts.temperature ?? pc.temperature, maxTokens: opts.maxTokens ?? pc.maxTokens, images: opts.images },
-            pc.model,
+            model,
             pc.extraBody,
           ),
         );

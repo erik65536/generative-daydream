@@ -3,7 +3,7 @@
  *
  *   Exploring   left stick walks; the nearest person, chest, door or pile ahead is focused (LB/RB to change)
  *               and A acts on it; X attacks the nearest foe.
- *   Combat      a tile cursor snaps to foes (LB/RB), shows the path and cost, and A moves or attacks there;
+ *   Combat      a ground cursor snaps to foes (LB/RB), shows the path and cost, and A moves or attacks there;
  *               Y ends the turn.
  *   Anywhere    hold RT for the skill wheel and LT for the menu wheel (pick with either stick, release to
  *               choose); d-pad left/right switches character; right stick zooms; Menu opens the game menu.
@@ -27,7 +27,7 @@ const PANELS: { id: NonNullable<GameClient['state']['panel']>; label: string }[]
   { id: 'codex', label: 'Codex' },
   { id: 'menu', label: 'Menu' },
 ];
-const INTERACTIVE = new Set(['chest', 'door', 'exit', 'shrine', 'sign', 'lever', 'lore', 'bed', 'craft_station', 'waypoint', 'gate']);
+const INTERACTIVE = new Set(['chest', 'door', 'exit', 'sign', 'lore', 'bed', 'craft_station', 'waypoint', 'object']);
 
 interface Target { info: HoverInfo; verb: string; name: string; x: number; y: number; hostile?: boolean }
 
@@ -139,7 +139,7 @@ export class PadInput {
     if (mag > DEAD) {
       // Steering: the server keeps the party walking this way; we only tell it when the direction changes
       // (and now and then, so it knows the stick is still held).
-      const d = this.r.screenDirToTile(s.lx, s.ly);
+      const d = this.r.screenDirToGround(s.lx, s.ly);
       this.heading = d;
       this.r.steer = d;
       const now = performance.now();
@@ -201,7 +201,7 @@ export class PadInput {
       if (!INTERACTIVE.has(f.kind) || Math.hypot(f.x - lead.x, f.y - lead.y) > 2.6) continue;
       const fs = st.features.get(f.id);
       if (f.kind === 'chest' && fs?.opened) continue;
-      const verbs: Record<string, string> = { chest: 'Open', door: 'Enter', exit: 'Travel', shrine: 'Pray', sign: 'Read', lever: 'Pull', lore: 'Read', bed: 'Rest', craft_station: 'Craft', waypoint: 'Waypoint', gate: 'Examine' };
+      const verbs: Record<string, string> = { chest: 'Open', door: 'Enter', exit: 'Travel', sign: 'Read', lore: 'Read', bed: 'Rest', craft_station: 'Craft', waypoint: 'Waypoint', object: 'Examine' };
       const verb = verbs[f.kind] ?? 'Use';
       out.push({ info: this.r.hoverAt(f, { featureId: f.id }), verb, name: f.name ?? f.kind, x: f.x, y: f.y, score: score(f.x, f.y) });
     }
@@ -243,25 +243,25 @@ export class PadInput {
     const pool = skill?.targeting === 'ally' ? allies : foes;
     if (!this.cursor) {
       const first = pool[0] ?? active;
-      this.cursor = { x: Math.round(first.x), y: Math.round(first.y) };
+      this.cursor = { x: first.x, y: first.y };
     }
     // Snap between targets.
     if (pressed(B.RB) || pressed(B.LB)) {
-      const at = pool.findIndex((e) => Math.round(e.x) === this.cursor!.x && Math.round(e.y) === this.cursor!.y);
+      const at = pool.findIndex((e) => Math.hypot(e.x - this.cursor!.x, e.y - this.cursor!.y) < 0.3);
       const next = pool[(at + (pressed(B.RB) ? 1 : -1) + pool.length) % Math.max(1, pool.length)];
-      if (next) this.cursor = { x: Math.round(next.x), y: Math.round(next.y) };
+      if (next) this.cursor = { x: next.x, y: next.y };
     }
-    // Free cursor: one tile per push, repeating while held.
+    // Free cursor: a metre per push, repeating while held.
     const now = performance.now();
     if (Math.hypot(s.lx, s.ly) > 0.45) {
       if (now >= this.repeatAt) {
-        const d = this.r.screenDirToTile(s.lx, s.ly);
+        const d = this.r.screenDirToGround(s.lx, s.ly);
         const step = { x: Math.abs(d.x) > 0.38 ? Math.sign(d.x) : 0, y: Math.abs(d.y) > 0.38 ? Math.sign(d.y) : 0 };
         this.cursor = { x: this.cursor.x + step.x, y: this.cursor.y + step.y };
         this.repeatAt = now + (this.repeatAt === 0 ? 220 : 95);
       }
     } else this.repeatAt = 0;
-    const on = [...st.entities.values()].find((e) => !e.dead && Math.round(e.x) === this.cursor!.x && Math.round(e.y) === this.cursor!.y);
+    const on = [...st.entities.values()].find((e) => !e.dead && Math.hypot(e.x - this.cursor!.x, e.y - this.cursor!.y) < 0.6);
     const info = this.r.hoverAt(this.cursor, on ? { entityId: on.id } : {});
     this.r.setPadHover(info);
     const verb = skill ? `Use ${skill.name}` : on?.hostile ? 'Attack' : on ? '' : 'Move';
@@ -275,7 +275,7 @@ export class PadInput {
 
   /** A button prompt placed above a spot on the map, in screen pixels (rounded so it only updates when it moves). */
   private promptAt(verb: string, name: string, x: number, y: number) {
-    const p = this.r.tileToScreen(x, y);
+    const p = this.r.groundToScreen(x, y);
     return { verb, name, x: Math.round(p.x), y: Math.round(p.y) };
   }
 

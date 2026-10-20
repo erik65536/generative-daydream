@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import sharp from 'sharp';
-import { cutoutSprite, framedness, liftDark, makeSeamless } from '../src/genai/images';
+import { cutoutSprite } from '../src/genai/images';
 import { parseModelJson } from '../src/genai/json';
 
 async function synthSprite(w: number, h: number, opts: { cut?: boolean } = {}) {
@@ -58,29 +58,6 @@ describe('image post-processing', () => {
     expect(out.problems.some((p) => p.includes('panel'))).toBe(true);
   });
 
-  it('tells a continuous surface from a framed shape', async () => {
-    const flat = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#405a70"/><circle cx="60" cy="80" r="20" fill="#4a6478"/><circle cx="190" cy="170" r="26" fill="#3a5266"/></svg>`;
-    const pit = `<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256"><rect width="256" height="256" fill="#a0a0a0"/><ellipse cx="128" cy="128" rx="90" ry="80" fill="#080808"/></svg>`;
-    expect(await framedness(await sharp(Buffer.from(flat)).png().toBuffer())).toBeLessThan(25);
-    expect(await framedness(await sharp(Buffer.from(pit)).png().toBuffer())).toBeGreaterThan(25);
-  });
-
-  it('lifts near-black surfaces to a readable brightness and leaves others alone', async () => {
-    const mean = async (png: Buffer) => (await sharp(png).stats()).channels.slice(0, 3).reduce((t, c) => t + c.mean, 0) / 3;
-    const dark = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#060808"/><rect x="10" y="10" width="20" height="6" fill="#102828"/></svg>`)).png().toBuffer();
-    expect(await mean(await liftDark(dark))).toBeGreaterThan(35);
-    const mid = await sharp(Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="#606a70"/></svg>`)).png().toBuffer();
-    expect(await liftDark(mid)).toBe(mid);
-  });
-
-  it('makes textures tile seamlessly', async () => {
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300"><rect width="300" height="300" fill="#406020"/><rect x="0" y="0" width="100" height="300" fill="#a0c060"/></svg>`;
-    const png = await makeSeamless(await sharp(Buffer.from(svg)).png().toBuffer(), 128);
-    const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
-    const px = (x: number, y: number) => data[(y * info.width + x) * info.channels]!;
-    // Left and right edges now match (they wrap seamlessly).
-    for (const y of [10, 64, 120]) expect(Math.abs(px(0, y) - px(info.width - 1, y))).toBeLessThan(12);
-  });
 });
 
 describe('model JSON parsing', () => {

@@ -1,77 +1,71 @@
-# Levels and art
+# Places and art
 
-Every world is imagined from scratch, so nothing here names an environment. The engine knows a small,
-neutral vocabulary; the level designer and art director (the LLM) decide what it means in each place.
+Every world is imagined from scratch, so nothing here names an environment. A place is one large painting, and
+the game reads it back to learn where people can walk. Characters, creatures, a few objects and item icons are
+separate images drawn over the paintings.
 
-## Level design: the layout plan
+## A place, from words to ground
 
-The atlas step gives every zone a `layout` plan (`ZoneLayoutPlan`, stored on the zone):
+`worldgen/zones.ts` builds each place in two stages, so painting can start before the world is assembled:
 
-| field | values | meaning |
-| --- | --- | --- |
-| structure | open, grid, hub, rooms, caves | free-form ground, blocks between straight lanes, a centre with enterable structures, chambers and corridors, irregular hollows |
-| enclosed | true / false | under a roof or ceiling: no sky, day/night, rain or snow |
-| blockers | amount (sparse, some, dense) + arrangement (scattered, clusters, rows, edges) | the large impassable element (the "tree" role) |
-| hazard | none, pools, river, channels | impassable liquid, chasm or void (the "water" role) |
-| structures | roofed, walled | how a town's enterable places look: roofed buildings or walled rooms seen from above |
-| clutter | sparse, some, dense | small objects (rock, plant, rubble roles) |
+1. **Paint and read** (`paintAndRead`, needs only what the place is: name, description, buildings, ways out).
+   Luna plans the place as one design cut into parts (`outpaint.ts`); Krea 2 paints it centre-out; Luna names
+   what to look for; SAM 3 and MoGe 2 find the walkable floor, entrances and landmarks (`reading.ts`); Luna
+   checks the colouring once. A painting that cannot work (too little ground, too few ways out) is painted
+   again with a new seed, at most three times. See `painted-zones.md` for the settings and why.
+2. **Settle** (`settlePlace`, after assembly). Luna places every building, way out, person and thing on the
+   numbered spots of the reading; the painting is brought to game scale (SeedVR2 2× and a Lanczos resize when it
+   must grow) and saved as `place_<zoneId>`; the walk and sight masks become the place's navigation grid; and
+   monster packs, the boss and traps are spread by walking distance from the way in. A building the painting
+   has no entrance for is dropped (its interior goes, its people move outdoors).
 
-`resolvePlan` fills gaps and clamps the structure to what each zone kind supports (towns: hub or grid;
-wildernesses: open or grid; dungeons: rooms or caves). The generators in `worldgen/layout.ts` read only the
-plan: plaza or enclosed hub or street-grid towns; natural or gridded travel areas; room or cave dungeons.
-A forest, a parking garage and a giant bathroom are all expressible; none is special-cased.
+Every step is saved under `data/worlds/<id>/draft/places/<zoneId>/`, so a resumed build continues where it
+stopped.
 
-## Art direction
+## Ground metres
 
-Before painting, each tileset gets an art-direction pass (`directTilesets`): the LLM sees the place, its
-level design in words, and decides what every fixed element is there (in an office, the "tree" role might be
-a cubicle partition and "shrine" a coffee station). Prompts describe physical things only. Towns with roofed
-structures also get a roof surface; every tileset gets a crafting station.
+Game positions are metres on the ground. The painting is the 2:1 isometric projection of that ground: a metre
+runs 32 picture pixels across and 16 down (`ISO_X`, `ISO_Y`), and a person 1.75 m tall is 82 px. The navigation
+grid (`shared/world/nav.ts`) has half-metre cells: walkable (where a person's centre may stand) and see-through.
+Fog of war is remembered per square metre.
 
-## The image pipeline
+People are discs of 0.45 m (`shared/world/walking.ts`): two never stand closer than 0.9 m; walks go around
+strangers and can squeeze past allies at a cost. Combat movement budgets are metres, and a move stops exactly
+where the budget runs out. The client draws the reach as a ring (traced over the reachable cells) with a ring
+per action point. Surfaces (fire, ice, oil) lie in square-metre patches.
 
-1. **Plan** (`planAssets`): surfaces, the props each zone actually places, roofs, heroes in every
-   presentation, people, creatures, bosses, item icons. Variants ride along: walk and attack poses for every
-   character, an opened chest. Assets are repainted when missing, failed, changed, or made by an older
-   pipeline (`ART_VERSION`).
-2. **Prompts**: an LLM writes one observer-style paragraph per asset, following the image model's prompt
-   profile (`genai/promptprofiles.ts`: qwen-image-2, flux, sdxl; override any field in
-   `config/prompt-profiles/<id>.json`). Subjects stand alone: no scenery, fog or glows, studio-lit so they
-   read on dark maps.
-3. **Generate**: variants are painted from the approved base image as a reference (`editWorkflow`), which
-   keeps the same character or object across frames.
-4. **Clean** (`genai/matte.ts`): border-colour cutout when the model has no alpha, then matte cleanup (keep
-   the opaque subject and a thin soft edge; drop faint haze), opaque-backdrop detection, darkness and fog
-   signals (fog: a smooth opaque "skirt" spreading sideways beyond the subject's body near its base,
-   measured at a fixed size so smoothly shaded art is not mistaken for it). Surfaces must be one continuous
-   material: a framed shape (a pool in a floor, a pit) is rejected, and near-black surfaces are lifted to a
-   readable brightness (`liftDark`).
-5. **Check**: the checker sees the cutout on magenta beside its alpha mask, so leftovers are visible, and
-   answers quality, match, single subject, whole, clean, dark and text questions. Rejects are repainted with
-   new seeds; the best attempt is kept.
+## The image pipeline (characters, objects, icons)
+
+1. **Plan** (`art.ts`, `planAssets`): heroes in every presentation, people, creatures, bosses, the objects the
+   game draws over every painting (`obj_chest` with its open variant, `obj_sign`, `obj_waypoint`), item icons.
+   Variants ride along: walk and attack poses. Assets are repainted when missing, failed, changed, or made by an
+   older pipeline (`ART_VERSION`).
+2. **Prompts**: Luna writes one observer-style paragraph per asset, following the image model's prompt profile
+   (`genai/promptprofiles.ts`). Subjects stand alone: no scenery, fog or glows, studio-lit.
+3. **Generate**: variants are painted from the approved base image as a reference (`editWorkflow`).
+4. **Clean** (`genai/matte.ts`): cutout when the model has no alpha, matte cleanup, backdrop, darkness and fog
+   detection.
+5. **Check**: the checker sees the cutout on magenta beside its alpha mask. Rejects are repainted with new
+   seeds; the best attempt is kept.
+
+In a build, image work runs on the build's GPU queue (`worldgen/gpu.ts`), which keeps using the loaded model
+while there is work for it; loading and unloading is the GPU scheduler's job (`genai/gpu.ts`).
 
 ## World studio
 
-Owners open `#/world/<id>/studio` (the "Open the world studio" button on the world page) to see and change
-everything a world is made of (`worldgen/studio.ts`, client `screens/Studio.tsx`):
+Owners open `#/world/<id>/studio` to see and change everything a world is made of (`worldgen/studio.ts`, client
+`screens/Studio.tsx`):
 
-- **Places**: each zone's map, top-down, as the bare layout (atlas) or with its painted art; its name,
-  description and hidden lore; the people and quests there; and its elements (what floor, wall, "tree" and so
-  on are in this place) with their art. "Redesign the look" reruns art direction for the place (with the
-  owner's direction, if given) and repaints its surfaces and props; "Repaint all its art" re-rolls them.
-- **People**, **Quests**: every text field is editable; "Rewrite with AI" revises one person or quest with the
-  owner's direction. Renames are carried into every text that mentions the old name. A person whose look
-  changes is repainted. Quest objectives keep their game logic; only their wording changes.
-- **Creatures** and **Art**: every image with its brief and the image prompt written for the model. The owner
-  can replace either (`world.artOverrides`), reset to the world's own, or repaint with new seeds (`roll`).
-  Filters find low scores, failures, customised and out-of-date images.
-
-Edits apply at once; regeneration runs as a world job, shown as a checklist. Only changed or re-rolled images
-are painted (`planAssets(w, level, only)`).
+- **Places**: the painting with its people, creatures and features marked; name, description and hidden lore;
+  how it was painted (layout and style); repaint its people.
+- **People**, **Quests**: every text field is editable; "Rewrite with AI" revises one with the owner's
+  direction. Renames carry into every text that mentions the old name. A person whose look changes is repainted.
+- **Creatures** and **Art**: every image with its brief and image prompt; the owner can replace either
+  (`world.artOverrides`), reset, or repaint with new seeds.
 
 ## Tools
 
-- `src/cli/arttune.ts`: repaint a few assets of a world into a scratch folder with a labelled contact sheet.
-- `src/cli/paintworld.ts`: paint a whole world outside the web server.
-- `src/cli/layoutpeek.ts`: ASCII view of a layout for a plan.
+- `src/cli/genlive.ts`: build a world end to end outside the web server.
+- `src/cli/paintworld.ts`: paint (or repaint) a world's character and item art.
+- `src/cli/placepeek.ts`: a settled place's painting with its walkable ground and everything placed in it marked.
 - `src/cli/sheet.ts`: contact sheet of any folder of PNGs on magenta.

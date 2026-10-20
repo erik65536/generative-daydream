@@ -1,5 +1,5 @@
 /** Procedural, animated character and creature figures, plus generated-image sprite drawing. */
-import { hexToRgb, mix, rgb, shade, strHash } from './textures';
+import { hexToRgb, mix, rgb, shade, strHash } from './color';
 
 export interface FigureOpts {
   shape: 'humanoid' | 'beast' | 'blob' | 'flyer' | 'hulk';

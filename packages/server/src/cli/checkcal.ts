@@ -1,4 +1,5 @@
 /** Run the art checker over images of known quality and print its raw answers (prompt calibration). */
+import type { AssetKind } from '../genai/promptprofiles';
 import fs from 'node:fs';
 import path from 'node:path';
 import { qualityCheck } from '../genai/images';
@@ -22,7 +23,7 @@ for (const [wid, key, truth] of cases) {
   const w = loadWorld(wid)!;
   const a = w.assets[key];
   if (!a?.file) continue;
-  const r = await qualityCheck(fs.readFileSync(path.join(worldAssetDir(wid), a.file)), a.kind, a.prompt);
+  const r = await qualityCheck(fs.readFileSync(path.join(worldAssetDir(wid), a.file)), a.kind as AssetKind, a.prompt);
   console.log(`${truth.padEnd(4)} ${key.padEnd(46)} score ${r?.score.toFixed(1)}  ${r?.problems.join('; ')}`);
 }
 console.log(`≈ $${openaiCost().toFixed(4)}`);

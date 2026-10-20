@@ -72,7 +72,6 @@ export function CreateWorld({ me }: { me: Me }) {
   const [length, setLength] = useState<'short' | 'medium' | 'long' | 'epic'>('short');
   const [communication, setCommunication] = useState(2);
   const [combatMode, setCombatMode] = useState<'solo' | 'party_manual' | 'party_npc'>('party_npc');
-  const art = 'full';
   const [seed, setSeed] = useState('');
   const [difficulty, setDifficulty] = useState<DifficultyId>('normal');
   const [advanced, setAdvanced] = useState(false);
@@ -89,7 +88,7 @@ export function CreateWorld({ me }: { me: Me }) {
     setBusy(true);
     setError('');
     try {
-      const { worldId } = await api.createWorld({ setting, story: story || undefined, notes: notes || undefined, size, length, communication, combatMode, art, seed: seed || undefined, difficulty, rules: Object.keys(rules).length ? rules : undefined });
+      const { worldId } = await api.createWorld({ setting, story: story || undefined, notes: notes || undefined, size, length, communication, combatMode, seed: seed || undefined, difficulty, rules: Object.keys(rules).length ? rules : undefined });
       navigate(`#/world/${worldId}`);
     } catch (e) {
       setError((e as Error).message);

@@ -16,6 +16,14 @@ describe('AI spending', () => {
     expect(costOf({ type: 'openai-chat', baseUrl: 'http://127.0.0.1:1' }, { input: 1_000_000 })).toBe(0);
   });
 
+  it('prices a model asked for by name at its own price, not the provider’s', () => {
+    const luna: ProviderConfig = { type: 'openai-responses', model: 'gpt-6-luna', serviceTier: 'flex' };
+    // gpt-6.1-sol list prices: $2 input, $0.10 cached, $10 output per million; flex halves them.
+    expect(costOf(luna, { input: 1_000_000, cached: 500_000, output: 100_000 }, 'gpt-6.1-sol')).toBeCloseTo(0.5 * (1 + 0.05 + 1));
+    expect(costOf(luna, { input: 1_000_000 }, 'gpt-6-luna')).toBeCloseTo(0.05);
+    expect(costOf({ ...luna, modelPricing: { 'gpt-6.1-sol': { inputPerM: 4 } } }, { input: 1_000_000 }, 'gpt-6.1-sol')).toBeCloseTo(2);
+  });
+
   it('charges the user a call is for and refuses them past their daily budget', () => {
     genai().config.spending = { dailyPerUserUsd: 0.01, dailyTotalUsd: 1000 };
     installSpendLedger();

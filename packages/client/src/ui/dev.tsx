@@ -1,6 +1,6 @@
 /**
  * Developer options for admins (toggle with the ` key): go to any place, see the whole map, reload the daydream
- * after it was edited on disk, zoom far out, and hide the HUD for clean views. Ctrl+click teleports the party.
+ * after it was edited on disk, zoom far out, see where people can walk, and hide the HUD for clean views. Ctrl+click teleports the party.
  */
 import { useState } from 'react';
 import { client, useGame } from '../net/game';
@@ -23,11 +23,11 @@ export function DevPanel({ renderer, hudHidden, setHudHidden, onClose }: { rende
       <div className="dim small">Ctrl+click: teleport · ` toggles this panel</div>
       <div className="row wrap" style={{ gap: 4 }}>
         <button className="btn sm" onClick={() => c.send({ t: 'dev', action: 'reveal' })}>Reveal map</button>
-        <button className="btn sm" title="Load the daydream again from disk (after rebuilding a place)" onClick={() => c.send({ t: 'dev', action: 'reload' })}>Reload daydream</button>
+        <button className="btn sm" title="Load the daydream again from disk (after a place was painted again)" onClick={() => c.send({ t: 'dev', action: 'reload' })}>Reload daydream</button>
         <button className="btn sm" onClick={() => setHudHidden(!hudHidden)}>{hudHidden ? 'Show HUD' : 'Hide HUD'}</button>
         <button className="btn sm" onClick={() => renderer && (renderer.devZoom = !renderer.devZoom)}>Far zoom</button>
         <button className="btn sm" onClick={() => (c.send({ t: 'dev', action: 'peace', on: !peace }), setPeace(!peace))}>{peace ? 'Peaceful ✓' : 'Peaceful'}</button>
-        <button className="btn sm" title="Show places from their painting, or from their tiles" onClick={() => renderer && (renderer.usePaintings = !renderer.usePaintings)}>Painting on/off</button>
+        <button className="btn sm" title="Show where people can walk (green) and what blocks sight (blue)" onClick={() => renderer && (renderer.showWalk = !renderer.showWalk)}>Walkable</button>
       </div>
       <input className="input" placeholder="Find a place…" value={q} onChange={(e) => setQ(e.target.value)} />
       <div className="dev-zones">

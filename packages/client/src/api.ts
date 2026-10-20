@@ -50,7 +50,7 @@ export interface WorldSummary {
   public: boolean;
   status: 'generating' | 'ready' | 'failed';
   createdAt: number;
-  input: { size: string; length: string; combatMode: string; communication: number; art: string; difficulty: import('@gd/shared').DifficultyId };
+  input: { size: string; length: string; combatMode: string; communication: number; difficulty: import('@gd/shared').DifficultyId };
   rules?: { name: string; classes: string[]; balance?: { at: number; ok: number; total: number; durationMs: number } };
   zones: number;
   npcs: number;
@@ -58,7 +58,7 @@ export interface WorldSummary {
   palette: { primary: string; secondary: string; accent: string; ui: string };
   cover?: string;
   /** The daydream's own art for its card. */
-  coverArt?: { floor?: string; figures: string[] };
+  coverArt?: { scene?: string; figures: string[] };
   artProgress: { ok: number; total: number };
   job?: { status: string; progress: number; step: string; error?: string; queuePosition?: number };
 }
@@ -122,14 +122,11 @@ export type StudioEdit =
   | { type: 'zone'; id: string; name?: string; description?: string; lore?: string }
   | { type: 'npc'; id: string; name?: string; title?: string; personality?: string; appearance?: string; backstory?: string; voice?: string; greeting?: string }
   | { type: 'quest'; id: string; title?: string; summary?: string; completionText?: string; objectives?: { id: string; description: string }[] }
-  | { type: 'role'; tilesetId: string; role: string; name?: string; prompt?: string }
   | { type: 'art'; key: string; brief?: string | null; imagePrompt?: string | null };
 
 export type StudioTask =
   | { kind: 'rewrite'; target: { type: 'npc' | 'quest' | 'zone'; id: string }; guidance: string }
-  | { kind: 'direct'; tilesetIds: string[]; guidance: string }
-  | { kind: 'paint'; keys: string[]; reroll?: boolean }
-  | { kind: 'zone'; zoneId: string; plan?: import('@gd/shared').ZoneLayoutPlan; content: boolean; guidance: string; floorPlan?: boolean };
+  | { kind: 'paint'; keys: string[]; reroll?: boolean };
 
 export type CharSpec = Omit<import('@gd/shared').CharacterSpec, 'sprite'>;
 

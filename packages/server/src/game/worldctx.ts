@@ -1,22 +1,15 @@
-/** Read-only helpers over a WorldDefinition (decoded maps, lookups, naming). */
+/** Read-only helpers over a WorldDefinition (places' ground, lookups, naming). */
 import {
-  GROUND, base64ToBytes, isWalkableGround, objBlocks, objOpaque, itemDisplayName, rx, type BossDef, type FeatureDef, type ItemInstance, type MonsterFamily, type MonsterMember, type NpcDef, type QuestDef,
-  type Ruleset, type TilesetDef, type UniqueItemDef, type WorldDefinition, type ZoneDef,
+  Nav, itemDisplayName, rx, type BossDef, type FeatureDef, type ItemInstance, type MonsterFamily, type MonsterMember, type NpcDef, type QuestDef,
+  type Ruleset, type UniqueItemDef, type WorldDefinition, type ZoneDef,
 } from '@gd/shared';
 
+/** A place as the game uses it: where people can walk and see, and its features by id. */
 export interface ZoneMap {
   def: ZoneDef;
-  ground: Uint8Array;
-  objects: Uint8Array;
-  tileset: TilesetDef;
+  nav: Nav;
   features: Map<string, FeatureDef>;
-  /** Static blocking (walls, water, blocking objects, solid features). */
-  solid: Uint8Array;
-  /** Blocks line of sight. */
-  opaque: Uint8Array;
 }
-
-const SOLID_FEATURES = new Set(['chest', 'shrine', 'sign', 'lever', 'lore', 'bed', 'craft_station', 'waypoint']);
 
 export class WorldCtx {
   readonly zones = new Map<string, ZoneDef>();
@@ -65,25 +58,8 @@ export class WorldCtx {
     if (m) return m;
     const def = this.zones.get(zoneId);
     if (!def) throw new Error(`Unknown zone ${zoneId}`);
-    const ground = base64ToBytes(def.ground);
-    const objects = base64ToBytes(def.objects);
-    const n = def.width * def.height;
-    const solid = new Uint8Array(n);
-    const opaque = new Uint8Array(n);
-    for (let i = 0; i < n; i++) {
-      const g = ground[i]!;
-      const o = objects[i]!;
-      if (!isWalkableGround(g) || objBlocks(o)) solid[i] = 1;
-      if (g === GROUND.wall || g === GROUND.void || objOpaque(o)) opaque[i] = 1;
-    }
-    const features = new Map<string, FeatureDef>();
-    for (const f of def.features) {
-      features.set(f.id, f);
-      const i = f.y * def.width + f.x;
-      if (SOLID_FEATURES.has(f.kind) || f.kind === 'gate') solid[i] = 1;
-      if (f.kind === 'gate') opaque[i] = 1;
-    }
-    m = { def, ground, objects, tileset: this.world.tilesets[def.tilesetId]!, features, solid, opaque };
+    if (!def.nav) throw new Error(`${def.name} has not been painted`);
+    m = { def, nav: new Nav(def.nav), features: new Map(def.features.map((f) => [f.id, f])) };
     this.maps.set(zoneId, m);
     return m;
   }

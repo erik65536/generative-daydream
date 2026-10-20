@@ -9,7 +9,7 @@ import {
   type KinDef, type Knots, type Modifier, type MonsterRole, type MonsterRoleDef, type PoolDef, type RarityDef, type RecipeDef, type Ruleset, type SkillDef,
   type SlotDef, type SlotKind, type StatId, type StatusDef, type SubtypeDef, type SurfaceDef, type TrapDef, type TreeNode, type WeaponDef,
 } from '@gd/shared';
-import type { Genre } from '../worldgen/genres';
+import type { Genre } from './genre';
 import { defaultClasses, defaultCore, defaultGear, defaultTree } from './defaults';
 import type { ClassTreeIntent, ClassesIntent, CoreIntent, GearIntent, RulesOverrides, RulesetIntent, SkillIntent, StatEffect } from './intent';
 

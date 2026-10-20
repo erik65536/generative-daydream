@@ -1,12 +1,13 @@
 import { readable } from './theme';
 import { useEffect, useRef, useState } from 'react';
-import { GROUND, OBJ, rx, skillAp, skillRank, xpForLevel, type EntityView } from '@gd/shared';
+import { ISO_X, fogSize, rx, skillAp, skillRank, xpForLevel, type EntityView } from '@gd/shared';
 import { client, tryClient, useGame } from '../net/game';
 import { QuestTracker } from './tracker';
 import { Glyph } from './pad';
 import { statusName, weaponVisual } from '../rules';
 import { Bar, Portrait, SkillIcon, SkillTooltip, tip } from './common';
 import { Icon } from './svgicons';
+import { loadImage } from '../render/sprites';
 
 export function PartyFrames() {
   const { player, combat, selected, world, version } = useGame((s) => ({ player: s.player, combat: s.combat, selected: s.selectedCharId, world: s.world, version: s.version }));
@@ -87,8 +88,9 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
       const c = tryClient();
       if (!c) return;
       const z = c.state.zone;
-      const ts = z ? c.state.world?.tilesets[z.tilesetId] : undefined;
-      if (!cv || !z || !ts || !c.state.explored) return;
+      const explored = c.state.explored;
+      const img = z?.painting ? loadImage(c.assetUrl(z.painting.image)) : null;
+      if (!cv || !z?.painting || !explored || !img) return;
       const S = 200;
       cv.width = S * 2;
       cv.height = S * 2;
@@ -98,29 +100,31 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
       ctx.clearRect(0, 0, S, S);
       const leader = c.leaderEntity();
       const lp = leader ? c.entityPos(leader) : { x: z.width / 2, y: z.height / 2 };
+      // The painting itself, small, showing only the ground the party has seen.
       const scale = 3.2;
+      const k = scale / ISO_X;
       const cx = S / 2, cy = S / 2;
       const isoP = (x: number, y: number) => ({ x: cx + (x - y - (lp.x - lp.y)) * scale, y: cy + (x + y - (lp.x + lp.y)) * scale * 0.5 });
-      const col: Record<number, string> = { [GROUND.floor]: 'rgba(225,228,236,0.26)', [GROUND.floorAlt]: 'rgba(225,228,236,0.26)', [GROUND.path]: 'rgba(235,238,245,0.42)', [GROUND.water]: 'rgba(110,165,230,0.42)', [GROUND.wall]: 'rgba(250,250,255,0.82)' };
-      const R = 34;
-      for (let y = Math.max(0, Math.floor(lp.y) - R); y < Math.min(z.height, lp.y + R); y++)
-        for (let x = Math.max(0, Math.floor(lp.x) - R); x < Math.min(z.width, lp.x + R); x++) {
-          if (!c.state.explored.get(y * z.width + x)) continue;
-          const g = z.groundBytes[y * z.width + x]!;
-          if (!g) continue;
-          const o = z.objectBytes[y * z.width + x]!;
-          const p = isoP(x, y);
-          ctx.fillStyle = o === OBJ.tree ? 'rgba(250,250,255,0.5)' : col[g] ?? 'rgba(255,255,255,0.2)';
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y - scale * 0.5);
-          ctx.lineTo(p.x + scale, p.y);
-          ctx.lineTo(p.x, p.y + scale * 0.5);
-          ctx.lineTo(p.x - scale, p.y);
-          ctx.fill();
-        }
+      const o = isoP(0, 0);
+      ctx.globalAlpha = 0.85;
+      ctx.drawImage(img, o.x - z.painting.ox * k, o.y - z.painting.oy * k, z.painting.width * k, z.painting.height * k);
       ctx.globalAlpha = 1;
+      const fog = fogSize(z);
+      const mask = document.createElement('canvas');
+      mask.width = fog.w;
+      mask.height = fog.h;
+      const md = mask.getContext('2d')!.createImageData(fog.w, fog.h);
+      for (let i = 0; i < fog.w * fog.h; i++) if (explored.get(i)) md.data[i * 4 + 3] = 255;
+      mask.getContext('2d')!.putImageData(md, 0, 0);
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-in';
+      // Square metre (x, y) sits at isoP(x, y): the mask's pixels are metres, drawn in the same projection.
+      ctx.setTransform(2 * scale, scale, -2 * scale, scale, 2 * o.x, 2 * o.y);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(mask, -0.5, -0.5);
+      ctx.restore();
       for (const f of z.features) {
-        if (!c.state.explored.get(f.y * z.width + f.x)) continue;
+        if (!c.seen(f.x, f.y)) continue;
         if (f.kind !== 'exit' && f.kind !== 'door' && f.kind !== 'waypoint') continue;
         const p = isoP(f.x, f.y);
         ctx.fillStyle = f.kind === 'waypoint' ? '#8fd8ff' : '#ffe08a';
@@ -131,7 +135,7 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
       for (const e of c.state.entities.values()) {
         if (e.dead) continue;
         const ep = c.entityPos(e);
-        if (!c.state.explored.get(Math.round(ep.y) * z.width + Math.round(ep.x))) continue;
+        if (!c.seen(ep.x, ep.y)) continue;
         const p = isoP(ep.x, ep.y);
         ctx.fillStyle = e.ownerUserId === c.state.userId ? '#7fd0ff' : e.hostile ? '#ff5a4a' : e.kind === 'character' ? '#9fe0a0' : c.state.player?.npcMarkers[e.id] ? '#ffd24a' : '#e0d0b0';
         ctx.beginPath();

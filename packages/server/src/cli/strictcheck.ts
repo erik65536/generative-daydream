@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { strictSchema } from '../genai/json';
 import * as S from '../worldgen/schemas';
 import * as I from '../rules/intent';
-import { DirectionSchema, PromptBatch } from '../worldgen/art';
+import { PromptBatch } from '../worldgen/art';
 import { NpcRewrite, QuestRewrite, ZoneRewrite } from '../worldgen/studio';
 import { ReviewSchema } from '../rules/generate';
 import '../paths';
@@ -11,7 +11,7 @@ import '../paths';
 const schemas: Record<string, z.ZodType> = {
   concept: S.ConceptSchema, atlas: S.atlasSchema(['t0', 'w0', 'd0']), story: S.storySchema(['t0'], ['d0'], ['t0', 'w0', 'd0']), families: S.FamiliesSchema,
   town: S.TownContentSchema, area: S.AreaContentSchema, core: I.CoreIntentSchema, gear: I.GearIntentSchema, classes: I.ClassesIntentSchema, skill: I.SkillIntentSchema,
-  tree: I.ClassTreeIntentSchema, review: ReviewSchema, direction: DirectionSchema, prompts: PromptBatch, npc: NpcRewrite, quest: QuestRewrite, zone: ZoneRewrite,
+  tree: I.ClassTreeIntentSchema, review: ReviewSchema, prompts: PromptBatch, npc: NpcRewrite, quest: QuestRewrite, zone: ZoneRewrite,
 };
 let bad = 0;
 for (const [name, schema] of Object.entries(schemas)) {

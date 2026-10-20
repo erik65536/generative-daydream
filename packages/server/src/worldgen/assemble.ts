@@ -1,15 +1,15 @@
-/** Turns all generated pieces into a validated, fully linked WorldDefinition. */
+/**
+ * Turns the generated text into a linked WorldDefinition: the cast, the quests, and what every place holds (its ways
+ * in and out, buildings, people and things). Where things stand is decided later, when each place is painted.
+ */
 import {
-  MONSTER_ARCHETYPES, Rng, SIZE_PROFILES, slugify,
-  type BossDef, type LoreNote, type MonsterArchetype, type MonsterFamily, type NpcDef, type NpcRole, type QuestDef, type QuestObjective,
-  type Ruleset, type TilesetDef, type UniqueItemDef, type Vec2, type WorldDefinition, type WorldInput, type ZoneDef, type ArcDef,
+  Rng, SIZE_PROFILES, slugify,
+  type ArcDef, type BossDef, type FeatureDef, type LoreNote, type MonsterArchetype, type MonsterFamily, type NpcDef, type NpcRole,
+  type QuestDef, type QuestObjective, type Ruleset, type UniqueItemDef, type WorldDefinition, type WorldInput, type ZoneDef, type ZoneLook,
 } from '@gd/shared';
 import { bindWorld, resolveElement, uniqueBase } from '../rules/bind';
-import { buildPack } from '../rules/encounters';
+import type { Genre } from '../rules/genre';
 import type { RulesetIntent } from '../rules/intent';
-import { BANKS, fallbackTileset, type Genre } from './genres';
-import { fallbackNpc, tilesetFromOut, type NpcPlan } from './fallbacks';
-import { generateDungeon, generateInterior, generateTown, generateWilderness, resolvePlan, type EdgeDir, type LayoutResult } from './layout';
 import { normColor, normColors, type AreaContentOut, type AtlasOut, type ConceptOut, type FamiliesOut, type NpcOut, type StoryOut, type TownContentOut } from './schemas';
 import type { WorldSkeleton, ZoneSlot } from './structure';
 
@@ -32,6 +32,7 @@ export interface Draft {
 
 const zid = (slot: string) => `z_${slot}`;
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
+const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
 /** Best fuzzy match of a free-text reference against named things. */
 export function fuzzy<T>(ref: string | undefined, items: T[], name: (t: T) => string): T | undefined {
@@ -59,25 +60,43 @@ export function fuzzy<T>(ref: string | undefined, items: T[], name: (t: T) => st
   return bestScore >= 10 ? best : undefined;
 }
 
-const EDGE_VEC: Record<EdgeDir, Vec2> = { e: { x: 1, y: 0 }, w: { x: -1, y: 0 }, s: { x: 0, y: 1 }, n: { x: 0, y: -1 } };
+/** The residents every town needs, as game functions (the town step is asked again until all are there). */
+export function townRoles(companions: boolean): { role: NpcRole; merchantKind?: 'general' | 'weapons'; label: string }[] {
+  return [
+    { role: 'innkeeper', label: 'innkeeper' },
+    { role: 'merchant', merchantKind: 'general', label: 'merchant (general goods)' },
+    { role: 'merchant', merchantKind: 'weapons', label: 'merchant (weapons or armor)' },
+    { role: 'trainer', label: 'trainer' },
+    { role: 'guard', label: 'guard' },
+    ...(companions ? [{ role: 'companion' as const, label: 'companion' }] : []),
+  ];
+}
 
-/** Assign each non-dungeon neighbor an edge direction based on map positions. */
-function assignEdges(slot: ZoneSlot, neighbors: ZoneSlot[]): Map<string, EdgeDir> {
-  const out = new Map<string, EdgeDir>();
-  const used = new Set<EdgeDir>();
-  const sorted = neighbors.map((n) => ({ n, dx: n.mapPos.x - slot.mapPos.x, dy: n.mapPos.y - slot.mapPos.y }));
-  for (const { n, dx, dy } of sorted) {
-    const prefs = (Object.keys(EDGE_VEC) as EdgeDir[]).sort((a, b) => EDGE_VEC[b].x * dx + EDGE_VEC[b].y * dy - (EDGE_VEC[a].x * dx + EDGE_VEC[a].y * dy));
-    const dir = prefs.find((d) => !used.has(d)) ?? prefs[0]!;
-    used.add(dir);
-    out.set(n.slotId, dir);
-  }
-  return out;
+/** Required roles the town's residents (and story characters living there) leave uncovered. */
+export function missingRoles(residents: Pick<NpcOut, 'role' | 'merchantKind'>[], companions: boolean): string[] {
+  const used = new Set<number>();
+  const covers = (n: Pick<NpcOut, 'role' | 'merchantKind'>, req: ReturnType<typeof townRoles>[number]) =>
+    n.role === req.role && (req.merchantKind !== 'weapons' || n.merchantKind === 'weapons' || n.merchantKind === 'armor');
+  return townRoles(companions)
+    .filter((req) => {
+      const i = residents.findIndex((n, j) => !used.has(j) && covers(n, req));
+      if (i < 0) return true;
+      used.add(i);
+      return false;
+    })
+    .map((r) => r.label);
+}
+
+/** People who work indoors get a building (and an interior) of their own. */
+const WORKS_INDOORS: NpcRole[] = ['innkeeper', 'merchant', 'trainer', 'crafter'];
+
+/** How a place looks until its painting sets the light. */
+function defaultLook(kind: ZoneDef['kind'], indoor: boolean): ZoneLook {
+  return { ambient: kind === 'dungeon' ? 0.5 : indoor ? 0.8 : 0.92, lightColor: '#ffe8c0', fogColor: '#101418', outdoor: !indoor, weather: 'none' };
 }
 
 export function assembleWorld(d: Draft, owner: { id: string; name: string }): WorldDefinition {
   const rng = new Rng(`${d.seed}:assemble`);
-  const bank = BANKS[d.genre];
   const sk = d.skeleton;
   const r = d.ruleset;
   const systems = { traps: r.systems.traps, lockpicking: r.systems.locks, crafting: r.crafting.enabled };
@@ -95,10 +114,10 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     return { id: `f${i}_${slugify(f.name)}`, name: f.name, description: f.description, element: resolveElement(r, f.element, i), habitat: f.habitat, colors: colors.length ? colors : ['#6a6a6a', '#3a3a3a', '#d0c080'], members };
   });
 
-  // ------------------------------------------------------------------ zones (definitions; layout later)
+  // Each wild place and dungeon gets the two families whose habitat best fits it (spread across places).
   const familyScore = (fam: MonsterFamily, slot: ZoneSlot) => {
     const zi = zoneInfo(slot.slotId);
-    const words = new Set(norm(`${slot.kind} ${zi?.biome ?? ''} ${zi?.name ?? ''} ${zi?.description ?? ''}`).split(' '));
+    const words = new Set(norm(`${slot.kind} ${zi?.name ?? ''} ${zi?.description ?? ''}`).split(' '));
     return norm(fam.habitat).split(' ').filter((w) => words.has(w)).length + rng.next() * 0.9;
   };
   const familyUse = new Map<string, number>();
@@ -108,38 +127,13 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       zoneFamilies.set(s.slotId, []);
       continue;
     }
-    const ranked = [...families].sort((a, b) => familyScore(b, s) - (familyUse.get(b.id) ?? 0) * 0.6 - (familyScore(a, s) - (familyUse.get(a.id) ?? 0) * 0.6));
-    const chosen = ranked.slice(0, Math.min(2, ranked.length)).map((f) => f.id);
+    const weight = (f: MonsterFamily) => familyScore(f, s) - (familyUse.get(f.id) ?? 0) * 0.6;
+    const chosen = [...families].sort((a, b) => weight(b) - weight(a)).slice(0, 2).map((f) => f.id);
     chosen.forEach((id) => familyUse.set(id, (familyUse.get(id) ?? 0) + 1));
     zoneFamilies.set(s.slotId, chosen);
   }
 
-  // ------------------------------------------------------------------ tilesets
-  const tilesets: Record<string, TilesetDef> = {};
-  for (const s of sk.slots) {
-    const zi = zoneInfo(s.slotId)!;
-    const styleFallback = (zi.biome ?? bank.styles[s.kind][0]) as TilesetDef['style'];
-    const fb = fallbackTileset(`ts_${s.slotId}`, zi.name, styleFallback, s.kind, d.genre);
-    if (s.kind === 'town') {
-      const tc = d.towns[s.slotId];
-      tilesets[fb.id] = tilesetFromOut(fb.id, tc?.tileset, fb);
-      const inStyle = (tc?.interiorTileset?.style ?? bank.styles.interior[0]) as TilesetDef['style'];
-      const fbIn = fallbackTileset(`ts_${s.slotId}_in`, `${zi.name} interiors`, inStyle, 'interior', d.genre);
-      tilesets[fbIn.id] = tilesetFromOut(fbIn.id, tc?.interiorTileset, fbIn);
-      tilesets[fbIn.id]!.outdoor = false;
-      tilesets[fbIn.id]!.ambient = Math.min(0.85, Math.max(0.55, tilesets[fbIn.id]!.ambient));
-    } else {
-      tilesets[fb.id] = tilesetFromOut(fb.id, d.areas[s.slotId]?.tileset, fb);
-    }
-    const t = tilesets[fb.id]!;
-    const indoor = resolvePlan(s.kind as 'town' | 'wilderness' | 'dungeon', zi.layout, t.style).enclosed;
-    t.outdoor = !indoor;
-    if (s.kind === 'dungeon') t.ambient = Math.min(0.5, t.ambient);
-    else if (indoor) t.ambient = Math.min(0.92, Math.max(0.7, t.ambient));
-    else t.ambient = Math.max(0.85, t.ambient);
-  }
-
-  // ------------------------------------------------------------------ unique items, bosses, key npcs
+  // ------------------------------------------------------------------ unique items, bosses, cast
   const uniqueItems: Record<string, UniqueItemDef> = {};
   const itemKey = new Map<string, string>();
   d.story.keyItems.forEach((it, i) => {
@@ -181,10 +175,15 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   const companionsAllowed = d.input.combatMode === 'party_npc';
   const pickArchetype = (role: NpcRole): MonsterArchetype =>
     role === 'guard' ? 'guardian' : role === 'mystic' ? 'caster' : role === 'companion' ? rng.pick(['skirmisher', 'archer', 'caster', 'healer', 'guardian'] as MonsterArchetype[]) : role === 'trainer' ? 'skirmisher' : 'brute';
+  /** Two people of the same name are told apart by where they live. */
+  const uniqueName = (name: string, slot: string) => {
+    let n = name;
+    for (let i = 2; usedNames.has(n.toLowerCase()); i++) n = i === 2 ? `${name} of ${zoneInfo(slot)?.name ?? 'elsewhere'}` : `${name} ${i}`;
+    usedNames.add(n.toLowerCase());
+    return n;
+  };
   const makeNpc = (o: NpcOut & { secret?: string }, zoneSlot: string, idx: number, extra?: Partial<NpcDef>): NpcDef => {
-    let name = o.name;
-    while (usedNames.has(name.toLowerCase())) name = `${o.name} ${rng.pick(bank.lastNames)}`;
-    usedNames.add(name.toLowerCase());
+    const name = uniqueName(o.name, zoneSlot);
     const slot = slotById.get(zoneSlot)!;
     const role = o.role;
     return {
@@ -218,44 +217,26 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   d.story.keyNpcs.forEach((k, i) => {
     const slot = slotById.get(k.townSlot)?.kind === 'town' ? k.townSlot : sk.startSlot;
     const n = makeNpc(
-      { name: k.name, title: k.title, role: k.role, pronouns: k.pronouns, personality: k.personality, appearance: k.appearance, backstory: k.backstory, knowledge: [], secrets: [], greeting: `${k.name} regards you carefully.`, barks: [], secret: k.secret },
+      { name: k.name, title: k.title, role: k.role, pronouns: k.pronouns, personality: k.personality, appearance: k.appearance, backstory: k.backstory, knowledge: [], secrets: [], greeting: '', barks: [], secret: k.secret },
       slot,
       i,
       { essential: true },
     );
-    n.greeting = '';
     npcs.push(n);
     npcKey.set(k.key, n.id);
   });
 
-  // Town residents.
+  // Town residents, and who they talk to.
   const townSlots = sk.slots.filter((s) => s.kind === 'town');
+  for (const t of townSlots) (d.towns[t.slotId]?.npcs ?? []).forEach((o, i) => npcs.push(makeNpc(o, t.slotId, 100 + npcs.length + i)));
   for (const t of townSlots) {
-    const content = d.towns[t.slotId];
-    const residents = content?.npcs ?? [];
-    const required: NpcPlan[] = [
-      { role: 'innkeeper', slot: 'innkeeper' },
-      { role: 'merchant', merchantKind: 'general', slot: 'trader' },
-      { role: 'merchant', merchantKind: 'weapons', slot: 'weapons' },
-      { role: 'trainer', slot: 'trainer' },
-      { role: 'guard', slot: 'guard' },
-    ];
-    if (companionsAllowed) required.push({ role: 'companion', slot: 'companion' });
-    const list = [...residents];
-    // Any merchant covers the general store; weapons or armor covers the gear shop.
-    const covers = (n: NpcOut, req: NpcPlan) => n.role === req.role && (req.merchantKind === undefined || req.merchantKind === 'general' || (req.merchantKind === 'weapons' && (n.merchantKind === 'weapons' || n.merchantKind === 'armor')) || n.merchantKind === req.merchantKind);
-    for (const req of required) if (!list.some((n) => covers(n, req))) list.push(fallbackNpc(d.genre, rng, req, zoneInfo(t.slotId)!.name));
-    list.forEach((o, i) => npcs.push(makeNpc(o, t.slotId, 100 + npcs.length + i)));
-  }
-  // Relations: friends by name + same town.
-  for (const t of townSlots) {
-    const content = d.towns[t.slotId];
-    for (const o of content?.npcs ?? []) {
+    for (const o of d.towns[t.slotId]?.npcs ?? []) {
       const me = npcs.find((n) => n.name === o.name && n.zoneId === zid(t.slotId));
       if (!me) continue;
       me.relations = (o.friends ?? []).map((f) => fuzzy(f, npcs, (n) => n.name)?.id).filter((x): x is string => !!x && x !== me.id);
     }
   }
+
   // ------------------------------------------------------------------ quests
   const quests: QuestDef[] = [];
   const arcs: ArcDef[] = [];
@@ -354,8 +335,8 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       if (turnIn && !((last.type === 'talk' || last.type === 'deliver' || last.type === 'persuade') && last.npcId === turnIn)) {
         objectives.push({ id: `o${objectives.length}`, type: 'talk', npcId: turnIn, description: `Return to ${npcs.find((n) => n.id === turnIn)?.name}` , hidden: true });
       }
-      // Introduce a new giver if they are someone the player hasn't just spoken to.
-      if (giverId && prevMain && prevMain.turnInNpcId !== giverId && !(objectives[0]!.type === 'talk' && objectives[0]!.npcId === giverId)) {
+      // Introduce the giver unless the player has just spoken to them (the story opens by meeting the first one).
+      if (giverId && (prevMain as QuestDef | null)?.turnInNpcId !== giverId && !(objectives[0]!.type === 'talk' && objectives[0]!.npcId === giverId)) {
         objectives.unshift({ id: 'o_intro', type: 'talk', npcId: giverId, description: `Speak with ${npcs.find((n) => n.id === giverId)?.name}` });
       }
       objectives.forEach((o, i) => (o.hidden = i > 0 ? o.hidden ?? true : false));
@@ -461,307 +442,141 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     });
   }
 
-  // ------------------------------------------------------------------ layouts
-  const zones: ZoneDef[] = [];
-  const layouts = new Map<string, LayoutResult>();
-  const lore: LoreNote[] = [];
-  const featureId = (zoneId: string, kind: string, n: number) => `${zoneId}_${kind}${n}`;
-  const nonDungeonNeighbors = (s: ZoneSlot) => s.links.map((l) => slotById.get(l)!).filter((x) => x && x.kind !== 'dungeon' && s.kind !== 'dungeon');
-  const edgeMaps = new Map<string, Map<string, EdgeDir>>();
-  for (const s of sk.slots) if (s.kind !== 'dungeon') edgeMaps.set(s.slotId, assignEdges(s, nonDungeonNeighbors(s)));
-  const sizeBoost = d.input.size === 'huge' ? 8 : d.input.size === 'large' ? 4 : 0;
 
-  for (const s of sk.slots) {
+  // ------------------------------------------------------------------ places and what they hold
+  const zones: ZoneDef[] = sk.slots.map((s) => {
     const zi = zoneInfo(s.slotId)!;
-    const zrng = rng.fork(s.slotId);
-    const tileset = tilesets[`ts_${s.slotId}`]!;
-    const id = zid(s.slotId);
-    let lay: LayoutResult;
-    const edges = edgeMaps.get(s.slotId);
-    const plan = resolvePlan(s.kind as 'town' | 'wilderness' | 'dungeon', zi.layout, tileset.style);
-    if (s.kind === 'town') {
-      const indoorRoles = npcs.filter((n) => n.zoneId === id && ['merchant', 'innkeeper', 'trainer', 'crafter', 'mystic', 'noble'].includes(n.role)).length;
-      lay = generateTown(zrng, { size: 50 + sizeBoost, buildingCount: indoorRoles + 2, edges: [...(edges?.values() ?? [])], plan });
-    } else if (s.kind === 'wilderness') {
-      const dungeonsHere = s.links.filter((l) => slotById.get(l)?.kind === 'dungeon').length;
-      lay = generateWilderness(zrng, { size: 62 + sizeBoost, edges: [...(edges?.values() ?? [])], internalExits: dungeonsHere, style: tileset.style, plan });
-    } else {
-      lay = generateDungeon(zrng, { size: 54 + sizeBoost, caves: plan.structure === 'caves' });
-    }
-    layouts.set(id, lay);
-    zones.push({
-      id,
+    return {
+      id: zid(s.slotId),
       name: zi.name,
       kind: s.kind,
       description: zi.description,
       regionIndex: s.regionIndex,
-      indoor: plan.enclosed || undefined,
-      layout: plan,
       levelRange: s.levelRange,
-      tilesetId: tileset.id,
-      width: lay.map.w,
-      height: lay.map.h,
-      ground: '',
-      objects: '',
+      look: defaultLook(s.kind, zi.indoor),
+      width: 0,
+      height: 0,
       features: [],
       spawns: [],
+      indoor: zi.indoor || undefined,
       mapPos: s.mapPos,
       links: s.links.map(zid),
-      entry: lay.entry,
+      entry: { x: 0, y: 0 },
       lore: zi.lore,
       familyIds: zoneFamilies.get(s.slotId) ?? [],
-    });
-  }
+    };
+  });
   const zoneById = new Map(zones.map((z) => [z.id, z]));
+  /** Things are placed when the place is painted. */
+  const add = (z: ZoneDef, f: Omit<FeatureDef, 'x' | 'y'>) => z.features.push({ ...f, x: 0, y: 0 });
 
-  // Exits between zones.
-  for (const s of sk.slots) {
-    const z = zoneById.get(zid(s.slotId))!;
-    const lay = layouts.get(z.id)!;
-    for (const linkSlot of s.links) {
-      const other = slotById.get(linkSlot)!;
-      const oz = zid(linkSlot);
-      if (s.kind === 'dungeon') {
-        // Stairs back up at the entrance.
-        const fid = `${z.id}_exit_${linkSlot}`;
-        const p = { x: lay.entry.x, y: lay.entry.y - 1 };
-        lay.map.setG(p.x, p.y, 1);
-        z.features.push({ id: fid, kind: 'exit', x: p.x, y: p.y, targetZoneId: oz, targetFeatureId: `${oz}_exit_${s.slotId}`, name: `To ${zoneInfo(linkSlot)?.name}` });
-      } else if (other.kind === 'dungeon') {
-        const idx = s.links.filter((l) => slotById.get(l)?.kind === 'dungeon').indexOf(linkSlot);
-        const p = lay.internalExitSpots[idx] ?? lay.entry;
-        z.features.push({ id: `${z.id}_exit_${linkSlot}`, kind: 'exit', x: p.x, y: p.y, targetZoneId: oz, targetFeatureId: `${oz}_exit_${s.slotId}`, name: zoneInfo(linkSlot)?.name });
-      } else {
-        const dir = edgeMaps.get(s.slotId)?.get(linkSlot);
-        const p = dir ? lay.edgeExits[dir] : undefined;
-        if (!p) continue;
-        z.features.push({ id: `${z.id}_exit_${linkSlot}`, kind: 'exit', x: p.x, y: p.y, targetZoneId: oz, targetFeatureId: `${oz}_exit_${s.slotId}`, name: `To ${zoneInfo(linkSlot)?.name}`, facing: dir });
-      }
-    }
-  }
+  // Every link between places is a pair of ways out that lead to each other.
+  for (const s of sk.slots)
+    for (const link of s.links)
+      add(zoneById.get(zid(s.slotId))!, { id: `${zid(s.slotId)}_exit_${link}`, kind: 'exit', targetZoneId: zid(link), targetFeatureId: `${zid(link)}_exit_${s.slotId}`, name: `To ${zoneInfo(link)?.name}` });
 
-  // Towns: buildings, interiors, NPC placement, sign, waypoint.
+  // Towns: a building (with an interior) for everyone who works indoors, the waypoint, a sign, a workbench.
   for (const t of townSlots) {
     const z = zoneById.get(zid(t.slotId))!;
-    const lay = layouts.get(z.id)!;
     const content = d.towns[t.slotId];
-    const townNpcs = npcs.filter((n) => n.zoneId === z.id);
-    const indoor = townNpcs.filter((n) => ['merchant', 'innkeeper', 'trainer', 'crafter', 'mystic', 'noble'].includes(n.role));
-    const outdoor = townNpcs.filter((n) => !indoor.includes(n));
-    const buildingNames = [...(content?.buildings ?? [])];
-    const purposeFor = (n: NpcDef) => (n.role === 'innkeeper' ? 'inn' : n.role === 'merchant' ? `${n.merchantKind} shop` : n.role === 'trainer' ? 'training hall' : n.role === 'crafter' ? 'workshop' : 'house');
+    const named = [...(content?.buildings ?? [])];
+    const here = npcs.filter((n) => n.zoneId === z.id);
+    const workers = here.filter((n) => WORKS_INDOORS.includes(n.role));
+    const purposeOf = (n: NpcDef) => (n.role === 'innkeeper' ? 'inn' : n.role === 'merchant' ? `${n.merchantKind ?? 'general'} shop` : n.role === 'trainer' ? 'training hall' : 'workshop');
     const nameFor = (n: NpcDef, purpose: string) => {
-      const match = buildingNames.findIndex((b) => norm(b.purpose).split(' ').some((w) => w.length > 2 && norm(purpose).includes(w)) || norm(b.name).includes(norm(n.name.split(' ')[0]!)));
-      if (match >= 0) return buildingNames.splice(match, 1)[0]!.name;
-      const last = n.name.split(' ').slice(-1)[0];
-      return n.role === 'innkeeper' ? `The ${rng.pick(['Gilded', 'Weary', 'Laughing', 'Crooked', 'Lucky', 'Sleeping'])} ${rng.pick(['Lantern', 'Goose', 'Kettle', 'Stag', 'Anchor', 'Moon'])}` : `${last}'s ${purpose.replace(/^\w+ shop$/, 'Shop').replace(/\b\w/g, (c) => c.toUpperCase())}`;
+      const first = norm(n.name).split(' ')[0]!;
+      const i = named.findIndex((b) => norm(b.name).includes(first) || norm(b.purpose).split(' ').some((w) => w.length > 2 && purpose.includes(w)));
+      if (i >= 0) return named.splice(i, 1)[0]!.name;
+      return `${n.name.split(' ')[0]}'s ${purpose === 'inn' ? 'Inn' : capital(purpose.replace(/^\w+ shop$/, 'shop'))}`;
     };
-    const assignments: { npcs: NpcDef[]; purpose: string; name: string }[] = indoor.map((n) => {
-      const purpose = purposeFor(n);
-      return { npcs: [n], purpose, name: nameFor(n, purpose) };
-    });
-    // Remaining buildings are homes (a quest giver or two may live there).
-    while (assignments.length < lay.buildings.length) assignments.push({ npcs: [], purpose: 'house', name: buildingNames.shift()?.name ?? `${rng.pick(bank.lastNames)} House` });
-    // Companions often wait at the inn.
-    const inn = assignments.find((a) => a.purpose === 'inn');
-    for (const c of outdoor.filter((n) => n.role === 'companion')) if (inn && rng.chance(0.6)) { inn.npcs.push(c); outdoor.splice(outdoor.indexOf(c), 1); }
-    lay.buildings.forEach((b, bi) => {
-      const asg = assignments[bi];
-      if (!asg) return;
-      const interiorId = `${z.id}_b${bi}`;
-      const ilay = generateInterior(rng.fork(interiorId), asg.purpose);
-      const doorId = `${z.id}_door${bi}`;
-      const innerDoorId = `${interiorId}_door`;
-      z.features.push({ id: doorId, kind: 'door', x: b.door.x, y: b.door.y, targetZoneId: interiorId, targetFeatureId: innerDoorId, name: asg.name });
-      const inDoor = ilay.internalExitSpots[0]!;
+    const inns: string[] = [];
+    workers.forEach((n, bi) => {
+      const purpose = purposeOf(n);
+      const name = nameFor(n, purpose);
+      const interiorId = `${z.id}_b${bi}`, doorId = `${z.id}_door${bi}`, innerDoorId = `${interiorId}_door`;
+      add(z, { id: doorId, kind: 'door', targetZoneId: interiorId, targetFeatureId: innerDoorId, name });
       const iz: ZoneDef = {
         id: interiorId,
-        name: asg.name,
+        name,
         kind: 'interior',
-        description: `${asg.name}, in ${z.name}.`,
+        description: `Inside ${name}, the ${purpose} in ${z.name} where ${n.name} (${n.title}) works.`,
         regionIndex: z.regionIndex,
         levelRange: z.levelRange,
-        tilesetId: `ts_${t.slotId}_in`,
-        width: ilay.map.w,
-        height: ilay.map.h,
-        ground: '',
-        objects: '',
-        features: [{ id: innerDoorId, kind: 'door', x: inDoor.x, y: inDoor.y, targetZoneId: z.id, targetFeatureId: doorId, name: `Exit to ${z.name}` }, ...ilay.map.features.map((f) => ({ ...f, id: `${interiorId}_${f.id}` }))],
+        look: defaultLook('interior', true),
+        width: 0,
+        height: 0,
+        features: [],
         spawns: [],
+        indoor: true,
         parentZoneId: z.id,
         mapPos: z.mapPos,
         links: [z.id],
-        entry: ilay.entry,
-        buildingPurpose: asg.purpose,
+        entry: { x: 0, y: 0 },
+        buildingPurpose: purpose,
         familyIds: [],
       };
-      ilay.map.features = [];
-      asg.npcs.forEach((n, ni) => {
-        const spot = ilay.npcSpots[ni] ?? ilay.entry;
-        n.zoneId = interiorId;
-        n.x = spot.x;
-        n.y = spot.y;
-        n.wanders = n.role === 'companion';
-      });
-      if (asg.purpose === 'house' && rng.chance(0.5)) {
-        const cs = ilay.chestSpots[0];
-        if (cs) iz.features.push({ id: `${interiorId}_chest`, kind: 'chest', x: cs.x, y: cs.y, lootTier: z.levelRange[0], lockLevel: systems.lockpicking && rng.chance(0.5) ? z.levelRange[0] : undefined, name: tilesets[`ts_${t.slotId}_in`]!.roles.chest.name });
+      add(iz, { id: innerDoorId, kind: 'door', targetZoneId: z.id, targetFeatureId: doorId, name: `Out to ${z.name}` });
+      if (purpose === 'inn') {
+        add(iz, { id: `${interiorId}_bed`, kind: 'bed', name: 'Bed' });
+        inns.push(interiorId);
       }
-      layouts.set(interiorId, ilay);
+      if (n.role === 'crafter' && systems.crafting) add(iz, { id: `${interiorId}_craft`, kind: 'craft_station', name: 'Workbench' });
+      n.zoneId = interiorId;
+      n.wanders = false;
       zones.push(iz);
       zoneById.set(interiorId, iz);
     });
-    for (const n of indoor) if (n.zoneId === z.id) outdoor.push(n);
-    outdoor.forEach((n, i) => {
-      const spot = lay.npcSpots[i % lay.npcSpots.length] ?? lay.entry;
-      n.x = spot.x;
-      n.y = spot.y;
-    });
-    const plaza = lay.plaza ?? lay.entry;
-    z.features.push({ id: `${z.id}_waypoint`, kind: 'waypoint', x: plaza.x + 2, y: plaza.y - 2, name: `${z.name} Waypoint` });
-    lay.map.setO(plaza.x + 2, plaza.y - 2, 0);
-    const signSpot = lay.map.randomFree(rng, (x, y) => Math.hypot(x - lay.entry.x, y - lay.entry.y) < 5) ?? { x: lay.entry.x + 1, y: lay.entry.y };
-    z.features.push({ id: `${z.id}_sign`, kind: 'sign', x: signSpot.x, y: signSpot.y, text: content?.signText ?? `Welcome to ${z.name}.`, name: tilesets[`ts_${t.slotId}`]!.roles.sign.name });
-    if (systems.crafting) {
-      const cs = lay.map.randomFree(rng, (x, y) => Math.hypot(x - plaza.x, y - plaza.y) < 9);
-      if (cs) z.features.push({ id: `${z.id}_craft`, kind: 'craft_station', x: cs.x, y: cs.y, name: 'Workbench' });
-    }
+    // Companions often wait at the inn.
+    for (const c of here.filter((n) => n.role === 'companion')) if (inns[0] && rng.chance(0.6)) c.zoneId = inns[0];
+    add(z, { id: `${z.id}_waypoint`, kind: 'waypoint', name: `${z.name} Waypoint` });
+    add(z, { id: `${z.id}_sign`, kind: 'sign', text: content?.signText ?? `Welcome to ${z.name}.`, name: 'Sign' });
+    if (systems.crafting && !workers.some((n) => n.role === 'crafter')) add(z, { id: `${z.id}_craft`, kind: 'craft_station', name: 'Workbench' });
   }
 
-  // Wilds & dungeons: spawns, chests, traps, shrines, lore.
-  let loreN = 0;
-  /** Packs keep their distance so fighting one never drags in the next (aggro radius is 6.5 tiles). */
-  const PACK_SPACING = 13;
+  // Wild places and dungeons: treasure and the notes left behind.
+  const lore: LoreNote[] = [];
   for (const s of sk.slots.filter((x) => x.kind !== 'town')) {
     const z = zoneById.get(zid(s.slotId))!;
-    const lay = layouts.get(z.id)!;
-    const zrng = rng.fork(`${z.id}:pop`);
-    const fams = z.familyIds.map((id) => families.find((f) => f.id === id)!).filter(Boolean);
-    const exitsNear = (p: Vec2, r: number) => z.features.some((f) => (f.kind === 'exit' || f.kind === 'door') && Math.hypot(f.x - p.x, f.y - p.y) < r) || Math.hypot(p.x - lay.entry.x, p.y - lay.entry.y) < r;
-    let packN = 0;
-    const used: Vec2[] = [];
-    const bossSpots = bosses.filter((x) => x.zoneId === z.id).map(() => lay.bossSpot ?? lay.entry);
-    for (const spot of lay.packSpots) {
-      if (exitsNear(spot, 9) || !fams.length) continue;
-      if ([...used, ...bossSpots].some((u) => Math.hypot(u.x - spot.x, u.y - spot.y) < PACK_SPACING)) continue;
-      used.push(spot);
-      const fam = zrng.pick(fams);
-      const level = Math.max(1, Math.round(z.levelRange[0] + (z.levelRange[1] - z.levelRange[0]) * spot.depth));
-      const kind = zrng.chance(0.15 + spot.depth * 0.1) ? 'elite' : 'normal';
-      const pack = buildPack(r, zrng, { mode: d.input.combatMode, level, kind, roles: fam.members.map((m) => m.archetype), depth: spot.depth });
-      const groupId = `${z.id}_g${packN++}`;
-      pack.forEach((m, i) => {
-        const p = lay.map.randomFree(zrng, (x, y) => Math.hypot(x - spot.x, y - spot.y) < 2.6 && !z.spawns.some((sp) => sp.x === x && sp.y === y)) ?? spot;
-        z.spawns.push({ id: `${groupId}_${i}`, kind: 'monster', familyId: fam.id, archetype: m.role, level: m.level, x: p.x, y: p.y, groupId, elite: m.elite });
-      });
-    }
-    // Boss
-    for (const b of bosses.filter((x) => x.zoneId === z.id)) {
-      const spot = lay.bossSpot ?? lay.packSpots[lay.packSpots.length - 1] ?? lay.entry;
-      const groupId = `${z.id}_boss`;
-      z.spawns.push({ id: `${groupId}_${b.id}`, kind: 'monster', familyId: b.familyId, archetype: b.archetype, level: b.level, x: spot.x, y: spot.y, groupId, bossId: b.id });
-      const fam = families.find((f) => f.id === b.familyId) ?? families[0]!;
-      const adds = buildPack(r, zrng, { mode: d.input.combatMode, level: b.level, kind: 'boss', roles: fam.members.map((m) => m.archetype) }).filter((m) => !m.boss);
-      adds.forEach((m, i) => {
-        const p = lay.map.randomFree(zrng, (x, y) => Math.hypot(x - spot.x, y - spot.y) < 4);
-        if (p) z.spawns.push({ id: `${groupId}_m${i}`, kind: 'monster', familyId: fam.id, archetype: m.role, level: Math.max(1, b.level - 1), x: p.x, y: p.y, groupId });
-      });
-    }
-    // Chests (quest items placed first in the deepest chests).
-    const chests = [...lay.chestSpots].sort((a, b) => b.depth - a.depth);
-    const placementsHere = itemPlacements.filter((p) => p.zoneId === z.id);
-    chests.forEach((c, i) => {
-      const items = i === 0 ? placementsHere.map((p) => p.uniqueId) : [];
-      z.features.push({ id: featureId(z.id, 'chest', i), kind: 'chest', x: c.x, y: c.y, lootTier: Math.round(z.levelRange[0] + (z.levelRange[1] - z.levelRange[0]) * c.depth) + (i === 0 ? 1 : 0), lockLevel: systems.lockpicking && !items.length && zrng.chance(0.3) ? z.levelRange[1] : undefined, items: items.length ? items : undefined, name: tilesets[z.tilesetId]!.roles.chest.name });
-    });
-    if (!chests.length && placementsHere.length) {
-      const p = lay.map.randomFree(zrng) ?? lay.entry;
-      z.features.push({ id: featureId(z.id, 'chest', 99), kind: 'chest', x: p.x, y: p.y, lootTier: z.levelRange[1], items: placementsHere.map((x) => x.uniqueId), name: tilesets[z.tilesetId]!.roles.chest.name });
-    }
-    // Traps.
-    if (systems.traps) {
-      const rate = s.kind === 'dungeon' ? 0.55 : 0.3;
-      lay.trapSpots.forEach((t, i) => {
-        if (!zrng.chance(rate) || exitsNear(t, 5)) return;
-        const trap = zrng.pick(r.traps);
-        if (trap) z.features.push({ id: featureId(z.id, 'trap', i), kind: 'trap', x: t.x, y: t.y, trapKind: trap.id, trapLevel: z.levelRange[1], name: trap.name });
-      });
-    }
-    // Shrine, lore notes, interact objectives.
-    const area = d.areas[s.slotId];
-    const decor = [...lay.decorSpots];
-    const takeSpot = () => {
-      while (decor.length) {
-        const p = decor.shift()!;
-        if (lay.map.free(p.x, p.y) && !z.features.some((f) => f.x === p.x && f.y === p.y)) return p;
-      }
-      return lay.map.randomFree(zrng);
-    };
-    const shrineSpot = takeSpot();
-    if (shrineSpot) z.features.push({ id: featureId(z.id, 'shrine', 0), kind: 'shrine', x: shrineSpot.x, y: shrineSpot.y, shrineEffect: zrng.pick(['heal', 'restore', 'empower'] as const), name: area?.shrineName ?? tilesets[z.tilesetId]!.roles.shrine.name });
-    for (const note of area?.loreNotes ?? []) {
-      const p = takeSpot();
-      if (!p) break;
-      const lid = `l${loreN++}`;
-      lore.push({ id: lid, title: note.title, text: note.text });
-      z.features.push({ id: featureId(z.id, 'lore', loreN), kind: 'lore', x: p.x, y: p.y, loreId: lid, name: note.title });
-    }
-    if ('gate' in lay && (lay as { gate?: { gates: Vec2[]; lever: Vec2 } }).gate) {
-      const g = (lay as { gate: { gates: Vec2[]; lever: Vec2 } }).gate;
-      const gids = g.gates.map((t, i) => {
-        const gid = featureId(z.id, 'gate', i);
-        z.features.push({ id: gid, kind: 'gate', x: t.x, y: t.y, name: 'Sealed Gate' });
-        return gid;
-      });
-      z.features.push({ id: featureId(z.id, 'lever', 0), kind: 'lever', x: g.lever.x, y: g.lever.y, gateIds: gids, name: tilesets[z.tilesetId]!.roles.lever.name });
+    const crng = rng.fork(`${z.id}:chests`);
+    const chests = s.kind === 'dungeon' ? 3 : 2;
+    const [lo, hi] = z.levelRange;
+    for (let i = 0; i < chests; i++)
+      add(z, { id: `${z.id}_chest${i}`, kind: 'chest', name: 'Chest', lootTier: Math.round(lo + ((hi - lo) * i) / Math.max(1, chests - 1)), lockLevel: systems.lockpicking && crng.chance(0.3) ? hi : undefined });
+    for (const [i, note] of (d.areas[s.slotId]?.loreNotes ?? []).entries()) {
+      const id = `l${lore.length}`;
+      lore.push({ id, title: note.title, text: note.text });
+      add(z, { id: `${z.id}_lore${i}`, kind: 'lore', loreId: id, name: note.title });
     }
   }
-  // Interact-objective features (any zone kind).
+
+  // Things quest objectives ask the player to use.
   for (const f of interactFeatures) {
     const z = zoneById.get(f.zoneId);
-    const lay = z && layouts.get(z.id);
-    if (!z || !lay) continue;
-    const p = lay.map.randomFree(rng, (x, y) => Math.hypot(x - lay.entry.x, y - lay.entry.y) > 8) ?? lay.map.randomFree(rng) ?? lay.entry;
-    z.features.push({ id: f.featureId, kind: 'shrine', x: p.x, y: p.y, shrineEffect: 'restore', name: f.name.charAt(0).toUpperCase() + f.name.slice(1) });
+    if (z) add(z, { id: f.featureId, kind: 'object', name: capital(f.name) });
   }
-  // Boss drops.
-  for (const p of itemPlacements) if (p.bossId) bosses.find((b) => b.id === p.bossId)?.drops.push(p.uniqueId);
-  // Guarantee every quest item can actually be obtained somewhere.
-  const obtainable = (u: string) => bosses.some((b) => b.drops.includes(u)) || zones.some((z) => z.features.some((f) => f.items?.includes(u))) || quests.some((q) => q.grantsOnStart?.includes(u));
-  for (const p of itemPlacements) {
-    if (obtainable(p.uniqueId)) continue;
-    const want = p.zoneId ? zoneById.get(p.zoneId) : undefined;
-    const target = want && want.kind !== 'town' && want.kind !== 'interior' ? want : zones.find((z) => z.kind === 'dungeon' && z.regionIndex === (want?.regionIndex ?? 0)) ?? zones.find((z) => z.kind === 'dungeon')!;
-    const chest = target.features.filter((f) => f.kind === 'chest').sort((a, b) => (b.lootTier ?? 0) - (a.lootTier ?? 0))[0];
-    if (chest) chest.items = [...(chest.items ?? []), p.uniqueId];
-    else {
-      const lay = layouts.get(target.id)!;
-      const spot = lay.map.randomFree(rng) ?? lay.entry;
-      target.features.push({ id: featureId(target.id, 'chest', 98), kind: 'chest', x: spot.x, y: spot.y, lootTier: target.levelRange[1], items: [p.uniqueId], name: tilesets[target.tilesetId]!.roles.chest.name });
-    }
-  }
-  // Final boss is essential to the ending; quest items in their drops.
 
-  // Encode maps (after all features placed so object clearing applies).
-  for (const z of zones) {
-    const lay = layouts.get(z.id)!;
-    for (const f of z.features) lay.map.setO(f.x, f.y, 0);
-    for (const s of z.spawns) lay.map.setO(s.x, s.y, 0);
-    const enc = lay.map.encode();
-    z.ground = enc.ground;
-    z.objects = enc.objects;
-    z.variation = enc.variation;
+  // Quest items: carried by a boss, or in a chest of their own in a wild place or dungeon.
+  for (const p of itemPlacements) {
+    if (p.bossId) {
+      bosses.find((b) => b.id === p.bossId)?.drops.push(p.uniqueId);
+      continue;
+    }
+    const want = p.zoneId ? zoneById.get(p.zoneId) : undefined;
+    const z = want && want.kind !== 'town' && want.kind !== 'interior' ? want : zones.find((x) => x.kind === 'dungeon' && x.regionIndex === (want?.regionIndex ?? 0)) ?? zones.find((x) => x.kind === 'dungeon')!;
+    const chest = z.features.find((f) => f.id === `${z.id}_chest_quest`);
+    if (chest) chest.items!.push(p.uniqueId);
+    else add(z, { id: `${z.id}_chest_quest`, kind: 'chest', name: 'Chest', lootTier: z.levelRange[1] + 1, items: [p.uniqueId] });
   }
 
   const worldFacts = [
     ...d.concept.worldFacts,
-    ...d.atlas.regions.map((r) => `${r.name}: ${r.description}`),
+    ...d.atlas.regions.map((x) => `${x.name}: ${x.description}`),
     ...d.concept.factions.map((f) => `${f.name}: ${f.description}`),
   ];
 
   const world: WorldDefinition = {
     id: d.id,
-    formatVersion: 1,
+    formatVersion: 2,
     ownerId: owner.id,
     ownerName: owner.name,
     public: true,
@@ -786,7 +601,6 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     uniqueItems,
     families,
     bosses,
-    tilesets,
     zones,
     npcs,
     quests,
@@ -800,10 +614,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     factions: d.concept.factions.map((f, i) => ({ id: `fac${i}`, name: f.name, description: f.description })),
     generationLog: d.log,
   };
-  (world.concept as { palette: WorldDefinition['concept']['palette'] }).palette.ui ??= '#1a1a22';
   delete (world.concept as { _rules?: string })._rules;
   bindWorld(world, r, d.rulesIntent.classes);
   return world;
 }
-
-export { MONSTER_ARCHETYPES };

@@ -1,16 +1,17 @@
 /** One running save-state of a world: authoritative simulation for every connected player. */
 import {
-  BitSet, DIFFICULTIES, GAME_MINUTES_PER_DAY, MAX_PARTY_SIZE, REAL_MS_PER_GAME_MINUTE, RESPAWN_GAME_MINUTES, ROLE_VISUAL, RULESET_VERSION, Rng,
-  bagUpgradeCost, canAllocate, fieldRecipe, nearStation, characterStats, curve, enchantCost, findPath, upgradeCost, hashFloat, itemPrice, knownSkills, refMit, rx, sampleMotion, skillAp, skillRange, smoothPath, standPoint, tilesInRadius, uid,
+  BitSet, DIFFICULTIES, SPACING, distToSegment, GAME_MINUTES_PER_DAY, MAX_PARTY_SIZE, REAL_MS_PER_GAME_MINUTE, RESPAWN_GAME_MINUTES, ROLE_VISUAL, RULESET_VERSION, Rng,
+  bagUpgradeCost, canAllocate, fieldRecipe, nearStation, characterStats, curve, enchantCost, fogSize, upgradeCost, hashFloat, itemPrice, knownSkills, refMit, rx, sampleMotion, skillAp, skillRange, tilesInRadius, uid,
   type CharacterSpec, type ClientMessage, type DialogState, type DifficultyId, type EntityView, type FeatureDef, type FeatureState, type FxEvent, type InstanceState, type ItemInstance,
   type JournalEntry, type LootPile, type Memory, type NpcRuntime, type PlayerState, type PlayerView, type QuestDef, type Ruleset, type ServerMessage, type Surface,
-  type TradeState, type MonsterRuntime, type SpawnDef, type Vec2, type WorldDefinition, type ZoneRuntime, type CharacterState, type MonsterArchetype, type SlotKind,
+  type TradeState, type MonsterRuntime, type SpawnDef, type Vec2, type WorldDefinition, type ZoneDef, type ZoneRuntime, type CharacterState, type MonsterArchetype, type SlotKind,
 } from '@gd/shared';
 import { Actor, CharActor, MonsterActor, NpcActor, WALK_SPEED } from './actors';
 import { fitPack } from '../rules/encounters';
 import { forgeLegend, isTopRarity } from './legends';
 import { withCallContext } from '../genai/context';
 import { WorldCtx, type ZoneMap } from './worldctx';
+import { bodyAt, isFree, nearestFree } from './space';
 import { Combat, type CombatHost } from './combat';
 import { addStatus, checkItemUse, checkSkill, executeSkill, isHarmful, isHostileTo, springTrap, useConsumable, applySurface } from './effects';
 import { QuestEngine, objectivesOf, currentObjectiveIndex } from './quests';
@@ -43,6 +44,12 @@ interface PendingInteraction {
 const TICK_MS = 100;
 const AGGRO_RADIUS = 6.5;
 const JOIN_RADIUS = 13;
+/** How far a character sees: the ground explored around them, in metres. */
+const SIGHT_RADIUS = 11;
+/** Stepping within this of a trap (metres) springs it. */
+const TRAP_RADIUS = 0.5;
+/** The leader stepping within this of a way out (metres) takes the party through. */
+const EXIT_RADIUS = 0.9;
 
 export class GameInstance implements CombatHost {
   readonly ctx: WorldCtx;
@@ -252,7 +259,8 @@ export class GameInstance implements CombatHost {
     return {
       ...rest,
       concept: publicConcept,
-      zones: zones.map(({ ground, objects, variation, spawns, lore, ...z }) => (void ground, void objects, void variation, void spawns, void lore, z)),
+      // A place's walkable ground comes with the place itself, when the player enters it.
+      zones: zones.map(({ nav, design, spawns, lore, ...z }) => (void nav, void design, void spawns, void lore, z)),
       npcs: npcs.map((n) => ({ id: n.id, name: n.name, title: n.title, role: n.role, zoneId: n.zoneId, asset: n.asset, colors: n.colors, pronouns: n.pronouns, appearance: n.appearance, archetype: n.archetype })),
       arcs: arcs.map((a) => ({ index: a.index, title: a.title })),
     } as ServerMessage extends never ? never : Extract<ServerMessage, { t: 'welcome' }>['world'];
@@ -334,10 +342,14 @@ export class GameInstance implements CombatHost {
       const base = map.def.spawns.find((s) => s.id === m.extraOf);
       return base && { ...base, id: m.spawnId, x: m.x, y: m.y, bossId: undefined };
     };
+    // Positions saved before the place was laid out again (a re-read painting) may be off its ground now: back to
+    // where the place's own data puts them.
+    const onGround = (q: { x: number; y: number }) => !!map.nav.nearestWalkable(q, 1);
     for (const m of Object.values(rt.monsters)) {
       if (m.dead || m.absent) continue;
       const s = spawnFor(m);
       if (!s) continue;
+      if (!onGround(m)) Object.assign(m, { x: s.x, y: s.y });
       const fam = this.ctx.family(s.familyId) ?? this.world.families[0]!;
       const actor = new MonsterActor(s, m, fam, s.bossId ? this.ctx.bosses.get(s.bossId) : undefined, zoneId, this.r, () => this.state.difficulty);
       z.actors.set(actor.id, actor);
@@ -346,6 +358,7 @@ export class GameInstance implements CombatHost {
       if (rtn.zoneId !== zoneId || !rtn.alive || rtn.partyOf || rtn.fled) continue;
       const def = this.ctx.npcs.get(rtn.npcId);
       if (!def) continue;
+      if (!onGround(rtn) && def.zoneId === zoneId) Object.assign(rtn, { x: def.x, y: def.y });
       const a = new NpcActor(def, rtn, zoneId, this.r);
       z.actors.set(a.id, a);
     }
@@ -365,9 +378,8 @@ export class GameInstance implements CombatHost {
     });
     if (fit.extraOf) {
       const base = members.find((s) => s.id === fit.extraOf)!;
-      const W = map.def.width;
-      const free = (x: number, y: number) => x >= 0 && y >= 0 && x < W && y < map.def.height && !map.solid[y * W + x] && !members.some((s) => s.x === x && s.y === y);
-      const spot = [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]].map(([dx, dy]) => ({ x: base.x + dx!, y: base.y + dy! })).find((p) => free(p.x, p.y));
+      const ring = Array.from({ length: 8 }, (_, i) => ({ x: base.x + Math.cos((i * Math.PI) / 4) * SPACING * 1.2, y: base.y + Math.sin((i * Math.PI) / 4) * SPACING * 1.2 }));
+      const spot = ring.find((p) => map.nav.walkable(p.x, p.y) && members.every((s) => Math.hypot(s.x - p.x, s.y - p.y) >= SPACING));
       if (spot) {
         const id = `${base.id}_x`;
         this.zoneRuntime(map.def.id).monsters[id] = { spawnId: id, hp: -1, dead: false, x: spot.x, y: spot.y, extraOf: base.id, scale: fit.scale };
@@ -384,13 +396,13 @@ export class GameInstance implements CombatHost {
     // Persist monster positions and reset unengaged monsters.
     for (const a of z.actors.values()) {
       if (a instanceof MonsterActor) {
-        a.rt.x = Math.round(a.homeX);
-        a.rt.y = Math.round(a.homeY);
+        a.rt.x = a.homeX;
+        a.rt.y = a.homeY;
         if (a.alive()) a.rt.hp = a.stats().maxHp;
       }
       if (a instanceof NpcActor) {
-        a.rt.x = Math.round(a.x);
-        a.rt.y = Math.round(a.y);
+        a.rt.x = a.x;
+        a.rt.y = a.y;
       }
     }
     this.zones.delete(zoneId);
@@ -404,36 +416,17 @@ export class GameInstance implements CombatHost {
     return [...(this.zones.get(zoneId)?.actors.values() ?? [])];
   }
 
-  private gateClosed(zoneId: string, x: number, y: number) {
-    const map = this.ctx.map(zoneId);
-    for (const f of map.def.features) if (f.kind === 'gate' && f.x === x && f.y === y) return !this.zoneRuntime(zoneId).features[f.id]?.toggled;
-    return false;
-  }
-
+  /** Walkable ground (metres). */
   passable(zoneId: string, x: number, y: number): boolean {
-    const map = this.ctx.map(zoneId);
-    const W = map.def.width;
-    if (x < 0 || y < 0 || x >= W || y >= map.def.height) return false;
-    const i = y * W + x;
-    if (map.solid[i]) {
-      // Gates are solid unless opened.
-      const gate = map.def.features.find((f) => f.kind === 'gate' && f.x === x && f.y === y);
-      return !!gate && !!this.zoneRuntime(zoneId).features[gate.id]?.toggled;
-    }
-    return true;
+    return this.ctx.map(zoneId).nav.walkable(x, y);
   }
 
   isFree(zoneId: string, x: number, y: number, ignoreId?: string): boolean {
-    if (!this.passable(zoneId, x, y)) return false;
-    for (const a of this.actorsInZone(zoneId)) if (a.id !== ignoreId && (a.alive() || a.downed()) && Math.round(a.x) === x && Math.round(a.y) === y) return false;
-    return true;
+    return isFree(this.ctx.map(zoneId).nav, this.actorsInZone(zoneId), { x, y }, ignoreId);
   }
 
   private nearestFree(zoneId: string, p: Vec2, ignoreId?: string): Vec2 {
-    for (let r = 0; r < 6; r++)
-      for (const t of tilesInRadius(p.x, p.y, r + 0.5, this.ctx.map(zoneId).def.width, this.ctx.map(zoneId).def.height))
-        if (this.isFree(zoneId, t.x, t.y, ignoreId)) return t;
-    return p;
+    return nearestFree(this.ctx.map(zoneId).nav, this.actorsInZone(zoneId), p, ignoreId) ?? p;
   }
 
   surfaces(zoneId: string): Surface[] {
@@ -464,9 +457,17 @@ export class GameInstance implements CombatHost {
 
   private spawnParty(p: PlayerState, at?: Vec2) {
     const z = this.live(p.zoneId);
-    const base = this.nearestFree(p.zoneId, at ?? { x: Math.round(p.x), y: Math.round(p.y) });
+    // (A position off the place's ground, saved before it was laid out again, arrives at the way in instead.)
+    const base = nearestFree(z.map.nav, this.actorsInZone(p.zoneId), at ?? { x: p.x, y: p.y }) ?? this.nearestFree(p.zoneId, z.map.def.entry);
+    // Companions stand clear of doors and ways out: one standing on a door covers it, and a click on it picks them.
+    const doors = z.map.def.features.filter((f) => f.kind === 'door' || f.kind === 'exit');
+    const clearOfDoors = (cx: number, cy: number) => {
+      const c = z.map.nav.centre(cx, cy);
+      return z.map.nav.walkableCell(cx, cy) && !bodyAt(this.actorsInZone(p.zoneId), c) && doors.every((f) => Math.hypot(f.x - c.x, f.y - c.y) >= 1.2);
+    };
     p.party.forEach((ch, i) => {
-      const spot = i === 0 ? base : this.nearestFree(p.zoneId, { x: base.x + ((i % 2) ? 1 : -1), y: base.y + (i > 1 ? 1 : 0) });
+      const near = { x: base.x + ((i % 2) ? 1 : -1), y: base.y + (i > 1 ? 1 : 0) };
+      const spot = i === 0 ? base : z.map.nav.nearestWalkable(near, 4, clearOfDoors) ?? this.nearestFree(p.zoneId, near);
       const a = new CharActor(ch, p.userId, p.zoneId, spot.x, spot.y, this.r, () => this.loneWolf(p), this.world);
       z.actors.set(a.id, a);
       a.dirty = true;
@@ -480,8 +481,8 @@ export class GameInstance implements CombatHost {
     if (!z) return;
     const leader = this.leader(p);
     if (leader) {
-      p.x = Math.round(leader.x);
-      p.y = Math.round(leader.y);
+      p.x = leader.x;
+      p.y = leader.y;
     }
     for (const c of p.party) {
       const a = z.actors.get(c.id);
@@ -506,12 +507,11 @@ export class GameInstance implements CombatHost {
     let arrive = at ?? def.entry;
     const tf = targetFeatureId ? def.features.find((f) => f.id === targetFeatureId) : undefined;
     if (tf && !at) {
-      // Step off the exit tile toward the interior of the map.
-      const cx = def.width / 2, cy = def.height / 2;
-      const dx = Math.sign(cx - tf.x), dy = Math.sign(cy - tf.y);
-      const cands = [{ x: tf.x + dx * 2, y: tf.y + dy * 2 }, { x: tf.x, y: tf.y + 1 }, { x: tf.x, y: tf.y - 1 }, { x: tf.x + 1, y: tf.y }, { x: tf.x - 1, y: tf.y }, { x: tf.x + dx, y: tf.y }, { x: tf.x, y: tf.y + dy }];
-      this.live(zoneId);
-      arrive = cands.find((c) => this.passable(zoneId, c.x, c.y)) ?? def.entry;
+      // Step off the door or way out, toward the most open ground beside it.
+      const nav = this.live(zoneId).map.nav;
+      const ring = Array.from({ length: 12 }, (_, i) => ({ x: tf.x + Math.cos((i * Math.PI) / 6) * 1.6, y: tf.y + Math.sin((i * Math.PI) / 6) * 1.6 }));
+      const open = (q: Vec2) => nav.cellsWithin(q, 1.5).length;
+      arrive = ring.filter((q) => nav.walkable(q.x, q.y) && nav.clear(tf, q)).sort((a, b) => open(b) - open(a))[0] ?? def.entry;
     }
     p.zoneId = zoneId;
     p.x = arrive.x;
@@ -555,7 +555,7 @@ export class GameInstance implements CombatHost {
         const rt = this.state.npcs[id];
         if (!rt || !rt.alive || rt.partyOf) return;
         const angle = (i / Math.max(1, ev.npcIds.length)) * Math.PI * 2;
-        const spot = this.nearestFree(z.id, { x: Math.round(ev.x + Math.cos(angle) * 3), y: Math.round(ev.y + Math.sin(angle) * 3) });
+        const spot = this.nearestFree(z.id, { x: ev.x + Math.cos(angle) * 3, y: ev.y + Math.sin(angle) * 3 });
         const existing = [...this.zones.values()].map((lz) => lz.actors.get(id)).find(Boolean) as NpcActor | undefined;
         if (existing && existing.zoneId !== z.id) this.zones.get(existing.zoneId)?.actors.delete(id);
         rt.zoneId = z.id;
@@ -602,22 +602,7 @@ export class GameInstance implements CombatHost {
   }
 
   sendZone(userId: string) {
-    const p = this.state.players[userId];
-    if (!p) return;
-    const z = this.live(p.zoneId);
-    const def = z.map.def;
-    const { spawns, lore, ...zoneView } = def;
-    void spawns, lore;
-    const explored = p.explored[def.id] ?? new BitSet(def.width * def.height).encode();
-    this.sendTo(userId, {
-      t: 'zone',
-      zone: { ...zoneView, features: this.visibleFeatures(userId, def.id) },
-      entities: [...z.actors.values()].map((a) => this.entityView(a)),
-      features: this.featureStates(userId, def.id),
-      surfaces: z.rt.surfaces,
-      loot: this.visibleLoot(userId, def.id),
-      explored,
-    });
+    if (this.state.players[userId]) this.sendTo(userId, { t: 'zone', ...this.zonePayload(userId) });
   }
 
   private playerView(p: PlayerState): PlayerView {
@@ -761,12 +746,11 @@ export class GameInstance implements CombatHost {
   private advanceMotion(z: LiveZone, a: Actor, now: number) {
     const m = a.motion!;
     const s = sampleMotion(m, now);
-    const tileBefore = { x: Math.round(a.x), y: Math.round(a.y) };
+    const before = { x: a.x, y: a.y };
     a.x = s.x;
     a.y = s.y;
     a.facing = s.facing;
-    const tile = { x: Math.round(a.x), y: Math.round(a.y) };
-    if (tile.x !== tileBefore.x || tile.y !== tileBefore.y) this.onEnterTile(z, a, tile);
+    this.onStep(z, a, before);
     if (!a.motion) return; // stopped by a trap or transfer
     if (s.done) {
       const last = m.path[m.path.length - 1] ?? m.from;
@@ -778,27 +762,41 @@ export class GameInstance implements CombatHost {
     }
   }
 
-  private onEnterTile(z: LiveZone, a: Actor, tile: Vec2) {
+  /**
+   * A character moved (from `before`, when it walked there): what it now sees, traps it spots or steps on, harmful
+   * ground, and ways out the leader walks into.
+   */
+  private onStep(z: LiveZone, a: Actor, before?: Vec2) {
     if (!(a instanceof CharActor)) return;
     const p = this.state.players[a.userId];
     if (!p) return;
-    // Exploration memory.
     const def = z.map.def;
-    const bs = new BitSet(def.width * def.height, p.explored[def.id]);
-    let changed = false;
-    for (const t of tilesInRadius(tile.x, tile.y, 11, def.width, def.height)) if (bs.set(t.y * def.width + t.x)) changed = true;
-    if (changed) p.explored[def.id] = bs.encode();
-    // Traps: detection, then triggering.
+    const newSquare = !before || Math.round(a.x) !== Math.round(before.x) || Math.round(a.y) !== Math.round(before.y);
+    if (newSquare) this.explore(p, def, a);
     this.detectTraps(z, a, p);
-    const trap = def.features.find((f) => f.kind === 'trap' && f.x === tile.x && f.y === tile.y);
-    if (trap && !z.rt.features[trap.id]?.disarmed && !z.rt.features[trap.id]?.triggered) this.triggerTrap(z, trap, a);
-    const surf = z.rt.surfaces.find((s) => s.x === tile.x && s.y === tile.y);
+    const trap = this.trapOn(z, before ?? a, a);
+    if (trap) this.triggerTrap(z, trap, a);
+    const surf = newSquare && z.rt.surfaces.find((s) => s.x === Math.round(a.x) && s.y === Math.round(a.y));
     if (surf && !a.combatId && (surf.type === 'fire' || surf.type === 'poison')) applySurface(this, a, surf);
-    // Edge exits trigger when the leader walks onto them.
-    if (a.id === p.leaderId || a === this.leader(p)) {
-      const exit = def.features.find((f) => f.kind === 'exit' && f.facing && f.x === tile.x && f.y === tile.y);
+    if (before && (a.id === p.leaderId || a === this.leader(p))) {
+      const into = (f: FeatureDef, q: Vec2) => Math.hypot(f.x - q.x, f.y - q.y) < EXIT_RADIUS;
+      const exit = def.features.find((f) => f.kind === 'exit' && into(f, a) && !into(f, before));
       if (exit?.targetZoneId) this.transfer(p, exit.targetZoneId, exit.targetFeatureId);
     }
+  }
+
+  /** The ground a character sees around it is remembered (per square metre). */
+  private explore(p: PlayerState, def: ZoneDef, at: Vec2) {
+    const { w, h } = fogSize(def);
+    const bs = new BitSet(w * h, p.explored[def.id]);
+    let changed = false;
+    for (const t of tilesInRadius(Math.round(at.x), Math.round(at.y), SIGHT_RADIUS, w, h)) if (bs.set(t.y * w + t.x)) changed = true;
+    if (changed) p.explored[def.id] = bs.encode();
+  }
+
+  /** An armed trap on the way from `from` to `to`. */
+  private trapOn(z: LiveZone, from: Vec2, to: Vec2): FeatureDef | undefined {
+    return z.map.def.features.find((f) => f.kind === 'trap' && !z.rt.features[f.id]?.disarmed && !z.rt.features[f.id]?.triggered && distToSegment(f, from, to) < TRAP_RADIUS);
   }
 
   /** Trap sense as a 0..1 skill level relative to the character's level. */
@@ -834,31 +832,36 @@ export class GameInstance implements CombatHost {
   private zonePayload(userId: string) {
     const p = this.state.players[userId]!;
     const z = this.live(p.zoneId);
-    const { spawns, lore, ...zoneView } = z.map.def;
-    void spawns, lore;
+    const { spawns, lore, design, ...zoneView } = z.map.def;
+    void spawns, lore, design;
+    const { w, h } = fogSize(z.map.def);
     return {
       zone: { ...zoneView, features: this.visibleFeatures(userId, z.id) },
       entities: [...z.actors.values()].map((a) => this.entityView(a)),
       features: this.featureStates(userId, z.id),
       surfaces: z.rt.surfaces,
       loot: this.visibleLoot(userId, z.id),
-      explored: p.explored[z.id] ?? new BitSet(z.map.def.width * z.map.def.height).encode(),
+      explored: p.explored[z.id] ?? new BitSet(w * h).encode(),
     };
   }
 
-  /** Combat movement trap check. */
-  checkTrapsAlong(a: Actor, path: Vec2[]): number {
+  /** Combat movement trap check: the walk up to the first trap on it (which springs as it is reached). */
+  checkTrapsAlong(a: Actor, path: Vec2[]): Vec2[] | null {
     const z = this.zones.get(a.zoneId);
-    if (!z || !(a instanceof CharActor)) return -1;
+    if (!z || !(a instanceof CharActor)) return null;
+    let from: Vec2 = { x: a.x, y: a.y }, walked = 0;
     for (let i = 0; i < path.length; i++) {
-      const t = path[i]!;
-      const trap = z.map.def.features.find((f) => f.kind === 'trap' && f.x === t.x && f.y === t.y && !z.rt.features[f.id]?.disarmed && !z.rt.features[f.id]?.triggered);
+      const to = path[i]!;
+      const trap = this.trapOn(z, from, to);
       if (trap) {
-        this.after(Combat.instant ? 0 : (i / WALK_SPEED) * 1000, () => this.triggerTrap(z, trap, a));
-        return i;
+        walked += Math.hypot(trap.x - from.x, trap.y - from.y);
+        this.after(Combat.instant ? 0 : (walked / WALK_SPEED) * 1000, () => this.triggerTrap(z, trap, a));
+        return [...path.slice(0, i), { x: trap.x, y: trap.y }];
       }
+      walked += Math.hypot(to.x - from.x, to.y - from.y);
+      from = to;
     }
-    return -1;
+    return null;
   }
 
   private trapName(f: FeatureDef): string {
@@ -885,13 +888,11 @@ export class GameInstance implements CombatHost {
     if (a.motion || now < a.nextWanderAt) return;
     a.nextWanderAt = now + 3000 + this.rng.next() * 7000;
     if (a.boss || this.rng.chance(0.4)) return;
-    const tx = Math.round(a.homeX + this.rng.int(-3, 3)), ty = Math.round(a.homeY + this.rng.int(-3, 3));
-    if (!this.passable(z.id, tx, ty)) return;
-    const path = findPath(a, { x: tx, y: ty }, { width: z.map.def.width, height: z.map.def.height, passable: (x, y) => this.passable(z.id, x, y), maxNodes: 400 });
+    const to = { x: a.homeX + (this.rng.next() - 0.5) * 6, y: a.homeY + (this.rng.next() - 0.5) * 6 };
+    if (!this.passable(z.id, to.x, to.y)) return;
+    const path = z.map.nav.path(a, to, { maxNodes: 1500 });
     if (path?.length) {
-      a.motion = { path, from: { x: Math.round(a.x), y: Math.round(a.y) }, speed: 1.6, t0: now };
-      a.x = Math.round(a.x);
-      a.y = Math.round(a.y);
+      a.motion = { path, from: { x: a.x, y: a.y }, speed: 1.6, t0: now };
       a.dirty = true;
     }
   }
@@ -914,13 +915,11 @@ export class GameInstance implements CombatHost {
     if (!a.def.wanders || a.motion || a.talkingTo || now < a.nextWanderAt) return;
     a.nextWanderAt = now + 5000 + this.rng.next() * 9000;
     if (this.rng.chance(0.45)) return;
-    const tx = Math.round(a.homeX + this.rng.int(-4, 4)), ty = Math.round(a.homeY + this.rng.int(-4, 4));
-    if (!this.passable(z.id, tx, ty)) return;
-    const path = findPath(a, { x: tx, y: ty }, { width: z.map.def.width, height: z.map.def.height, passable: (x, y) => this.passable(z.id, x, y), maxNodes: 500 });
+    const to = { x: a.homeX + (this.rng.next() - 0.5) * 8, y: a.homeY + (this.rng.next() - 0.5) * 8 };
+    if (!this.passable(z.id, to.x, to.y)) return;
+    const path = z.map.nav.path(a, to, { maxNodes: 2000 });
     if (path?.length) {
-      a.motion = { path, from: { x: Math.round(a.x), y: Math.round(a.y) }, speed: 1.3, t0: now };
-      a.x = Math.round(a.x);
-      a.y = Math.round(a.y);
+      a.motion = { path, from: { x: a.x, y: a.y }, speed: 1.3, t0: now };
       a.dirty = true;
     }
   }
@@ -953,7 +952,6 @@ export class GameInstance implements CombatHost {
   private checkAggro(z: LiveZone) {
     const chars = [...z.actors.values()].filter((a): a is CharActor => a instanceof CharActor && a.alive() && !a.combatId && !this.devPeace.has(a.userId));
     if (!chars.length) return;
-    const W = z.map.def.width;
     for (const a of z.actors.values()) {
       if (a.combatId || !a.alive()) continue;
       const hostile = a instanceof MonsterActor || (a instanceof NpcActor && a.rt.hostileTo.length > 0);
@@ -963,17 +961,7 @@ export class GameInstance implements CombatHost {
         if (!isHostileTo(a, c)) continue;
         const d = Math.hypot(a.x - c.x, a.y - c.y);
         if (d > radius) continue;
-        let los = true;
-        const ax = Math.round(a.x), ay = Math.round(a.y), cx = Math.round(c.x), cy = Math.round(c.y);
-        const steps = Math.max(Math.abs(ax - cx), Math.abs(ay - cy));
-        for (let i = 1; i < steps; i++) {
-          const x = Math.round(ax + ((cx - ax) * i) / steps), y = Math.round(ay + ((cy - ay) * i) / steps);
-          if (z.map.opaque[y * W + x]) {
-            los = false;
-            break;
-          }
-        }
-        if (!los) continue;
+        if (!z.map.nav.sees(a, c)) continue;
         this.startCombat(z, a, c, false);
         return;
       }
@@ -1014,7 +1002,7 @@ export class GameInstance implements CombatHost {
     for (const a of [...players, ...enemies]) {
       if (a.combatId === combat.id) continue;
       a.motion = null;
-      const spot = this.nearestFree(z.id, { x: Math.round(a.x), y: Math.round(a.y) }, a.id);
+      const spot = this.nearestFree(z.id, a, a.id);
       a.x = spot.x;
       a.y = spot.y;
       // Whoever opened the fight already acted (and pays for it on their first turn); everyone rolls initiative.
@@ -1104,7 +1092,7 @@ export class GameInstance implements CombatHost {
     if (!p) return;
     p.stats.deaths++;
     const leader = this.leader(p);
-    const where = { zoneId: zoneId ?? p.zoneId, x: Math.round(leader?.x ?? p.x), y: Math.round(leader?.y ?? p.y) };
+    const where = { zoneId: zoneId ?? p.zoneId, x: leader?.x ?? p.x, y: leader?.y ?? p.y };
     const dropped = p.inventory.filter((i) => !i.bound && rx(this.r).item.get(i.baseId)?.category !== 'quest' && rx(this.r).item.get(i.baseId)?.category !== 'key');
     p.inventory = p.inventory.filter((i) => !dropped.includes(i));
     const gold = this.r.death.keepGold ? 0 : p.gold;
@@ -1184,7 +1172,7 @@ export class GameInstance implements CombatHost {
       if (target.boss && !loot.items.some((i) => isTopRarity(this.r, i)) && this.rng.chance(0.35)) loot.items.push(rollRandomItem(this.r, this.rng, target.level, 0, { minRarity: this.r.rarities.length - 1 }));
       this.forgeLegendaries(loot.items, z.id, target.boss ? `${target.boss.name}, ${target.boss.title}` : target.name);
       if (loot.items.length || loot.gold) {
-        z.rt.loot.push({ id: uid('lp'), x: Math.round(target.x), y: Math.round(target.y), items: loot.items, gold: loot.gold, label: target.name, createdAt: Date.now() });
+        z.rt.loot.push({ id: uid('lp'), x: target.x, y: target.y, items: loot.items, gold: loot.gold, label: target.name, createdAt: Date.now() });
         z.lootDirty = true;
       }
       this.after(2500, () => {
@@ -1212,7 +1200,7 @@ export class GameInstance implements CombatHost {
       target.dirty = true;
       this.fx(z.id, [{ kind: 'death', targetId: target.id, x: target.x, y: target.y }]);
       const items = [...target.rt.inventory];
-      z.rt.loot.push({ id: uid('lp'), x: Math.round(target.x), y: Math.round(target.y), items, gold: target.rt.gold, label: target.def.name, createdAt: Date.now() });
+      z.rt.loot.push({ id: uid('lp'), x: target.x, y: target.y, items, gold: target.rt.gold, label: target.def.name, createdAt: Date.now() });
       target.rt.inventory = [];
       target.rt.gold = 0;
       z.lootDirty = true;
@@ -1261,7 +1249,7 @@ export class GameInstance implements CombatHost {
   actorMoved(a: Actor) {
     if (a instanceof CharActor) {
       const z = this.zones.get(a.zoneId);
-      if (z) this.onEnterTile(z, a, { x: Math.round(a.x), y: Math.round(a.y) });
+      if (z) this.onStep(z, a);
     }
   }
 
@@ -1398,14 +1386,14 @@ export class GameInstance implements CombatHost {
   private cmdMove(p: PlayerState, x: number, y: number, charId?: string) {
     const z = this.zones.get(p.zoneId);
     if (!z) return;
-    const tx = Math.round(x), ty = Math.round(y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
     // Combat movement: the active character only.
     const inCombat = this.charActors(p).find((a) => a.combatId);
     if (inCombat) {
       const c = this.combatOf(inCombat)!;
       const active = c.active;
       if (!(active instanceof CharActor) || active.userId !== p.userId || !c.isHumanControlled(active)) return this.sendError(p.userId, 'Not your turn.');
-      const res = c.move(active, { x: tx, y: ty });
+      const res = c.move(active, { x, y });
       if (res.error) this.sendError(p.userId, res.error);
       return;
     }
@@ -1413,8 +1401,7 @@ export class GameInstance implements CombatHost {
     this.pendingSkill.delete(p.userId);
     const leader = this.charFor(p, charId);
     if (!leader || !leader.alive()) return;
-    // Outside combat the party walks to the exact point clicked, not just the tile centre.
-    this.walkParty(p, leader, { x: tx, y: ty }, 0, Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined);
+    this.walkParty(p, leader, { x, y }, 0);
     this.closeDialogOnMove(p);
   }
 
@@ -1444,21 +1431,18 @@ export class GameInstance implements CombatHost {
     if (!lead || !z || x === undefined || y === undefined || !Number.isFinite(x) || !Number.isFinite(y)) return;
     // Trust the walker's screen: only the spot itself must be standable (a straight-line check from the server's
     // own copy, which lags and slides differently around corners, refused good updates and caused snap-backs).
-    if (Math.hypot(x - lead.x, y - lead.y) > 6 || !this.passable(z.id, Math.round(x), Math.round(y))) return;
-    const before = { x: Math.round(lead.x), y: Math.round(lead.y) };
+    if (Math.hypot(x - lead.x, y - lead.y) > 6 || !this.passable(z.id, x, y)) return;
+    const before = { x: lead.x, y: lead.y };
     lead.x = x;
     lead.y = y;
     if (lead.motion) lead.motion = { ...lead.motion, from: { x, y }, t0: Date.now() };
     lead.dirty = true;
-    const tile = { x: Math.round(x), y: Math.round(y) };
-    if (tile.x !== before.x || tile.y !== before.y) this.onEnterTile(z, lead, tile);
+    this.onStep(z, lead, before);
   }
 
-  /** Clear for walking along a straight line (sampled every quarter tile). */
+  /** Clear for walking along a straight line. */
   private lineClear(zoneId: string, a: Vec2, b: Vec2): boolean {
-    const n = Math.ceil(Math.hypot(b.x - a.x, b.y - a.y) / 0.25);
-    for (let i = 1; i <= n; i++) if (!this.passable(zoneId, Math.round(a.x + ((b.x - a.x) * i) / n), Math.round(a.y + ((b.y - a.y) * i) / n))) return false;
-    return true;
+    return this.ctx.map(zoneId).nav.clear(a, b);
   }
 
   /**
@@ -1512,8 +1496,8 @@ export class GameInstance implements CombatHost {
     if (lead.motion) {
       lead.motion = null;
       lead.dirty = true;
-      p.x = Math.round(lead.x);
-      p.y = Math.round(lead.y);
+      p.x = lead.x;
+      p.y = lead.y;
     }
     this.followLeader(p, lead, { x: Math.cos(lead.facing), y: Math.sin(lead.facing) }, Date.now());
   }
@@ -1523,23 +1507,20 @@ export class GameInstance implements CombatHost {
     const z = this.zones.get(p.zoneId);
     if (!z) return;
     const followers = this.charActors(p).filter((a) => a !== lead && a.alive() && !a.combatId);
-    const clear = (x: number, y: number) => this.passable(z.id, x, y);
+    const nav = z.map.nav;
     followers.forEach((f, i) => {
       const back = 1.2 + 0.9 * Math.floor(i / 2), side = (i % 2 ? 1 : -1) * 0.55;
       let slot = { x: lead.x - dir.x * back - dir.y * side, y: lead.y - dir.y * back + dir.x * side };
-      if (!clear(Math.round(slot.x), Math.round(slot.y))) slot = { x: lead.x - dir.x * back, y: lead.y - dir.y * back };
-      if (!clear(Math.round(slot.x), Math.round(slot.y))) slot = { x: lead.x, y: lead.y };
+      if (!nav.walkable(slot.x, slot.y)) slot = { x: lead.x - dir.x * back, y: lead.y - dir.y * back };
+      if (!nav.walkable(slot.x, slot.y)) slot = { x: lead.x, y: lead.y };
       const d = Math.hypot(f.x - slot.x, f.y - slot.y);
       const goal = f.motion?.path[f.motion.path.length - 1];
       if (d < 0.7 || (goal && Math.hypot(goal.x - slot.x, goal.y - slot.y) < 0.6)) return;
       const from = { x: f.x, y: f.y };
-      const tiles = findPath(from, { x: Math.round(slot.x), y: Math.round(slot.y) }, { width: z.map.def.width, height: z.map.def.height, passable: clear, stopWithin: 0, allowBlockedGoal: true, maxNodes: 4000 });
-      if (!tiles?.length && d > 0.7 && this.lineClear(z.id, from, slot)) {
-        f.motion = { path: [slot], from, speed: WALK_SPEED * 1.1, t0: now };
-      } else if (tiles?.length) {
-        // Catch up a little faster when far behind, so the party keeps together while walking.
-        f.motion = { path: smoothPath(from, tiles, clear, standPoint(Math.round(slot.x), Math.round(slot.y), slot, clear)), from, speed: WALK_SPEED * (d > 3 ? 1.35 : 1.1), t0: now };
-      } else return;
+      const path = nav.path(from, slot, { stopWithin: 0.3, allowBlockedGoal: true, maxNodes: 4000 });
+      if (!path?.length) return;
+      // Catch up a little faster when far behind, so the party keeps together while walking.
+      f.motion = { path, from, speed: WALK_SPEED * (d > 3 ? 1.35 : 1.1), t0: now };
       f.dirty = true;
     });
   }
@@ -1549,26 +1530,21 @@ export class GameInstance implements CombatHost {
     if (this.dialogue.session(p.userId)) this.endDialog(p.userId);
   }
 
-  /** Path the leader to a target; followers trail behind. */
-  private walkParty(p: PlayerState, leader: CharActor, target: Vec2, stopWithin: number, point?: Vec2): boolean {
+  /** Walk the leader to a target (or to within `stopWithin` metres of it); followers gather around the end. */
+  private walkParty(p: PlayerState, leader: CharActor, target: Vec2, stopWithin: number): boolean {
     const z = this.zones.get(p.zoneId)!;
-    const W = z.map.def.width;
+    const nav = z.map.nav;
+    // Walks go around traps the party knows about.
+    const known = z.map.def.features.filter((f) => f.kind === 'trap' && p.revealedTraps.includes(f.id) && !z.rt.features[f.id]?.disarmed && !z.rt.features[f.id]?.triggered);
     const opts = {
-      width: W,
-      height: z.map.def.height,
-      passable: (x: number, y: number) => this.passable(z.id, x, y),
-      extraCost: (x: number, y: number) => (z.map.def.features.some((f) => f.kind === 'trap' && f.x === x && f.y === y && p.revealedTraps.includes(f.id) && !z.rt.features[f.id]?.disarmed && !z.rt.features[f.id]?.triggered) ? 40 : 0),
-      stopWithin,
+      blocked: known.length ? (cx: number, cy: number) => known.some((f) => Math.hypot(nav.centre(cx, cy).x - f.x, nav.centre(cx, cy).y - f.y) < TRAP_RADIUS + 0.25) : undefined,
+      stopWithin: stopWithin > 0 ? stopWithin : undefined,
       allowBlockedGoal: stopWithin > 0,
-      maxNodes: 30000,
+      maxNodes: 60000,
     };
-    // Straight lines may cross only tiles a tile path could use (and never a revealed trap).
-    const clear = (x: number, y: number) => opts.passable(x, y) && opts.extraCost(x, y) === 0;
     const from = { x: leader.x, y: leader.y };
-    const tilePath = findPath(from, target, opts);
-    if (!tilePath) return false;
-    const end = point && stopWithin <= 0 && clear(target.x, target.y) ? standPoint(target.x, target.y, point, clear) : undefined;
-    const path = smoothPath(from, tilePath, clear, end);
+    const path = nav.path(from, target, opts);
+    if (!path) return false;
     const now = Date.now();
     leader.motion = path.length ? { path, from, speed: WALK_SPEED, t0: now } : null;
     leader.dirty = true;
@@ -1576,9 +1552,11 @@ export class GameInstance implements CombatHost {
       this.arrived(leader);
       return true;
     }
-    const dest = tilePath[tilePath.length - 1] ?? { x: Math.round(from.x), y: Math.round(from.y) };
-    const prev = tilePath.length > 1 ? tilePath[tilePath.length - 2]! : { x: Math.round(from.x), y: Math.round(from.y) };
-    const dir = { x: Math.sign(prev.x - dest.x) || 0, y: Math.sign(prev.y - dest.y) || 0 };
+    // Followers stop around the end, behind the leader as it arrives (with a little jitter so they don't line up).
+    const dest = path[path.length - 1]!;
+    const prev = path.length > 1 ? path[path.length - 2]! : from;
+    const len = Math.hypot(prev.x - dest.x, prev.y - dest.y) || 1;
+    const dir = { x: (prev.x - dest.x) / len, y: (prev.y - dest.y) / len };
     const followers = this.charActors(p).filter((a) => a !== leader && a.alive());
     followers.forEach((f, i) => {
       const off = [
@@ -1586,16 +1564,13 @@ export class GameInstance implements CombatHost {
         { x: dir.x + dir.y, y: dir.y - dir.x },
         { x: dir.x * 2, y: dir.y * 2 },
       ][i % 3]!;
-      let goal = { x: dest.x + off.x, y: dest.y + off.y };
-      if (!this.passable(z.id, goal.x, goal.y)) goal = prev;
+      const j = (hashFloat(`${f.id}:${now}`) - 0.5) * 0.4;
+      const want = { x: dest.x + off.x * 0.9 + j, y: dest.y + off.y * 0.9 - j };
+      const goal = nav.walkable(want.x, want.y) && nav.clear(dest, want) ? want : prev;
       const ff = { x: f.x, y: f.y };
-      const fp = findPath(ff, goal, { ...opts, stopWithin: 0, allowBlockedGoal: false }) ?? findPath(ff, dest, { ...opts, stopWithin: 1.5, allowBlockedGoal: true });
+      const fp = nav.path(ff, goal, { ...opts, stopWithin: undefined, allowBlockedGoal: false }) ?? nav.path(ff, dest, { ...opts, stopWithin: 1.5, allowBlockedGoal: true });
       if (fp?.length) {
-        // A small per-follower offset inside the goal tile so the party doesn't line up on a grid.
-        const j = hashFloat(`${f.id}:${now}`);
-        const last = fp[fp.length - 1]!;
-        const spot = clear(last.x, last.y) ? standPoint(last.x, last.y, { x: last.x + (j - 0.5) * 0.6, y: last.y + (hashFloat(`${now}:${f.id}`) - 0.5) * 0.6 }, clear) : undefined;
-        f.motion = { path: smoothPath(ff, fp, clear, spot), from: ff, speed: WALK_SPEED * 1.05, t0: now + 120 * (i + 1) };
+        f.motion = { path: fp, from: ff, speed: WALK_SPEED * 1.05, t0: now + 120 * (i + 1) };
         f.dirty = true;
       }
     });
@@ -1605,8 +1580,8 @@ export class GameInstance implements CombatHost {
   private arrived(a: CharActor) {
     const p = this.state.players[a.userId];
     if (!p) return;
-    p.x = Math.round(a.x);
-    p.y = Math.round(a.y);
+    p.x = a.x;
+    p.y = a.y;
     const pend = this.pending.get(p.userId);
     const ps = this.pendingSkill.get(p.userId);
     if (pend && pend.charId === a.id && ps && ps.targetId === pend.targetId) {
@@ -1625,7 +1600,7 @@ export class GameInstance implements CombatHost {
     const z = this.zones.get(p.zoneId);
     if (!z) return null;
     const actor = z.actors.get(targetId);
-    if (actor) return { x: Math.round(actor.x), y: Math.round(actor.y), kind: 'actor' };
+    if (actor) return { x: actor.x, y: actor.y, kind: 'actor' };
     const f = z.map.features.get(targetId);
     if (f) return { x: f.x, y: f.y, kind: 'feature' };
     const l = z.rt.loot.find((x) => x.id === targetId);
@@ -1752,21 +1727,10 @@ export class GameInstance implements CombatHost {
       }
       case 'trap':
         return this.tryDisarm(p, a, z, f, false);
-      case 'shrine': {
+      case 'object':
+        this.fx(z.id, [{ kind: 'text', x: f.x, y: f.y, text: f.name ?? '', color: '#e0d0a0' }]);
         this.quests.onInteract(p, f.id);
-        if (fr.usedDay === this.day()) return this.sendTo(p.userId, { t: 'toast', text: `${f.name ?? 'The shrine'} is quiet. Return tomorrow.`, kind: 'info' });
-        fr.usedDay = this.day();
-        const buff = this.r.statuses.find((x) => !x.harmful && x.modifiers?.length);
-        for (const c of this.charActors(p)) {
-          if (f.shrineEffect === 'empower' && buff) addStatus(this, c, buff.id, 6, c.stats().dpa);
-          else restoreFully(this.r, c.ch, this.loneWolf(p));
-          c.dirty = true;
-        }
-        this.fx(z.id, [{ kind: 'skill', x: f.x, y: f.y, tx: f.x, ty: f.y, fx: 'heal', radius: 2 }]);
-        this.sendTo(p.userId, { t: 'toast', text: `${f.name ?? 'Shrine'}: ${f.shrineEffect === 'empower' && buff ? `you are ${buff.name.toLowerCase()}` : `your ${this.r.terminology.party.toLowerCase()} is restored`}.`, kind: 'good' });
-        this.markPlayer(p.userId);
         return;
-      }
       case 'sign':
         return this.sendTo(p.userId, { t: 'narration', title: f.name ?? 'Sign', text: f.text ?? '', style: 'quest' });
       case 'lore': {
@@ -1782,21 +1746,6 @@ export class GameInstance implements CombatHost {
         this.quests.onInteract(p, f.id);
         return;
       }
-      case 'lever': {
-        fr.toggled = !fr.toggled;
-        z.featuresDirty.add(f.id);
-        for (const gid of f.gateIds ?? []) {
-          const g = (z.rt.features[gid] ??= {});
-          g.toggled = fr.toggled;
-          z.featuresDirty.add(gid);
-        }
-        this.fx(z.id, [{ kind: 'text', x: f.x, y: f.y, text: fr.toggled ? 'Clunk!' : 'Clank.', color: '#e0d0a0' }]);
-        this.sendTo(p.userId, { t: 'toast', text: fr.toggled ? 'Somewhere, a gate grinds open.' : 'A gate slams shut.', kind: 'info' });
-        this.quests.onInteract(p, f.id);
-        return;
-      }
-      case 'gate':
-        return this.sendTo(p.userId, { t: 'toast', text: z.rt.features[f.id]?.toggled ? 'The gate is open.' : 'The gate is sealed. Perhaps a mechanism opens it.', kind: 'info' });
       case 'bed':
         return this.cmdRest(p, true);
       case 'waypoint':
@@ -1841,7 +1790,7 @@ export class GameInstance implements CombatHost {
     const skill = rx(this.r).skill.get(skillId);
     if (!skill || !a.skillIds().includes(skillId)) return this.sendError(p.userId, 'Unknown skill.');
     const target = targetId ? z.actors.get(targetId) : undefined;
-    const point = x !== undefined && y !== undefined ? { x: Math.round(x), y: Math.round(y) } : undefined;
+    const point = x !== undefined && y !== undefined && Number.isFinite(x) && Number.isFinite(y) ? { x, y } : undefined;
     const combat = this.charActors(p).map((c) => this.combatOf(c)).find(Boolean);
     if (combat) {
       const active = combat.active;
@@ -1862,7 +1811,7 @@ export class GameInstance implements CombatHost {
         this.pending.set(p.userId, { targetId: target.id, charId: a.id });
         this.pendingSkill.set(p.userId, { skillId, targetId: target.id });
         const range = skillRange(skill, a.stats());
-        if (!this.walkParty(p, a, { x: Math.round(target.x), y: Math.round(target.y) }, Math.max(1.2, range - 0.6))) {
+        if (!this.walkParty(p, a, { x: target.x, y: target.y }, Math.max(1.2, range - 0.6))) {
           this.pending.delete(p.userId);
           this.pendingSkill.delete(p.userId);
           this.sendError(p.userId, "You can't reach that.");
@@ -1872,8 +1821,6 @@ export class GameInstance implements CombatHost {
       return this.sendError(p.userId, err);
     }
     a.motion = null;
-    a.x = Math.round(a.x);
-    a.y = Math.round(a.y);
     const hostileUse = target && isHostileTo(a, target);
     // An opening shot is part of the attacker's first turn, not a free one: it is paid from that turn's AP.
     // (Otherwise ranged characters get a free hit before initiative that melee ones never do.)
@@ -1988,7 +1935,7 @@ export class GameInstance implements CombatHost {
     const z = this.zones.get(p.zoneId);
     const leader = this.leader(p);
     if (it && z && leader) {
-      z.rt.loot.push({ id: uid('lp'), x: Math.round(leader.x), y: Math.round(leader.y), items: [it], gold: 0, label: 'Dropped', ownerUserId: p.userId, createdAt: Date.now() });
+      z.rt.loot.push({ id: uid('lp'), x: leader.x, y: leader.y, items: [it], gold: 0, label: 'Dropped', ownerUserId: p.userId, createdAt: Date.now() });
       z.lootDirty = true;
     }
     this.markPlayer(p.userId);
@@ -2056,7 +2003,7 @@ export class GameInstance implements CombatHost {
       const def = this.ctx.zones.get(msg.zoneId);
       if (!def) return;
       this.leaveCombat(p);
-      let at = msg.x !== undefined && msg.y !== undefined ? { x: Math.round(msg.x), y: Math.round(msg.y) } : undefined;
+      let at = msg.x !== undefined && msg.y !== undefined ? { x: msg.x, y: msg.y } : undefined;
       if (at) {
         this.live(def.id);
         if (!this.passable(def.id, at.x, at.y)) at = undefined;
@@ -2066,8 +2013,9 @@ export class GameInstance implements CombatHost {
     if (msg.action === 'reveal') {
       const def = this.ctx.zones.get(p.zoneId);
       if (!def) return;
-      const bs = new BitSet(def.width * def.height);
-      for (let i = 0; i < def.width * def.height; i++) bs.set(i);
+      const { w, h } = fogSize(def);
+      const bs = new BitSet(w * h);
+      for (let i = 0; i < w * h; i++) bs.set(i);
       p.explored[def.id] = bs.encode();
       return this.sendZone(p.userId);
     }
@@ -2437,7 +2385,7 @@ export class GameInstance implements CombatHost {
     const z = this.zones.get(p.zoneId);
     const leader = this.leader(p);
     if (z && leader) {
-      const spot = this.nearestFree(z.id, { x: Math.round(leader.x) + 1, y: Math.round(leader.y) });
+      const spot = this.nearestFree(z.id, { x: leader.x + 1, y: leader.y });
       const a = new CharActor(ch, userId, z.id, spot.x, spot.y, this.r, () => this.loneWolf(p), this.world);
       z.actors.set(a.id, a);
     }
@@ -2571,10 +2519,10 @@ export class GameInstance implements CombatHost {
         const a = this.npcActor(npcId);
         if (!a) return;
         const z = this.zones.get(a.zoneId)!;
-        const far = { x: Math.round(a.homeX + (this.rng.chance(0.5) ? 8 : -8)), y: Math.round(a.homeY) };
-        const path = findPath(a, this.nearestFree(z.id, far), { width: z.map.def.width, height: z.map.def.height, passable: (x, y) => this.passable(z.id, x, y), maxNodes: 2000 });
+        const far = { x: a.homeX + (this.rng.chance(0.5) ? 8 : -8), y: a.homeY };
+        const path = z.map.nav.path(a, this.nearestFree(z.id, far), { maxNodes: 4000 });
         if (path?.length) {
-          a.motion = { path, from: { x: Math.round(a.x), y: Math.round(a.y) }, speed: 5, t0: Date.now() };
+          a.motion = { path, from: { x: a.x, y: a.y }, speed: 5, t0: Date.now() };
           a.dirty = true;
         }
       },
@@ -2720,8 +2668,8 @@ export class GameInstance implements CombatHost {
       const map = this.ctx.map(target.id);
       const r = new Rng(id);
       for (let i = 0; i < 300; i++) {
-        const x = r.int(2, map.def.width - 3), y = r.int(2, map.def.height - 3);
-        if (!map.solid[y * map.def.width + x] && Math.hypot(x - map.def.entry.x, y - map.def.entry.y) > 10) {
+        const x = r.next() * map.nav.width, y = r.next() * map.nav.height;
+        if (map.nav.walkable(x, y) && Math.hypot(x - map.def.entry.x, y - map.def.entry.y) > 10) {
           rt.loot.push({ id: uid('lp'), x, y, items: [makeUnique(this.r, this.state.dynamicItems![id]!, 1)], gold: 0, label: name, createdAt: Date.now() });
           const lz = this.zones.get(target.id);
           if (lz) lz.lootDirty = true;

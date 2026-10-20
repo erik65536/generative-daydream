@@ -30,7 +30,7 @@ async function execute(rec: JobRecord, job: Job): Promise<void> {
     case 'rules':
       return runRulesJob(job, world(), p.mode === 'rebalance' ? 'rebalance' : 'regenerate');
     case 'art':
-      return runArtJob(job, world(), p.level === 'full' ? 'full' : 'essential');
+      return runArtJob(job, world());
     case 'studio':
       return runStudioJob(job, world(), p.task as StudioTask);
   }

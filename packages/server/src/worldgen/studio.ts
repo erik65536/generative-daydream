@@ -1,19 +1,16 @@
 /**
  * World studio: the owner sees everything a world is made of (places, people, quests, art and the prompts
- * behind it), edits text and prompts directly, and regenerates pieces with the AI: one quest, one person,
- * one image, or a whole place's look.
+ * behind it), edits text and prompts directly, and regenerates pieces with the AI: one quest, one person, one
+ * place's text, or images.
  */
 import { z } from 'zod';
-import type { TileRole, WorldDefinition } from '@gd/shared';
+import type { WorldDefinition } from '@gd/shared';
 import { genai } from '../genai/service';
 import { saveWorld } from '../storage';
 import { conceptSummary } from './prompts';
-import { artPhases, paint as paintWorld, WorldGenJob } from './pipeline';
+import { ART_PHASE, paintArt, WorldGenJob } from './pipeline';
 import { activeJob } from '../jobs/queue';
-import { directTilesets, listArt, planAssets } from './art';
-import { designBlueprint } from './blueprint';
-import { applyDesign, buildingNames, designZonePlan, rebuildZoneMap, zoneSize, spliceAreaContent, spliceTownContent, writeZoneContent, type PlanDraft } from './rezone';
-import { LayoutPlanSchema, type AreaContentOut, type TownContentOut } from './schemas';
+import { listArt, planAssets } from './art';
 
 /** Everything the studio shows (the owner may see spoilers: it is their world). */
 export function studioView(w: WorldDefinition) {
@@ -46,7 +43,6 @@ export const EditSchema = z.discriminatedUnion('type', [
     completionText: z.string().max(1000).optional(),
     objectives: z.array(z.object({ id: z.string(), description: text(300) })).max(20).optional(),
   }),
-  z.object({ type: z.literal('role'), tilesetId: z.string(), role: z.string(), name: text(80).optional(), prompt: text(400).optional() }),
   // null clears the owner's version and returns to the world's own brief / the writer's prompt.
   z.object({ type: z.literal('art'), key: z.string(), brief: z.string().max(600).nullable().optional(), imagePrompt: z.string().max(2400).nullable().optional() }),
 ]);
@@ -112,15 +108,6 @@ export function applyEdit(w: WorldDefinition, e: StudioEdit): string | null {
         const t = q.objectives.find((x) => x.id === o.id);
         if (t) t.description = o.description;
       }
-      return null;
-    }
-    case 'role': {
-      const ts = w.tilesets[e.tilesetId];
-      if (!ts) return 'No such tileset.';
-      const def = e.role === 'roof' || e.role === 'craft' ? ts.extras?.[e.role] : ts.roles[e.role as TileRole];
-      if (!def) return 'No such element.';
-      if (e.name) def.name = e.name;
-      if (e.prompt) def.prompt = e.prompt;
       return null;
     }
     case 'art': {
@@ -209,80 +196,26 @@ export async function rewrite(w: WorldDefinition, target: RewriteTarget, guidanc
   return `Rewrote ${out.name}.`;
 }
 
-// ------------------------------------------------------------------------------------ whole places
-
-/**
- * Rebuild one place: optionally new content from the content model, then a new map from the owner's plan
- * (or one the design model picks from the owner's direction). Works on a copy so a failure changes nothing.
- */
-export async function rebuildZone(w: WorldDefinition, task: { zoneId: string; plan?: PlanDraft; content: boolean; guidance: string; floorPlan?: boolean }, report: (m: string) => void = () => {}): Promise<string> {
-  const draft = structuredClone(w);
-  const z = draft.zones.find((x) => x.id === task.zoneId);
-  if (!z) throw new Error('No such place.');
-  let plan = task.plan;
-  // An edited layout plan replaces a floor plan (the place goes back to the generic generator).
-  if (plan && !task.floorPlan) z.blueprint = undefined;
-  if (!plan && !task.floorPlan && !z.blueprint && task.guidance.trim()) {
-    try {
-      plan = await designZonePlan(draft, z.id, task.guidance);
-      if (plan) report(`Level design from your direction: ${JSON.stringify(plan)}`);
-    } catch (e) {
-      report(`The design model could not choose a layout (${(e as Error).message.slice(0, 120)}); keeping the current plan`);
-    }
-  }
-  const notes: string[] = [];
-  if (task.content) {
-    report(`Writing new ${z.kind === 'town' ? 'residents and side quests' : 'lore'} for ${z.name}`);
-    const out = await writeZoneContent(draft, z.id, task.guidance);
-    const res = z.kind === 'town' ? spliceTownContent(draft, z.id, out as TownContentOut) : spliceAreaContent(draft, z.id, out as AreaContentOut);
-    if (z.kind === 'town') notes.push(`${res.added.length} new resident${res.added.length === 1 ? '' : 's'} (${res.added.slice(0, 6).join(', ')}${res.added.length > 6 ? '…' : ''}), ${res.removed.length} gone, side quests: ${res.quests.join('; ') || 'none'}`);
-    else notes.push(`new lore: ${res.added.join('; ') || 'none'}`);
-  }
-  let r;
-  if (task.floorPlan && z.kind !== 'interior') {
-    report(`Designing a floor plan for ${z.name}`);
-    const d = await designBlueprint(draft, z, { size: zoneSize(draft, z.kind), buildings: z.kind === 'town' ? buildingNames(draft, z) : [], guidance: task.guidance.trim() || undefined });
-    report(`Floor plan: ${d.blueprint.summary} Areas: ${d.blueprint.areas.map((a) => `${a.count > 1 ? `${a.count}× ` : ''}${a.name}`).join(', ')}.`);
-    r = applyDesign(draft, z.id, d);
-  } else r = rebuildZoneMap(draft, z.id, { plan });
-  Object.assign(w, draft);
-  const zz = w.zones.find((x) => x.id === task.zoneId)!;
-  return `New ${r.width}×${r.height} map for ${zz.name} (${r.plan.structure}${r.plan.enclosed ? ', enclosed' : ''})${r.droppedPacks ? `; ${r.droppedPacks} monster pack${r.droppedPacks === 1 ? '' : 's'} had no room` : ''}${notes.length ? `; ${notes.join('; ')}` : ''}.`;
-}
-
 // ------------------------------------------------------------------------------------ jobs
 
 export const TaskSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('rewrite'), target: z.object({ type: z.enum(['npc', 'quest', 'zone']), id: z.string() }), guidance: z.string().max(2000).default('') }),
-  z.object({ kind: z.literal('direct'), tilesetIds: z.array(z.string()).min(1).max(8), guidance: z.string().max(2000).default('') }),
   z.object({ kind: z.literal('paint'), keys: z.array(z.string()).min(1).max(400), reroll: z.boolean().default(true) }),
-  z.object({ kind: z.literal('zone'), zoneId: z.string(), plan: LayoutPlanSchema.optional(), content: z.boolean().default(false), guidance: z.string().max(2000).default(''), floorPlan: z.boolean().default(false) }),
 ]);
 export type StudioTask = z.infer<typeof TaskSchema>;
 
-/** Keys of every image that belongs to these tilesets. */
-const tilesetKeys = (w: WorldDefinition, ids: string[]) => listArt(w).filter((a) => !a.ref && ids.some((id) => a.key.startsWith(`tex_${id}_`) || a.key.startsWith(`obj_${id}_`))).map((a) => a.key);
-
-/** Run a studio task as a world job (progress shows on the world page and in the studio). */
 /**
  * Run a studio task as a world job (progress shows on the world page and in the studio). A task resumed after a
  * restart skips its finished first stage and paints whatever is still out of date.
  */
 export async function runStudioJob(job: WorldGenJob, w: WorldDefinition, task: StudioTask): Promise<void> {
-  const first = task.kind === 'rewrite' ? { id: 'rewrite', label: 'Rewriting', detail: 'The text model revises it' } : task.kind === 'direct' ? { id: 'direct', label: 'Art direction', detail: 'Deciding how this place looks' } : task.kind === 'zone' ? { id: 'zone', label: 'Rebuilding', detail: task.content ? 'New content and a new map for this place' : 'A new map for this place' } : null;
+  const first = task.kind === 'rewrite' ? { id: 'rewrite', label: 'Rewriting', detail: 'The text model revises it' } : null;
   const resumed = job.phases.some((p) => p.status !== 'pending');
   const firstDone = !!first && job.phases.some((p) => p.id === first.id && p.status === 'done');
-  // Painting stages are added once it is known that something needs painting.
-  const painting = () => {
-    const done = job.phases.filter((p) => p.status !== 'pending');
-    job.plan([...done.map(({ status: _s, ...p }) => p), ...artPhases()]);
-    done.forEach((p, i) => Object.assign(job.phases[i]!, p));
-  };
-  if (!resumed) job.plan(first ? [first] : artPhases());
+  if (!resumed) job.plan(first ? [first, ART_PHASE] : [ART_PHASE]);
   job.step = first?.label ?? 'Painting';
   let paint = new Set<string>();
-  const staleBases = () => new Set(planAssets(w, 'full').filter((r) => !r.ref).map((r) => r.key));
-  if (firstDone) paint = staleBases();
+  if (firstDone) paint = new Set(planAssets(w, 'full').filter((r) => !r.ref).map((r) => r.key));
   else if (task.kind === 'rewrite') {
     job.phase('rewrite');
     const before = new Map(listArt(w).map((a) => [a.key, a.brief]));
@@ -290,20 +223,6 @@ export async function runStudioJob(job: WorldGenJob, w: WorldDefinition, task: S
     saveWorld(w);
     // Repaint whatever the new text changed (a person's look).
     for (const a of listArt(w)) if (!a.ref && before.get(a.key) !== a.brief) paint.add(a.key);
-  } else if (task.kind === 'direct') {
-    job.phase('direct');
-    await directTilesets(w, (m) => job.push(m), () => job.cancelled, (d, t) => job.count('direct', d, t), { only: task.tilesetIds, guidance: task.guidance });
-    saveWorld(w);
-    paint = new Set(tilesetKeys(w, task.tilesetIds));
-  } else if (task.kind === 'zone') {
-    job.phase('zone');
-    const stale = staleBases();
-    job.push(await rebuildZone(w, task, (m) => job.push(m)), 'step');
-    saveWorld(w);
-    // Paint only what the new map or new people need (new props, new portraits).
-    paint = new Set(planAssets(w, 'full').filter((r) => !r.ref && !stale.has(r.key)).map((r) => r.key));
-    // The new map needs a new painting (once its props are painted).
-    paint.add(`bd_${task.zoneId}`);
   } else {
     paint = new Set(task.keys);
     if (task.reroll && !resumed) {
@@ -312,9 +231,9 @@ export async function runStudioJob(job: WorldGenJob, w: WorldDefinition, task: S
       saveWorld(w);
     }
   }
-  if (paint.size && !genai().isProcedural('image.texture')) {
-    if (first) painting();
-    await paintWorld(job, w, 'full', undefined, paint);
+  if (paint.size) {
+    job.phase('art');
+    await paintArt(job, w, paint);
   }
   saveWorld(w);
   job.finishPhases();

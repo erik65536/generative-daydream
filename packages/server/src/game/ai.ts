@@ -4,12 +4,13 @@
  * Scores are in units of the actor's own damage-per-AP, so they work for any ruleset's number scale.
  */
 import {
-  ALLY_PASS_COST, expectedDamage, hasLineOfSight, healAmount, isBasic, potency, reachable, resolveStatusId, rx, skillAp, skillRange, statusDot,
+  NAV_CELL, Nav, SPACING, expectedDamage, pointAlong, healAmount, isBasic, potency, resolveStatusId, rx, skillAp, skillRange, statusDot,
   type DamageEffect, type ItemInstance, type SkillDef, type Vec2,
 } from '@gd/shared';
 import { Actor, CharActor } from './actors';
 import { canReviveWith, checkItemUse, isHarmful, isHostileTo, relation } from './effects';
 import type { Combat } from './combat';
+
 
 export interface AiMemory {
   turnKey: string;
@@ -109,23 +110,16 @@ function scoreSkill(c: Combat, a: Actor, skill: SkillDef, target: Actor | undefi
 
 function bestPlan(c: Combat, a: Actor, banned: Set<string>): Plan | null {
   const host = c.host;
-  const map = host.zoneMap(c.zoneId);
-  const W = map.def.width;
+  const nav = host.zoneMap(c.zoneId).nav;
   const stats = a.stats();
   const enemies = c.participants().filter((x) => x.alive() && isHostileTo(a, x));
   if (!enemies.length) return null;
   const allies = c.participants().filter((x) => relation(a, x) === 'ally' && (x.alive() || x.downed()));
-  const budgetTiles = stats.rooted ? 0 : a.movementLeft + a.ap * stats.move;
-  const reach = budgetTiles > 0
-    ? reachable(a, budgetTiles, {
-        width: W,
-        height: map.def.height,
-        passable: (x, y) => !map.solid[y * W + x] && (!c.occupied(x, y, a) || c.allyAt(a, x, y)),
-        extraCost: (x, y) => (c.allyAt(a, x, y) ? ALLY_PASS_COST : 0) + (host.surfaces(c.zoneId).some((s) => s.x === x && s.y === y && rx(host.r).surface.get(s.type)?.dot) ? 4 : 0),
-      })
-    : new Map<number, number>();
-  for (const k of [...reach.keys()]) if (c.occupied(k % W, Math.floor(k / W), a)) reach.delete(k);
-  const los = (from: Vec2, to: Vec2) => hasLineOfSight(from, to, (x, y) => map.opaque[y * W + x] === 1);
+  const budget = stats.rooted ? 0 : a.movementLeft + a.ap * stats.move;
+  let reach = budget > 0 ? c.reach(a, budget) : [];
+  // Stand points a metre apart are plenty to weigh where much is in reach.
+  if (reach.length > 400) reach = reach.filter(({ p }) => Math.floor(p.x / NAV_CELL) % 2 === 0 && Math.floor(p.y / NAV_CELL) % 2 === 0);
+  const los = (from: Vec2, to: Vec2) => nav.sees(from, to);
   let best: Plan | null = null;
   const consider = (p: Plan) => {
     if (!best || p.score > best.score) best = p;
@@ -142,7 +136,7 @@ function bestPlan(c: Combat, a: Actor, banned: Set<string>): Plan | null {
     if (skill.targeting === 'enemy') for (const e of enemies) candidates.push({ target: e });
     else if (skill.targeting === 'ally') for (const al of allies) candidates.push({ target: al });
     else if (skill.targeting === 'self') candidates.push({});
-    else for (const e of harmful ? enemies : allies) candidates.push({ point: { x: Math.round(e.x), y: Math.round(e.y) } });
+    else for (const e of harmful ? enemies : allies) candidates.push({ point: { x: e.x, y: e.y } });
     for (const cand of candidates) {
       if (banned.has(`${skill.id}:${cand.target?.id ?? `${cand.point?.x},${cand.point?.y}`}`)) continue;
       if (skill.effects.some((e) => e.kind === 'teleport') ) continue;
@@ -162,10 +156,8 @@ function bestPlan(c: Combat, a: Actor, banned: Set<string>): Plan | null {
       if (here) consider(here);
       if (skill.targeting === 'self' && !skill.radius) continue;
       let bestMove: (Plan & { cost: number }) | null = null;
-      for (const [idx, cost] of reach) {
-        const x = idx % W, y = (idx / W) | 0;
-        if (x === Math.round(a.x) && y === Math.round(a.y)) continue;
-        const from = { x, y };
+      for (const { p: from, cost } of reach) {
+        if (Math.hypot(from.x - a.x, from.y - a.y) < 0.3) continue;
         if (!(skill.targeting === 'self' && skill.radius) && tgt && d(from, tgt) > range + 0.01) continue;
         const apNeeded = cost <= a.movementLeft ? 0 : Math.ceil((cost - a.movementLeft) / Math.max(0.5, stats.move));
         const p = tryFrom(from, apNeeded);
@@ -194,19 +186,10 @@ function approachPlan(c: Combat, a: Actor): Vec2 | null {
   if (!enemies.length || a.ap <= 0 || a.stats().rooted) return null;
   const nearest = enemies.sort((p, q) => d(p, a) - d(q, a))[0]!;
   const ranged = a.stats().weapon.range > 2;
-  let path = c.pathFor(a, nearest);
-  if (!path) {
-    for (let dy = -1; dy <= 1 && !path; dy++)
-      for (let dx = -1; dx <= 1 && !path; dx++) {
-        const p = c.pathFor(a, { x: Math.round(nearest.x) + dx, y: Math.round(nearest.y) + dy });
-        if (p && p.length) path = p;
-      }
-    if (!path) return null;
-    return path[path.length - 1]!;
-  }
-  if (!path.length) return null;
-  const stopAt = ranged ? Math.max(1, path.length - 6) : path.length - 1;
-  return path[Math.max(0, Math.min(path.length - 1, stopAt - 1))]!;
+  // Up to them (or, for ranged fighters, to about six metres short); the move stops where the budget runs out.
+  const path = c.host.zoneMap(c.zoneId).nav.path(a, nearest, { ...c.walkOptions(a), stopWithin: SPACING + 0.2, allowBlockedGoal: true, maxNodes: 12000 });
+  if (!path?.length) return null;
+  return pointAlong(a, path, Nav.length(a, path) - (ranged ? 6 : 0));
 }
 
 /** Perform one AI action for the active actor. Returns the animation time in ms, 0 to retry at once, -1 when done. */

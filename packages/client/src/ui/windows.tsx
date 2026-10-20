@@ -801,7 +801,7 @@ export function CraftWindow({ onClose }: { onClose: () => void }) {
   void entities;
   const leader = c.leaderEntity();
   const atBench = !!zone && nearStation(zone.features, leader);
-  const benchName = (zone && world?.tilesets[zone.tilesetId]?.extras?.craft?.name) || 'workbench';
+  const benchName = zone?.features.find((f) => f.kind === 'craft_station')?.name ?? 'workbench';
   const tabs = r ? ([r.crafting.enabled && r.recipes.length ? 'recipes' : null, r.crafting.upgrades.enabled ? 'upgrade' : null, r.crafting.enchanting.enabled ? 'enchant' : null].filter(Boolean) as ('recipes' | 'upgrade' | 'enchant')[]) : [];
   const [tab, setTab] = useState<'recipes' | 'upgrade' | 'enchant'>(tabs[0] ?? 'recipes');
   const [itemId, setItemId] = useState<string | null>(null);
@@ -1006,7 +1006,7 @@ export function HelpWindow({ onClose }: { onClose: () => void }) {
     ['Left click ground', 'Move (in combat: move the active character)'],
     ['Left click person', 'Talk'],
     ['Left click enemy', 'Attack (walks into range first)'],
-    ['Left click object', `Use: doors, shrines, levers, signs${r?.systems.traps ? '; disarm traps you have spotted' : ''}`],
+    ['Left click object', `Use: doors, chests, signs and notes${r?.systems.traps ? '; disarm traps you have spotted' : ''}`],
     ['Left click loot / chest', 'Take everything (and nearby drops)'],
     ['Shift + click loot / chest', 'Open it and choose items'],
     ['1 – 0', 'Ready a skill, then click a target'],

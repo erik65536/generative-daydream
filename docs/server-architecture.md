@@ -33,7 +33,7 @@ queued → running ⇄ waiting → done | failed | cancelled
 - A **worker** (`jobs/worker.ts`) claims the most urgent queued job, renews its lease while working, and runs
   it. A worker that dies lets its lease lapse; the job is claimed again and resumes.
 - **Checkpoints**: a world build saves each finished step (concept, rules, atlas, creatures, story, each
-  zone's content, then the built world) under `data/worlds/<id>/draft/`. A resumed build skips them; the seed
+  zone's content, the balanced rules, and every step of every place's painting) under `data/worlds/<id>/draft/`. A resumed build skips them; the seed
   is fixed when the job is queued, so the resumed world is the same world. Painting saves every image as it is
   approved, so a resumed paint job continues with what is left. Studio tasks resume after their first stage.
 - **Safe points**: asked to restart, a worker sets `yieldRequested`; jobs stop at the next stage boundary,
@@ -69,8 +69,8 @@ painting).
   retries with backoff instead of failing. Player-facing calls give up after ~12 s (the game falls back to
   procedural behaviour); background work waits up to `waitForModelsMs` (default 30 min) and its job shows
   `waiting` with the reason, then carries on.
-- Non-transient errors (bad requests, unparseable output after retries) fail as before; world building then
-  uses procedural content for that step.
+- Non-transient errors (bad requests, unparseable output after retries) are tried again a few times; then
+  the build stops, to be resumed once the model works.
 
 ## Models and providers
 

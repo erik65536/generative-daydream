@@ -5,7 +5,7 @@ import { defaultIntent } from '../rules/defaults';
 import { buildPack } from '../rules/encounters';
 import { makeParty, runFight } from '../rules/sim';
 import { balanceRuleset } from '../rules/balance';
-import type { Genre } from '../worldgen/genres';
+import type { Genre } from '../rules/genre';
 
 const genre = (process.argv[2] ?? 'fantasy') as Genre;
 const mode = (process.argv[3] ?? 'party_manual') as 'solo' | 'party_manual' | 'party_npc';

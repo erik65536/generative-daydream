@@ -1,7 +1,7 @@
 /** Procedural icons for skills and items (used when no generated icon exists). */
 import { rx, type DamageEffect } from '@gd/shared';
 import { kindColor, rules } from '../rules';
-import { hexToRgb, rgb, shade } from './textures';
+import { hexToRgb, rgb, shade } from './color';
 
 function frame(ctx: CanvasRenderingContext2D, s: number, color: string) {
   const c = hexToRgb(color);

@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { hexToRgb, mix, rgb } from '../render/textures';
+import { hexToRgb, mix, rgb } from '../render/color';
 
 /** Slow, atmospheric animated background for menu screens. */
 export function Backdrop({ palette }: { palette?: { primary: string; secondary: string; accent: string } }) {
@@ -64,14 +64,14 @@ export function Backdrop({ palette }: { palette?: { primary: string; secondary: 
 }
 
 /**
- * A daydream's banner from its own art: the ground of its first place, with some of its people and foes standing
- * on it. Until art exists, a plain dark field in its palette.
+ * A daydream's banner from its own art: the painting of its first place, with some of its people and foes standing
+ * in front. Until art exists, a plain dark field in its palette.
  */
-export function DaydreamArt({ id, palette, art, height = 120 }: { id: string; palette: { primary: string; secondary: string; accent: string }; art?: { floor?: string; figures: string[] }; height?: number }) {
+export function DaydreamArt({ id, palette, art, height = 120 }: { id: string; palette: { primary: string; secondary: string; accent: string }; art?: { scene?: string; figures: string[] }; height?: number }) {
   const url = (f: string) => `/api/worlds/${id}/assets/${f}`;
   return (
     <div className="daydream-art" style={{ height, ['--dd-tint' as string]: palette.secondary }}>
-      {art?.floor && <div className="dd-floor" style={{ backgroundImage: `url(${url(art.floor)})` }} />}
+      {art?.scene && <div className="dd-scene" style={{ backgroundImage: `url(${url(art.scene)})` }} />}
       <div className="dd-shade" />
       <div className="dd-figures">
         {art?.figures.map((f) => <img key={f} src={url(f)} alt="" style={{ height: height * 0.86 }} />)}

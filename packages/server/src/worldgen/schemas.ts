@@ -1,9 +1,8 @@
 /**
- * Zod schemas for each world-generation LLM call. Kept small and enum-constrained so that
- * modest local models can satisfy them. Everything optional is backfilled from procedural content.
+ * Zod schemas for each world-generation LLM call.
  */
 import { z } from 'zod';
-import { MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES, TILE_ROLES, LAYOUT_STRUCTURES } from '@gd/shared';
+import { MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES } from '@gd/shared';
 
 const str = (max: number, min = 1) => z.string().trim().min(min).max(max);
 /** Lenient color: models may answer '#a1b2c3', 'a1b2c3', '#abc' or a color name; normalized later by normColor(). */
@@ -29,9 +28,6 @@ export function normColor(c: string | undefined): string | undefined {
 export function normColors(list: string[] | undefined): string[] {
   return (list ?? []).map(normColor).filter((x): x is string => !!x);
 }
-export const TILESET_STYLES = ['grass', 'stone', 'sand', 'snow', 'dirt', 'wood', 'metal', 'crystal', 'flesh', 'void'] as const;
-export const WEATHER = ['none', 'rain', 'snow', 'ash', 'spores', 'embers', 'dust', 'fireflies'] as const;
-
 
 export const ConceptSchema = z.object({
   title: str(80, 2),
@@ -49,17 +45,6 @@ export const ConceptSchema = z.object({
 });
 export type ConceptOut = z.infer<typeof ConceptSchema>;
 
-/** A zone's level design in neutral terms (every field optional; the engine fills gaps per zone kind). */
-export const LayoutPlanSchema = z.object({
-  structure: z.enum(LAYOUT_STRUCTURES).optional(),
-  enclosed: z.boolean().optional(),
-  blockers: z.object({ amount: z.enum(['sparse', 'some', 'dense']).optional(), arrangement: z.enum(['scattered', 'clusters', 'rows', 'edges']).optional() }).optional(),
-  hazard: z.enum(['none', 'pools', 'river', 'channels']).optional(),
-  structures: z.enum(['roofed', 'walled']).optional(),
-  clutter: z.enum(['sparse', 'some', 'dense']).optional(),
-});
-export type LayoutPlanOut = z.infer<typeof LayoutPlanSchema>;
-
 /** One entry per region and per place (exact counts, so a strict model cannot leave one out). */
 export function atlasSchema(slotIds: string[], regionCount?: number) {
   const regions = z.array(z.object({ index: z.coerce.number().int(), name: str(60), description: str(400) }));
@@ -70,8 +55,7 @@ export function atlasSchema(slotIds: string[], regionCount?: number) {
         slotId: z.enum(slotIds as [string, ...string[]]),
         name: str(60),
         description: str(500, 10),
-        biome: z.enum(TILESET_STYLES),
-        layout: LayoutPlanSchema.optional(),
+        indoor: z.boolean().describe('Inside a structure (under a roof or ceiling), not under the open sky'),
         lore: str(600).optional(),
       }),
     ).min(slotIds.length).max(slotIds.length),
@@ -166,18 +150,6 @@ export const FamiliesSchema = z.object({
 });
 export type FamiliesOut = z.infer<typeof FamiliesSchema>;
 
-const roleDef = z.object({ name: str(40), colors: z.array(hex).min(1).max(3), prompt: str(200) });
-export const RoleDefSchema = roleDef;
-export const TilesetSchema = z.object({
-  name: str(60),
-  style: z.enum(TILESET_STYLES),
-  ambient: z.coerce.number().min(0).max(1).optional(),
-  weather: z.enum(WEATHER).optional(),
-  lightColor: hex.optional(),
-  roles: z.object(Object.fromEntries(TILE_ROLES.map((r) => [r, roleDef.optional()])) as Record<(typeof TILE_ROLES)[number], z.ZodOptional<typeof roleDef>>),
-});
-export type TilesetOut = z.infer<typeof TilesetSchema>;
-
 const npcSchema = z.object({
   name: str(60),
   title: str(80),
@@ -208,16 +180,11 @@ export const TownContentSchema = z.object({
   npcs: z.array(npcSchema).min(1),
   buildings: z.array(z.object({ name: str(60), purpose: str(80) })).max(12),
   sideQuests: z.array(z.object({ title: str(80), summary: str(400), giverName: z.string(), objectives: z.array(sideObjective).min(1).max(4), rewardItem: z.string().optional(), completionText: str(400).optional() })),
-  tileset: TilesetSchema,
-  interiorTileset: TilesetSchema,
   signText: str(300).optional(),
 });
 export type TownContentOut = z.infer<typeof TownContentSchema>;
 
 export const AreaContentSchema = z.object({
-  tileset: TilesetSchema,
   loreNotes: z.array(z.object({ title: str(80), text: str(900, 20) })).max(3),
-  shrineName: str(60).optional(),
-  signText: str(300).optional(),
 });
 export type AreaContentOut = z.infer<typeof AreaContentSchema>;

@@ -1,21 +1,22 @@
 /**
- * Turn-based combat encounter on the zone grid. The core is synchronous: every action applies immediately
+ * Turn-based combat encounter on a place's ground (metres; movement budgets are metres too). The core is synchronous: every action applies immediately
  * and returns how long its animation takes; pacing goes through `host.after`, so the live game paces with
  * timers while the balance simulator runs the very same code instantly.
  */
 import {
-  ALLY_PASS_COST, findPath, hasLineOfSight, hashOf, pathLength, rx, skillAp, skillRange,
-  type CombatView, type CombatantView, type ItemInstance, type Ruleset, type Vec2,
+  Nav, SPACING, SQUEEZE, cutPath, hashOf, rx, skillAp, skillRange, walkCost,
+  type CombatView, type CombatantView, type ItemInstance, type NavPathOptions, type Ruleset, type Vec2,
 } from '@gd/shared';
 import { Actor, CharActor, MonsterActor, NpcActor, WALK_SPEED } from './actors';
 import { applySurface, checkItemUse, checkSkill, executeSkill, isHostileTo, surfaceAt, tickStatuses, useConsumable, type EffectHost } from './effects';
 import { aiStep, type AiMemory } from './ai';
+import { bodyAt, isFree, walkAmong } from './space';
 
 export interface CombatHost extends EffectHost {
   broadcastCombat(c: Combat): void;
   combatEnded(c: Combat, victory: boolean): void;
-  /** Trap check along a path; returns index where movement stopped (or -1). */
-  checkTrapsAlong(a: Actor, path: Vec2[]): number;
+  /** Trap check along a walk: the part walked before a trap stopped it, or null. */
+  checkTrapsAlong(a: Actor, path: Vec2[]): Vec2[] | null;
   commandCompanions(userId: string): boolean;
   sendError(userId: string, msg: string): void;
   playersInCombat(c: Combat): string[];
@@ -32,11 +33,11 @@ interface TurnModel {
   enter(a: Actor): void;
   /** Resources at the start of each of the actor's turns. */
   beginTurn(a: Actor, first: boolean): void;
-  /** Tiles the actor can still move this turn. */
+  /** Metres the actor can still move this turn. */
   moveBudget(a: Actor): number;
-  /** Tiles the actor can move and still afford an action costing `ap`. */
+  /** Metres the actor can move and still afford an action costing `ap`. */
   moveBudgetReserving(a: Actor, ap: number): number;
-  /** Pay for moving `len` tiles (already checked against the budget). */
+  /** Pay for moving `len` metres (already checked against the budget). */
   payMove(a: Actor, len: number): void;
   canAfford(a: Actor, ap: number): boolean;
   view(a: Actor): { ap: number; maxAp: number; movementLeft: number };
@@ -125,8 +126,6 @@ export class Combat {
     if (this.participants().includes(a)) return;
     a.combatId = this.id;
     a.motion = null;
-    a.x = Math.round(a.x);
-    a.y = Math.round(a.y);
     this.model.enter(a);
     a.dirty = true;
     this.initiative.set(a.id, a.stats().initiative + this.host.rng.int(0, 6) + initiativeBonus);
@@ -286,48 +285,64 @@ export class Combat {
 
   // ------------------------------------------------------------------ space
 
-  /** The actor standing on a tile (alive, or downed but not dead), if any. */
-  occupant(x: number, y: number, ignore?: Actor): Actor | undefined {
-    return this.host.actorsInZone(this.zoneId).find((a) => a !== ignore && (a.alive() || a.downed()) && Math.round(a.x) === x && Math.round(a.y) === y);
+  private people(): Actor[] {
+    return this.host.actorsInZone(this.zoneId);
   }
 
-  occupied(x: number, y: number, ignore?: Actor): boolean {
-    return !!this.occupant(x, y, ignore);
+  private nav(): Nav {
+    return this.host.zoneMap(this.zoneId).nav;
   }
 
-  /** An ally of `a` stands here: passable at a movement penalty, but not a place to stop. */
-  allyAt(a: Actor, x: number, y: number): boolean {
-    const o = this.occupant(x, y, a);
-    return !!o && o.team() === a.team();
+  /** Someone standing at p (alive, or downed but not dead), if any. */
+  occupant(p: Vec2, ignore?: Actor): Actor | undefined {
+    return bodyAt(this.people(), p, ignore);
   }
 
-  private hazardous(x: number, y: number): boolean {
-    return this.host.surfaces(this.zoneId).some((s) => s.x === x && s.y === y && !!rx(this.host.r).surface.get(s.type)?.dot);
+  /** Somewhere `a` can stop. */
+  standable(a: Actor, p: Vec2): boolean {
+    return isFree(this.nav(), this.people(), p, a);
+  }
+
+  /** Extra cost per metre of ground at p: surfaces that slow you down (and, when planning a walk, ones that hurt). */
+  private groundCost(planning: boolean): (p: Vec2) => number {
+    const ix = rx(this.host.r);
+    return (p) => {
+      const s = surfaceAt(this.host, this.zoneId, p.x, p.y);
+      const d = s && ix.surface.get(s.type);
+      return d ? (d.moveCost ?? 0) + (planning && d.dot ? 3 : 0) : 0;
+    };
+  }
+
+  /** What walking costs `a` per metre at p beyond the metre itself: slowing surfaces and allies squeezed past. */
+  private extraFor(a: Actor): (p: Vec2) => number {
+    const ground = this.groundCost(false);
+    const allies = this.people().filter((o) => o !== a && o.team() === a.team() && (o.alive() || o.downed()));
+    return (p) => ground(p) + (allies.some((o) => Math.hypot(o.x - p.x, o.y - p.y) < SPACING - 0.01) ? SQUEEZE : 0);
+  }
+
+  walkOptions(a: Actor): NavPathOptions {
+    return walkAmong(this.nav(), a, this.people(), (o) => o.team() === a.team(), this.groundCost(true));
   }
 
   pathFor(a: Actor, to: Vec2): Vec2[] | null {
-    const map = this.host.zoneMap(this.zoneId);
-    const W = map.def.width;
-    if (this.occupied(Math.round(to.x), Math.round(to.y), a)) return null;
-    return findPath(a, to, {
-      width: W,
-      height: map.def.height,
-      passable: (x, y) => !map.solid[y * W + x] && (!this.occupied(x, y, a) || this.allyAt(a, x, y)),
-      extraCost: (x, y) => (this.allyAt(a, x, y) ? ALLY_PASS_COST : 0) + (this.hazardous(x, y) ? 3 : 0),
-      maxNodes: 6000,
-    });
+    if (this.occupant(to, a)) return null;
+    return this.nav().path(a, to, { ...this.walkOptions(a), maxNodes: 12000 });
   }
 
-  /** Movement a path uses: its length plus the penalty for each ally squeezed past and surface move costs. */
+  /** Movement a walk uses: its length plus squeezing past allies and slowing surfaces. */
   pathCost(a: Actor, path: Vec2[]): number {
-    const ix = rx(this.host.r);
-    let extra = 0;
-    for (const p of path) {
-      if (this.allyAt(a, p.x, p.y)) extra += ALLY_PASS_COST;
-      const s = surfaceAt(this.host, this.zoneId, p.x, p.y);
-      if (s) extra += ix.surface.get(s.type)?.moveCost ?? 0;
+    return walkCost(a, path, this.extraFor(a));
+  }
+
+  /** Every free spot `a` can reach within `budget` metres (half-metre steps), with about what it costs. */
+  reach(a: Actor, budget: number): { p: Vec2; cost: number }[] {
+    const nav = this.nav();
+    const out: { p: Vec2; cost: number }[] = [];
+    for (const [i, cost] of nav.reach(a, budget, this.walkOptions(a))) {
+      const p = nav.centre(i % nav.cols, Math.floor(i / nav.cols));
+      if (!this.occupant(p, a)) out.push({ p, cost });
     }
-    return pathLength(a, path) + extra;
+    return out;
   }
 
   // ------------------------------------------------------------------ actions
@@ -336,33 +351,14 @@ export class Combat {
   move(a: Actor, to: Vec2): { error?: string; ms: number } {
     if (this.active !== a) return { error: 'Not your turn.', ms: 0 };
     if (a.stats().rooted) return { error: 'You are rooted in place.', ms: 0 };
-    let path = this.pathFor(a, to);
-    if (!path || !path.length) return { error: 'Cannot reach that spot.', ms: 0 };
-    const budget = this.model.moveBudget(a);
-    let len = 0;
-    let cut = path.length;
-    let px = a.x, py = a.y;
-    for (let i = 0; i < path.length; i++) {
-      const step = Math.hypot(path[i]!.x - px, path[i]!.y - py) + (this.allyAt(a, path[i]!.x, path[i]!.y) ? ALLY_PASS_COST : 0);
-      if (len + step > budget + 1e-6) {
-        cut = i;
-        break;
-      }
-      len += step;
-      px = path[i]!.x;
-      py = path[i]!.y;
-    }
-    path = path.slice(0, cut);
-    // Never stop on an ally's tile.
-    while (path.length && this.occupied(path[path.length - 1]!.x, path[path.length - 1]!.y, a)) path.pop();
+    const full = this.pathFor(a, to);
+    if (!full || !full.length) return { error: 'Cannot reach that spot.', ms: 0 };
+    // As far as the budget goes, stopping exactly there (or just short, where nobody stands).
+    const extra = this.extraFor(a);
+    let path = cutPath(a, full, this.model.moveBudget(a), extra, (p) => this.standable(a, p));
     if (!path.length) return { error: `Not enough ${this.host.r.terminology.actionPoints} to move.`, ms: 0 };
-    const trapIdx = this.host.checkTrapsAlong(a, path);
-    if (trapIdx >= 0) {
-      path = path.slice(0, trapIdx + 1);
-      while (path.length > 1 && this.occupied(path[path.length - 1]!.x, path[path.length - 1]!.y, a)) path.pop();
-    }
-    len = this.pathCost(a, path);
-    this.model.payMove(a, Math.min(len, this.model.moveBudget(a)));
+    path = this.host.checkTrapsAlong(a, path) ?? path;
+    this.model.payMove(a, Math.min(walkCost(a, path, extra), this.model.moveBudget(a)));
     const from = { x: a.x, y: a.y };
     const last = path[path.length - 1]!;
     a.motion = { path, from, speed: WALK_SPEED, t0: this.host.now() };
@@ -374,7 +370,7 @@ export class Combat {
     const surf = surfaceAt(this.host, this.zoneId, a.x, a.y);
     if (surf) applySurface(this.host, a, surf);
     this.host.broadcastCombat(this);
-    const ms = (pathLength(from, path) / WALK_SPEED) * 1000 + 80;
+    const ms = (Nav.length(from, path) / WALK_SPEED) * 1000 + 80;
     this.host.after(this.delay(ms), () => {
       if (a.motion?.t0 !== undefined && a.motion.path === path) a.motion = null;
     });
@@ -418,22 +414,11 @@ export class Combat {
     const budget = this.model.moveBudgetReserving(a, cost);
     if (budget < 0) return `Not enough ${this.host.r.terminology.actionPoints}.`;
     const range = skillRange(skill, stats);
-    const map = this.host.zoneMap(this.zoneId);
-    const W = map.def.width, H = map.def.height;
-    const sees = (p: Vec2) => range <= 2 || hasLineOfSight(p, target, (x, y) => map.opaque[y * W + x] === 1);
-    const R = Math.ceil(range);
-    const spots: Vec2[] = [];
-    for (let dy = -R; dy <= R; dy++)
-      for (let dx = -R; dx <= R; dx++) {
-        const p = { x: Math.round(target.x) + dx, y: Math.round(target.y) + dy };
-        if (p.x < 0 || p.y < 0 || p.x >= W || p.y >= H || map.solid[p.y * W + p.x]) continue;
-        if (Math.hypot(p.x - target.x, p.y - target.y) > range - 0.05 || this.occupied(p.x, p.y, a)) continue;
-        if (Math.hypot(p.x - a.x, p.y - a.y) > budget + 0.5) continue;
-        if (sees(p)) spots.push(p);
-      }
-    spots.sort((p, q) => Math.hypot(p.x - a.x, p.y - a.y) - Math.hypot(q.x - a.x, q.y - a.y));
+    const nav = this.nav();
+    const inRange = (p: Vec2) => Math.hypot(p.x - target.x, p.y - target.y) <= range - 0.05 && (range <= 2 || nav.sees(p, target));
+    const spots = this.reach(a, budget).filter((s) => inRange(s.p)).sort((p, q) => p.cost - q.cost);
     let best: { p: Vec2; cost: number } | null = null;
-    for (const p of spots.slice(0, 16)) {
+    for (const { p } of spots.slice(0, 8)) {
       const path = this.pathFor(a, p);
       if (!path?.length) continue;
       const c = this.pathCost(a, path);

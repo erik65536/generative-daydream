@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { GROUND, OBJ, type AssetRecord, type NpcDef, type TileRole, type TilesetDef, type ZoneDef, type ZoneLayoutPlan } from '@gd/shared';
+import { groundToPicture, type AssetRecord, type NpcDef, type ZoneDef } from '@gd/shared';
 import { api, assetUrl, jobActive, type ArtEntry, type JobStatus, type Me, type StudioEdit, type StudioTask, type StudioView } from '../api';
 import { Backdrop } from '../ui/Backdrop';
 import { TopBar } from './Lobby';
@@ -297,35 +297,23 @@ function Places({ ctx, sel }: { ctx: Ctx; sel?: string }) {
   );
 }
 
-const LAYOUT_WORDS = (z: ZoneDef) => {
-  const p = z.layout;
-  if (!p) return z.indoor ? 'enclosed' : 'open sky';
-  return [p.structure, p.enclosed ? 'enclosed' : 'open sky', `${p.blockers.amount} blockers in ${p.blockers.arrangement}`, p.hazard !== 'none' ? `hazard: ${p.hazard}` : '', z.kind === 'town' ? `${p.structures} structures` : '', `${p.clutter} clutter`].filter(Boolean).join(' · ');
-};
-
 function ZoneDetail({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
   const { w } = ctx;
-  const ts = w.tilesets[z.tilesetId]!;
   const people = w.npcs.filter((n) => n.zoneId === z.id);
   const quests = w.quests.filter((q) => q.zoneId === z.id || q.objectives.some((o) => o.zoneId === z.id));
-  const [look, setLook] = useState('');
-  // A town's look includes its interiors' tileset.
-  const tilesetIds = [z.tilesetId, ...w.zones.filter((i) => i.parentZoneId === z.id).map((i) => i.tilesetId)].filter((x, i, a) => a.indexOf(x) === i);
-  const zoneArt = () => {
-    const ids = tilesetIds;
-    const keys = [...ctx.art.values()].filter((a) => !a.ref && ids.some((t) => a.key.startsWith(`tex_${t}_`) || a.key.startsWith(`obj_${t}_`))).map((a) => a.key);
+  const peopleArt = () => {
     const here = new Set([z.id, ...w.zones.filter((i) => i.parentZoneId === z.id).map((i) => i.id)]);
-    return [...keys, ...w.npcs.filter((n) => here.has(n.zoneId)).map((n) => `spr_npc_${n.id}`).filter((k) => ctx.art.has(k))];
+    return w.npcs.filter((n) => here.has(n.zoneId)).map((n) => `spr_npc_${n.id}`).filter((k) => ctx.art.has(k));
   };
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="row wrap" style={{ gap: 6 }}>
         <span className="badge">{z.kind}</span>
         <span className="badge gray">level {z.levelRange.join('–')}</span>
-        <span className="badge gray">{z.width}×{z.height}</span>
-        <span className="tiny dim">{LAYOUT_WORDS(z)}</span>
+        {z.painting && <span className="badge gray">{Math.round(z.width)} × {Math.round(z.height)} m</span>}
+        {z.indoor && <span className="badge gray">indoors</span>}
       </div>
-      <ZoneMap w={w} z={z} />
+      <PlacePainting w={w} z={z} />
       <div className="studio-cols">
         <div className="col" style={{ gap: 10 }}>
           <EditField label="Name" value={z.name} disabled={ctx.busy} onSave={(v) => ctx.edit({ type: 'zone', id: z.id, name: v })} />
@@ -346,331 +334,80 @@ function ZoneDetail({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
           )}
         </div>
         <div className="col" style={{ gap: 10 }}>
-          <div className="studio-ai col" style={{ gap: 6 }}>
-            <div className="label">This place's look</div>
-            <textarea className="input" rows={2} placeholder='Art direction (optional), e.g. "a flooded parking garage: oily water, stained concrete, abandoned cars"' value={look} onChange={(e) => setLook(e.target.value)} />
-            <div className="row wrap" style={{ gap: 6 }}>
-              <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.task({ kind: 'direct', tilesetIds, guidance: look }, 'Redesign every element of this place (ground, walls, props) and repaint them? This takes a while.').then(() => setLook(''))}>Redesign the look</button>
-              <button className="btn sm ghost" disabled={ctx.busy} onClick={() => ctx.task({ kind: 'paint', keys: zoneArt(), reroll: true }, 'Repaint every image of this place (surfaces, props and its people) with new seeds?')}>Repaint all its art</button>
-              {z.blueprint && (
-                <button className="btn sm ghost" disabled={ctx.busy} title={z.backdrop ? 'Paint the whole place again as one illustration (new seed, same art direction)' : 'Paint the whole place as one illustration'} onClick={() => ctx.task({ kind: 'paint', keys: [`bd_${z.id}`], reroll: false }, `${z.backdrop ? 'Repaint' : 'Paint'} ${z.name} as one illustration? This takes several minutes.`)}>
-                  {z.backdrop ? 'Repaint its painting' : 'Paint this place'}
-                </button>
-              )}
+          {z.design && (
+            <div className="col" style={{ gap: 6 }}>
+              <div className="label">How it was painted</div>
+              <div className="small">{z.design.layout}</div>
+              <div className="small dim">{z.design.style}</div>
             </div>
-          </div>
-          {z.kind !== 'interior' && <Rebuild ctx={ctx} z={z} />}
-          <Elements ctx={ctx} ts={ts} />
+          )}
+          {peopleArt().length > 0 && (
+            <button className="btn sm ghost" disabled={ctx.busy} onClick={() => ctx.task({ kind: 'paint', keys: peopleArt(), reroll: true }, 'Repaint everyone who lives here with new seeds?')}>Repaint its people</button>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-const STRUCTURES_FOR: Record<string, ZoneLayoutPlan['structure'][]> = { town: ['hub', 'grid'], wilderness: ['open', 'grid'], dungeon: ['rooms', 'caves'] };
-const STRUCTURE_WORDS: Record<ZoneLayoutPlan['structure'], string> = { open: 'open: free-form ground', grid: 'grid: blocks between straight lanes', hub: 'hub: a centre with structures around it', rooms: 'rooms: chambers joined by corridors', caves: 'caves: irregular hollows' };
+const MARK: Record<string, string> = { door: '#e0b060', exit: '#7fd0ff', chest: '#ffd24a', trap: '#ff6a5a', sign: '#e8dcc0', lore: '#c0c0ff', bed: '#c0e0ff', craft_station: '#ffb070', waypoint: '#7fffd4', object: '#ffe28c' };
 
-/** A select over a fixed set of words. */
-function Pick<T extends string>({ label, value, options, onChange, words }: { label: string; value: T; options: readonly T[]; onChange: (v: T) => void; words?: Record<string, string> }) {
-  return (
-    <div className="field">
-      <label>{label}</label>
-      <select className="input" value={value} onChange={(e) => onChange(e.target.value as T)}>
-        {options.map((o) => <option key={o} value={o}>{words?.[o] ?? o}</option>)}
-      </select>
-    </div>
-  );
-}
-
-/** Rebuild the place's map from its (edited) level design, optionally with new content from the AI. */
-function Rebuild({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
-  const structures = STRUCTURES_FOR[z.kind] ?? ['open'];
-  const initial: ZoneLayoutPlan = z.layout ?? { structure: structures[0]!, enclosed: z.kind === 'dungeon' || !!z.indoor, blockers: { amount: 'some', arrangement: 'clusters' }, hazard: 'none', structures: 'roofed', clutter: 'some' };
-  const [plan, setPlan] = useState<ZoneLayoutPlan>(initial);
-  const [content, setContent] = useState(false);
-  const [floorPlan, setFloorPlan] = useState(!!z.blueprint);
-  const [g, setG] = useState('');
-  useEffect(() => setPlan(initial), [JSON.stringify(z.layout)]);
-  const edited = JSON.stringify(plan) !== JSON.stringify(initial);
-  const set = (p: Partial<ZoneLayoutPlan>) => setPlan({ ...plan, ...p });
-  const what = z.kind === 'town' ? 'new residents, buildings and side quests' : 'new lore notes and shrine';
-  const run = () => {
-    const intro = `Build a new map for ${z.name}${content ? ` with ${what} from the AI` : ''}. Monsters, chests and people are placed again; its exits still lead to the same places.`;
-    ctx.task({ kind: 'zone', zoneId: z.id, plan: edited && !floorPlan ? plan : undefined, content, guidance: g, floorPlan }, `${intro}${floorPlan ? ' The AI designs a floor plan (areas with a purpose, furnished with their own props, which are then painted).' : ''}\n\nReveries standing in this place may find themselves somewhere odd. Continue?`).then(() => setG(''));
-  };
-  return (
-    <div className="studio-ai col" style={{ gap: 6 }}>
-      <div className="label">Rebuild this place</div>
-      {z.blueprint && <div className="hint">Built from a floor plan: {z.blueprint.summary}</div>}
-      <label className="row small" style={{ gap: 6 }}>
-        <input type="checkbox" checked={floorPlan} onChange={(e) => setFloorPlan(e.target.checked)} /> Design a new floor plan (rooms and areas with a purpose, furnished with their own props)
-      </label>
-      {!floorPlan && <div className="studio-plan">
-        <Pick label="Structure" value={plan.structure} options={structures} words={STRUCTURE_WORDS} onChange={(v) => set({ structure: v })} />
-        <Pick label="Blockers" value={plan.blockers.amount} options={['sparse', 'some', 'dense'] as const} onChange={(v) => set({ blockers: { ...plan.blockers, amount: v } })} />
-        <Pick label="Arranged" value={plan.blockers.arrangement} options={['scattered', 'clusters', 'rows', 'edges'] as const} onChange={(v) => set({ blockers: { ...plan.blockers, arrangement: v } })} />
-        <Pick label="Hazard" value={plan.hazard} options={['none', 'pools', 'river', 'channels'] as const} onChange={(v) => set({ hazard: v })} />
-        <Pick label="Clutter" value={plan.clutter} options={['sparse', 'some', 'dense'] as const} onChange={(v) => set({ clutter: v })} />
-        {z.kind === 'town' && <Pick label="Structures" value={plan.structures} options={['roofed', 'walled'] as const} words={{ roofed: 'roofed buildings', walled: 'walled rooms' }} onChange={(v) => set({ structures: v })} />}
-      </div>}
-      {z.kind !== 'dungeon' && (
-        <label className="row small" style={{ gap: 6 }}>
-          <input type="checkbox" checked={plan.enclosed} onChange={(e) => set({ enclosed: e.target.checked })} /> Enclosed (under a roof or ceiling: no sky or weather)
-        </label>
-      )}
-      <label className="row small" style={{ gap: 6 }}>
-        <input type="checkbox" checked={content} onChange={(e) => setContent(e.target.checked)} /> Also {what}
-      </label>
-      <textarea className="input" rows={2} placeholder={`Direction (optional), e.g. ${z.kind === 'town' ? '"a night market on stilts over a canal, run by smugglers"' : '"a drowned forest crossed by a slow river"'}`} value={g} onChange={(e) => setG(e.target.value)} />
-      <div className="row wrap" style={{ gap: 6 }}>
-        <button className="btn sm" disabled={ctx.busy} onClick={run}>Rebuild the map{content ? ' and content' : ''}</button>
-        {edited && <button className="btn sm ghost" onClick={() => setPlan(initial)}>Reset plan</button>}
-      </div>
-      <div className="hint">
-        {edited ? 'Your edited plan is used.' : g.trim() ? 'The plan is unchanged, so the AI chooses the level design from your direction.' : 'Same plan, new seed.'}
-        {content ? ' The direction also guides the new content.' : ''} Reveries standing in this place may land in odd spots.
-      </div>
-    </div>
-  );
-}
-
-const ELEMENT_ROLES: TileRole[] = ['floor', 'floorAlt', 'path', 'water', 'wall', 'tree', 'rock', 'plant', 'light', 'furniture', 'rubble', 'pillar', 'chest', 'shrine', 'sign', 'lever', 'bed'];
-const SURFACES = new Set<string>(['floor', 'floorAlt', 'path', 'water', 'wall', 'roof']);
-
-/** The fixed elements of a tileset as this place interprets them, each with its art. */
-function Elements({ ctx, ts }: { ctx: Ctx; ts: TilesetDef }) {
-  const [edit, setEdit] = useState<string | null>(null);
-  const rows: { role: string; def: { name: string; prompt: string; colors: string[] } }[] = [
-    ...ELEMENT_ROLES.map((r) => ({ role: r as string, def: ts.roles[r] })),
-    ...(ts.extras?.roof ? [{ role: 'roof', def: ts.extras.roof }] : []),
-    ...(ts.extras?.craft ? [{ role: 'craft', def: ts.extras.craft }] : []),
-  ];
-  return (
-    <div className="col" style={{ gap: 4 }}>
-      <div className="label">Elements of {ts.name}</div>
-      {rows.map(({ role, def }) => {
-        const key = `${SURFACES.has(role) ? 'tex' : 'obj'}_${ts.id}_${role}`;
-        const entry = ctx.art.get(key);
-        const url = imageOf(ctx.w, key);
-        return (
-          <div key={role} className="element-row">
-            <div className={`art-thumb mini ${SURFACES.has(role) ? 'texture' : 'object'}`} style={{ background: url ? undefined : def.colors[0] }}>{url && <img src={url} alt="" />}</div>
-            <div className="grow" style={{ minWidth: 0 }}>
-              <div className="row" style={{ gap: 6 }}>
-                <span className="tiny dim" style={{ width: 62 }}>{role}</span>
-                <b className="small">{def.name}</b>
-                {entry?.stale && <span className="badge">will repaint</span>}
-                {!entry && <span className="tiny dim">(not used here)</span>}
-                <div className="spacer" />
-                <button className="btn ghost sm" onClick={() => setEdit(edit === role ? null : role)}>{edit === role ? 'Close' : 'Edit'}</button>
-              </div>
-              {edit === role ? (
-                <div className="col" style={{ gap: 6, marginTop: 6 }}>
-                  <EditField label="Name" value={def.name} disabled={ctx.busy} onSave={(v) => ctx.edit({ type: 'role', tilesetId: ts.id, role, name: v })} />
-                  <EditField label="Description" value={def.prompt} rows={2} disabled={ctx.busy} onSave={(v) => ctx.edit({ type: 'role', tilesetId: ts.id, role, prompt: v })} />
-                  {entry && <ArtCard ctx={ctx} k={key} compact />}
-                </div>
-              ) : (
-                <div className="tiny dim clamp1">{def.prompt}</div>
-              )}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-// ------------------------------------------------------------------------------------ zone map
-
-const ATLAS_GROUND: Record<number, string> = { [GROUND.void]: '#0b0a10', [GROUND.floor]: '#8b8270', [GROUND.floorAlt]: '#6f7d5e', [GROUND.path]: '#b9a77e', [GROUND.water]: '#2f5f8f', [GROUND.wall]: '#2c2833' };
-const GROUND_ROLE: Record<number, TileRole> = { [GROUND.floor]: 'floor', [GROUND.floorAlt]: 'floorAlt', [GROUND.path]: 'path', [GROUND.water]: 'water', [GROUND.wall]: 'wall' };
-const OBJ_ROLE: Record<number, TileRole> = { [OBJ.tree]: 'tree', [OBJ.rock]: 'rock', [OBJ.plant]: 'plant', [OBJ.light]: 'light', [OBJ.furniture]: 'furniture', [OBJ.rubble]: 'rubble', [OBJ.pillar]: 'pillar' };
-const ATLAS_OBJ: Record<string, string> = { tree: '#2f6b3a', rock: '#7b7b85', plant: '#6fae4f', light: '#f0d36a', furniture: '#a0703c', rubble: '#5d5148', pillar: '#c8c0b0' };
-const FEATURE_GLYPH: Record<string, [string, string]> = { door: ['▮', '#e0b060'], exit: ['➜', '#7fd0ff'], chest: ['▣', '#ffd24a'], trap: ['✕', '#ff6a5a'], shrine: ['✚', '#9fe8a0'], sign: ['⌂', '#e8dcc0'], lever: ['⚲', '#d0a0ff'], gate: ['▤', '#c0a080'], lore: ['✎', '#c0c0ff'], bed: ['▭', '#c0e0ff'], craft_station: ['⚒', '#ffb070'], waypoint: ['◈', '#7fffd4'] };
-const FEATURE_ART: Record<string, string> = { chest: 'chest', shrine: 'shrine', sign: 'sign', lever: 'lever', bed: 'bed', craft_station: 'craft' };
-
-const b64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
-
-/** Load images by URL; re-renders as they arrive. */
-function useImages(urls: string[]): Map<string, HTMLImageElement> {
-  const [, bump] = useState(0);
-  const cache = useRef(new Map<string, HTMLImageElement>());
-  useEffect(() => {
-    for (const u of urls) {
-      if (cache.current.has(u)) continue;
-      const img = new Image();
-      img.onload = () => bump((x) => x + 1);
-      img.src = u;
-      cache.current.set(u, img);
-    }
-  }, [urls.join('|')]);
-  return new Map([...cache.current].filter(([, i]) => i.complete && i.naturalWidth));
-}
-
-/** Top-down map of a zone: the bare layout (atlas) or with its painted art. */
-function ZoneMap({ w, z }: { w: World; z: ZoneDef }) {
-  const [mode, setMode] = useState<'atlas' | 'art'>('art');
-  const [cell, setCell] = useState(12);
-  const [hover, setHover] = useState('');
+/** The place's painting, with its people, creatures and features marked where they stand. */
+function PlacePainting({ w, z }: { w: World; z: ZoneDef }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const ts = w.tilesets[z.tilesetId]!;
-  const ground = useMemo(() => b64(z.ground), [z.ground]);
-  const objects = useMemo(() => b64(z.objects), [z.objects]);
-  const npcs = w.npcs.filter((n) => n.zoneId === z.id);
-  const roleKey = (r: string) => `${SURFACES.has(r) ? 'tex' : 'obj'}_${ts.id}_${r}`;
-  const urls = useMemo(() => {
-    const keys = [...Object.values(GROUND_ROLE), ...Object.values(OBJ_ROLE), ...Object.values(FEATURE_ART)].map(roleKey);
-    keys.push(...npcs.map((n) => `spr_npc_${n.id}`), ...z.spawns.map((s) => (s.bossId ? `spr_boss_${s.bossId}` : `spr_mon_${s.familyId}_${s.archetype}`)));
-    return keys.map((k) => imageOf(w, k)).filter((u): u is string => !!u);
-  }, [w, z]);
-  const imgs = useImages(urls);
-  const img = (key: string) => {
-    const u = imageOf(w, key);
-    return u ? imgs.get(u) : undefined;
-  };
-
+  const [hover, setHover] = useState('');
+  const url = z.painting ? imageOf(w, z.painting.image) : undefined;
+  const [img, setImg] = useState<HTMLImageElement | null>(null);
   useEffect(() => {
-    const c = canvas.current;
-    if (!c) return;
-    const W = z.width, H = z.height, s = cell;
-    c.width = W * s;
-    c.height = H * s;
-    const g = c.getContext('2d')!;
-    g.imageSmoothingQuality = 'high';
+    setImg(null);
+    if (!url) return;
+    const im = new Image();
+    im.onload = () => setImg(im);
+    im.src = url;
+  }, [url]);
+  const marks = useMemo(() => {
+    if (!z.painting) return [];
+    const at = (x: number, y: number) => groundToPicture(x, y, z.painting!.ox, z.painting!.oy);
+    return [
+      ...z.features.map((f) => ({ ...at(f.x, f.y), color: MARK[f.kind] ?? '#fff', label: `${f.kind}: ${f.name ?? ''}` })),
+      ...w.npcs.filter((n) => n.zoneId === z.id).map((n) => ({ ...at(n.x, n.y), color: '#ffffff', label: `${n.name}, ${n.title}` })),
+      ...z.spawns.map((s) => ({ ...at(s.x, s.y), color: s.bossId ? '#ff3a2a' : '#e06a5a', label: `${w.families.find((f) => f.id === s.familyId)?.name ?? 'creature'} (${s.archetype}, level ${s.level})` })),
+    ];
+  }, [w, z]);
+  const width = 880;
+  const k = z.painting ? width / z.painting.width : 1;
+  useEffect(() => {
+    const cv = canvas.current;
+    if (!cv || !z.painting) return;
+    cv.width = width;
+    cv.height = Math.round(z.painting.height * k);
+    const g = cv.getContext('2d')!;
     g.fillStyle = '#0b0a10';
-    g.fillRect(0, 0, c.width, c.height);
-    // Ground: flat colours, or each surface's texture repeating every four tiles.
-    const patterns = new Map<number, CanvasPattern | null>();
-    const patternFor = (code: number) => {
-      if (patterns.has(code)) return patterns.get(code)!;
-      const role = GROUND_ROLE[code];
-      const im = role ? img(roleKey(role)) : undefined;
-      let p: CanvasPattern | null = null;
-      if (im && mode === 'art') {
-        p = g.createPattern(im, 'repeat');
-        p?.setTransform(new DOMMatrix().scale((s * 4) / im.naturalWidth));
-      }
-      patterns.set(code, p);
-      return p;
-    };
-    for (let y = 0; y < H; y++)
-      for (let x = 0; x < W; x++) {
-        const code = ground[y * W + x]!;
-        const p = patternFor(code);
-        g.fillStyle = p ?? (mode === 'atlas' ? ATLAS_GROUND[code] ?? '#000' : ts.roles[GROUND_ROLE[code] ?? 'floor']?.colors[0] ?? ATLAS_GROUND[code] ?? '#000');
-        g.fillRect(x * s, y * s, s, s);
-        if (code === GROUND.wall && mode === 'art') {
-          g.fillStyle = 'rgba(0,0,0,.25)';
-          g.fillRect(x * s, y * s, s, s);
-        }
-      }
-    // Things standing on the map, back to front.
-    type Thing = { x: number; y: number; draw: () => void };
-    const things: Thing[] = [];
-    const sprite = (im: HTMLImageElement, x: number, y: number, h: number) => {
-      const ih = h * s, iw = (im.naturalWidth / im.naturalHeight) * ih;
-      g.drawImage(im, x * s + s / 2 - iw / 2, (y + 1) * s - ih, iw, ih);
-    };
-    for (let y = 0; y < H; y++)
-      for (let x = 0; x < W; x++) {
-        const role = OBJ_ROLE[objects[y * W + x]!];
-        if (!role) continue;
-        const im = mode === 'art' ? img(roleKey(role)) : undefined;
-        things.push({
-          x, y,
-          draw: () => {
-            if (im) sprite(im, x, y, role === 'tree' || role === 'pillar' ? 2 : 1.3);
-            else {
-              g.fillStyle = ATLAS_OBJ[role] ?? '#fff';
-              const pad = role === 'tree' ? 0.05 : 0.2;
-              g.fillRect((x + pad) * s, (y + pad) * s, s * (1 - 2 * pad), s * (1 - 2 * pad));
-            }
-          },
-        });
-      }
-    for (const f of z.features) {
-      const art = FEATURE_ART[f.kind];
-      const im = mode === 'art' && art ? img(roleKey(art)) : undefined;
-      things.push({
-        x: f.x, y: f.y,
-        draw: () => {
-          if (im) return sprite(im, f.x, f.y, 1.3);
-          const [glyph, col] = FEATURE_GLYPH[f.kind] ?? ['?', '#fff'];
-          g.fillStyle = 'rgba(0,0,0,.55)';
-          g.fillRect(f.x * s, f.y * s, s, s);
-          g.fillStyle = col;
-          g.font = `${Math.max(8, s * 0.9)}px sans-serif`;
-          g.textAlign = 'center';
-          g.textBaseline = 'middle';
-          g.fillText(glyph, f.x * s + s / 2, f.y * s + s / 2 + 1);
-        },
-      });
-    }
-    const dot = (x: number, y: number, col: string, r: number) => {
-      g.fillStyle = col;
+    g.fillRect(0, 0, cv.width, cv.height);
+    if (img) g.drawImage(img, 0, 0, cv.width, cv.height);
+    for (const m of marks) {
+      g.fillStyle = m.color;
+      g.strokeStyle = 'rgba(0,0,0,0.8)';
+      g.lineWidth = 1.5;
       g.beginPath();
-      g.arc(x * s + s / 2, y * s + s / 2, r * s, 0, Math.PI * 2);
+      g.arc(m.x * k, m.y * k, 4, 0, Math.PI * 2);
       g.fill();
-      g.strokeStyle = 'rgba(0,0,0,.7)';
-      g.lineWidth = 1;
       g.stroke();
-    };
-    for (const n of npcs) {
-      const im = mode === 'art' ? img(`spr_npc_${n.id}`) : undefined;
-      things.push({ x: n.x, y: n.y, draw: () => (im ? sprite(im, n.x, n.y, 2.2) : dot(n.x, n.y, '#ffffff', 0.4)) });
     }
-    for (const sp of z.spawns) {
-      const im = mode === 'art' ? img(sp.bossId ? `spr_boss_${sp.bossId}` : `spr_mon_${sp.familyId}_${sp.archetype}`) : undefined;
-      things.push({ x: sp.x, y: sp.y, draw: () => (im ? sprite(im, sp.x, sp.y, sp.bossId ? 3 : 2) : dot(sp.x, sp.y, sp.bossId ? '#ff3030' : '#e06a5a', sp.bossId ? 0.55 : 0.35)) });
-    }
-    things.sort((a, b) => a.y - b.y || a.x - b.x).forEach((t) => t.draw());
-  }, [mode, cell, z, w, imgs.size]);
-
-  const describe = (e: React.MouseEvent) => {
-    const r = canvas.current!.getBoundingClientRect();
-    const x = Math.floor(((e.clientX - r.left) / r.width) * z.width);
-    const y = Math.floor(((e.clientY - r.top) / r.height) * z.height);
-    if (x < 0 || y < 0 || x >= z.width || y >= z.height) return setHover('');
-    const gRole = GROUND_ROLE[ground[y * z.width + x]!];
-    const oRole = OBJ_ROLE[objects[y * z.width + x]!];
-    const f = z.features.find((q) => q.x === x && q.y === y);
-    const n = npcs.find((q) => q.x === x && q.y === y);
-    const sp = z.spawns.find((q) => q.x === x && q.y === y);
-    const fam = sp && w.families.find((q) => q.id === sp.familyId);
-    setHover([
-      `(${x}, ${y})`,
-      gRole ? `${ts.roles[gRole].name} [${gRole}]` : 'void',
-      oRole ? `${ts.roles[oRole].name} [${oRole}]` : '',
-      f ? `${f.name ?? f.kind} [${f.kind}]` : '',
-      n ? `${n.name}, ${n.title}` : '',
-      sp ? (sp.bossId ? w.bosses.find((b) => b.id === sp.bossId)?.name ?? 'boss' : `${fam?.members.find((m) => m.archetype === sp.archetype)?.name ?? sp.archetype} (lv ${sp.level})`) : '',
-    ].filter(Boolean).join(' · '));
+  }, [img, marks, k]);
+  if (!z.painting) return <div className="dim small">This place has not been painted.</div>;
+  const describe = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = ((e.clientX - r.left) * (width / r.width)) / k, y = ((e.clientY - r.top) * (width / r.width)) / k;
+    const near = marks.map((m) => ({ m, d: Math.hypot(m.x - x, m.y - y) })).sort((a, b) => a.d - b.d)[0];
+    setHover(near && near.d < 10 / k ? near.m.label : '');
   };
-
   return (
     <div className="col" style={{ gap: 6 }}>
-      <div className="row" style={{ gap: 6 }}>
-        <div className="seg">
-          <button className={mode === 'atlas' ? 'on' : ''} onClick={() => setMode('atlas')}>Atlas</button>
-          <button className={mode === 'art' ? 'on' : ''} onClick={() => setMode('art')}>Art</button>
-        </div>
-        <div className="seg">
-          {[8, 12, 18].map((c) => <button key={c} className={cell === c ? 'on' : ''} onClick={() => setCell(c)}>{c === 8 ? 'S' : c === 12 ? 'M' : 'L'}</button>)}
-        </div>
-        <div className="tiny dim grow" style={{ textAlign: 'right' }}>{hover || 'Hover the map to inspect a tile.'}</div>
-      </div>
       <div className="zone-map">
-        <canvas ref={canvas} onMouseMove={describe} onMouseLeave={() => setHover('')} />
+        <canvas ref={canvas} style={{ width: '100%', height: 'auto' }} onMouseMove={describe} onMouseLeave={() => setHover('')} />
       </div>
-      {mode === 'atlas' && (
-        <div className="row wrap tiny dim" style={{ gap: 10 }}>
-          {Object.entries(GROUND_ROLE).map(([c, r]) => <span key={r}><i className="swatch" style={{ background: ATLAS_GROUND[Number(c)] }} />{r}</span>)}
-          {Object.entries(ATLAS_OBJ).map(([r, col]) => <span key={r}><i className="swatch" style={{ background: col }} />{r}</span>)}
-          <span><i className="swatch round" style={{ background: '#fff' }} />person</span>
-          <span><i className="swatch round" style={{ background: '#e06a5a' }} />creature</span>
-        </div>
-      )}
+      <div className="tiny dim">{hover || 'Hover a mark to see who or what stands there.'}</div>
     </div>
   );
 }
@@ -818,14 +555,13 @@ function Creatures({ ctx }: { ctx: Ctx }) {
 }
 
 const ART_GROUPS: { id: string; label: string; test: (k: string) => boolean }[] = [
-  { id: 'tex', label: 'Surfaces', test: (k) => k.startsWith('tex_') },
-  { id: 'obj', label: 'Props', test: (k) => k.startsWith('obj_') },
   { id: 'chars', label: 'Characters', test: (k) => k.startsWith('spr_') },
+  { id: 'obj', label: 'Objects', test: (k) => k.startsWith('obj_') },
   { id: 'icon', label: 'Items', test: (k) => k.startsWith('icon_') },
 ];
 
 function ArtTab({ ctx }: { ctx: Ctx }) {
-  const [group, setGroup] = useState('tex');
+  const [group, setGroup] = useState('chars');
   const [filter, setFilter] = useState<'all' | 'low' | 'failed' | 'stale' | 'custom'>('all');
   const [q, setQ] = useState('');
   const entries = [...ctx.art.values()].filter((a) => !a.ref && ART_GROUPS.find((g) => g.id === group)!.test(a.key));

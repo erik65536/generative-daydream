@@ -63,16 +63,6 @@ function slotLine(s: ZoneSlot, sk: WorldSkeleton): string {
   return `- ${s.slotId}: ${s.kind}, region ${s.regionIndex}, levels ${s.levelRange[0]}-${s.levelRange[1]}, connects to ${s.links.join(', ')}`;
 }
 
-/** How a zone's level design is described (shared by world creation and the studio). */
-export const LAYOUT_HELP = `"layout" is your level design for the zone, in neutral terms the engine builds from. Picture the place and choose what makes it feel like itself:
-- "structure": "open" (free-form ground), "grid" (blocks between straight lanes or aisles), "hub" (a centre with enterable structures around it), "rooms" (chambers joined by corridors), "caves" (irregular connected hollows). Towns use hub or grid; wildernesses use open or grid; dungeons use rooms or caves.
-- "enclosed": true when it is under a roof or ceiling (no sky, no weather), false under the open sky.
-- "blockers": the large impassable things that shape movement there: "amount" (sparse, some, dense) and "arrangement" (scattered, clusters, rows, edges).
-- "hazard": impassable liquid, chasm or void: none, pools, river or channels.
-- "structures": how a town's enterable places look from outside: "roofed" (buildings with roofs) or "walled" (rooms and enclosures seen from above, like suites, stalls or tents).
-- "clutter": sparse, some or dense small objects.
-Every zone is its own place: within one world, one zone might be a dense grid of rows under a roof and the next an open expanse with a river. Think about what this specific zone is, not the genre.`;
-
 export function atlasPrompt(input: WorldInput, concept: ConceptOut, sk: WorldSkeleton): string {
   return `${conceptSummary(concept)}
 
@@ -84,8 +74,7 @@ Zone slots:
 ${sk.slots.map((s) => slotLine(s, sk)).join('\n')}
 
 "town" = a safe settlement/hub (in this setting it could be a village, station, burrow, office floor...). "wilderness" = open travel country between places. "dungeon" = a dangerous enclosed place (cave, derelict ship, crypt, server room...).
-"biome" sets the ground look: grass, dirt, stone, sand, snow, wood, metal, crystal, flesh, void.
-${LAYOUT_HELP}
+"indoor" is true when the place is inside a structure (under a roof or ceiling, no sky), false under the open sky. Every place is its own place: within one world one might be a vast hall and the next an open marsh. Think about what this specific place is, not the genre.
 "lore" is a private note about the zone's history and secrets that NPCs may reference.`;
 }
 
@@ -123,10 +112,6 @@ Each family has 2-5 members, each with a different combat archetype: ${MONSTER_A
 "element" is the family's damage affinity — one of: ${damageKinds.join(', ')}; "habitat" lists where they live (words like town, forest, cave, swamp, ruins, mountain, snow, desert, station, derelict, lab...); "colors" are 1-4 hex colors for their look; "appearance" is a short visual description used to draw each member.`;
 }
 
-export const TILESET_HELP = `A tileset describes how a zone looks. "style" is the base material: grass, dirt, stone, sand, snow, wood, metal, crystal, flesh, void. "ambient" is brightness 0-1 (dungeons ~0.3, indoors ~0.7, outdoors 1). "weather": none, rain, snow, ash, spores, embers, dust, fireflies.
-"roles" gives each fixed tile role a setting-appropriate name, 1-3 hex colors and a short visual prompt (no art-style words):
-floor (main ground), floorAlt (secondary ground patches), path (lanes, roads or corridors), water (impassable liquid, chasm or void), wall (the walls of structures, rooms or caves), tree (the large impassable thing that shapes movement here), rock (a smaller blocking object), plant (small walkable decoration), light (light source), furniture (furnishing or equipment), rubble (debris), pillar (column or post), door, chest (a container that holds loot), exit (way to another area), shrine (where the weary are restored), sign, lever (a switch or control), bed (somewhere to rest). Name each for what it is in this place: a forest's tree is a tree, an office's could be a cubicle partition, a garage's a parked car, a bathroom's a row of stalls.`;
-
 export function townPrompt(
   input: WorldInput,
   concept: ConceptOut,
@@ -145,10 +130,7 @@ Create:
 1. "npcs": ${ctx.npcCount} additional residents (do not repeat the story characters). These roles are required, each as its own resident (one person per role): ${ctx.requiredRoles.join(', ')}${ctx.companions ? ', companion' : ''} (these are game functions; give them titles, trades and greetings that fit this world, e.g. a capsule-hotel manager rather than an innkeeper on a space station); fill the rest with commoners, guards, crafters, nobles or mystics. Merchants need a merchantKind (general, weapons, armor, alchemy, magic, materials).${ctx.companions ? ' Mark 1-2 adventurous characters canJoinParty=true (role companion).' : ''} Give each a real personality, a want, 1-4 things they know ("knowledge", gossip that connects to the world), optional secrets, a speaking "voice", a greeting line and 2-3 short ambient barks. "friends" lists names of other residents they talk to.
 2. "buildings": names for the town's buildings (inn, shops, homes) with their purpose.
 3. "sideQuests": ${ctx.sideQuests} local side quests given by residents (giverName must be one of your npcs or story characters). Objective types: talk/persuade (target = person's name), kill (target = monster family name, with count), collect (target = item name to find, it will be hidden nearby), deliver (target = person to give the collected item to), reach (target = place name), interact (target = place name; describe the thing). Make them human and specific; some should have a twist or a choice in the final conversation.
-4. "tileset": the look of the town's main area (its streets and squares, or its concourse, lobby or deck if it is indoors). "interiorTileset": how its rooms, shops and buildings look inside.
-5. "signText": the text on the sign at the town entrance.
-
-${TILESET_HELP}`;
+4. "signText": the text on the sign at the town entrance.`;
 }
 
 export function areaPrompt(input: WorldInput, concept: ConceptOut, zone: { name: string; kind: string; description: string; lore?: string; level: [number, number]; families: string[] }, loreCount: number): string {
@@ -157,10 +139,5 @@ export function areaPrompt(input: WorldInput, concept: ConceptOut, zone: { name:
 ZONE: ${zone.name} — a ${zone.kind}, levels ${zone.level[0]}-${zone.level[1]}. ${zone.description}${zone.lore ? `\nPrivate lore: ${zone.lore}` : ''}
 Creatures here: ${zone.families.join(', ')}.
 
-Create:
-1. "tileset" for this zone's look.
-2. "loreNotes": ${loreCount} readable documents found here (journals, carvings, logs, letters...) that hint at the world's history and the main story without spelling out the secret. 60-160 words each, in-world voice.
-3. "shrineName": what the restorative shrine/altar here is called.
-
-${TILESET_HELP}`;
+Create "loreNotes": ${loreCount} readable documents found here (journals, carvings, logs, letters...) that hint at the world's history and the main story without spelling out the secret. 60-160 words each, in-world voice.`;
 }

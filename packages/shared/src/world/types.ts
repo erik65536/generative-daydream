@@ -3,6 +3,7 @@ import type { CombatMode, CommunicationLevel, GameLength, WorldSize } from '../r
 import type { MonsterArchetype, NpcRole, MerchantKind } from '../rules/actors';
 import type { QuestDef } from '../rules/quests';
 import type { DifficultyId, Modifier, Ruleset } from '../ruleset/types';
+import type { NavDef } from './nav';
 
 /** Advanced rule choices from the world creation form; anything unset is decided by the generator. */
 export interface RulesChoices {
@@ -30,8 +31,6 @@ export interface WorldInput {
   communication: CommunicationLevel;
   combatMode: CombatMode;
   seed?: string;
-  /** 'none' skips image generation entirely (procedural art is always available). */
-  art: 'none' | 'essential' | 'full';
   rules?: RulesChoices;
   /** Default difficulty for new journeys. */
   difficulty?: DifficultyId;
@@ -52,201 +51,34 @@ export interface WorldConcept {
   palette: { primary: string; secondary: string; accent: string; ui: string };
 }
 
-/** Fixed tile roles. Ground layer codes. */
-export const GROUND = { void: 0, floor: 1, floorAlt: 2, path: 3, water: 4, wall: 5 } as const;
-export type GroundCode = (typeof GROUND)[keyof typeof GROUND];
-/** Object layer codes (static decoration; stateful things are Features). */
-export const OBJ = { none: 0, tree: 1, rock: 2, plant: 3, light: 4, furniture: 5, rubble: 6, pillar: 7 } as const;
-export type ObjCode = (typeof OBJ)[keyof typeof OBJ];
-
-/**
- * Places designed from a floor plan use their own props and surfaces instead of the fixed roles. Their codes
- * live above the fixed ones: ground codes from SURFACE_BASE are the tileset's extra surfaces (all walkable);
- * object codes encode the prop's index and how it behaves, so movement and sight need no lookup.
- */
-export const SURFACE_BASE = 16;
-export const MAX_SURFACES = 32;
-export const MAX_PROPS = 48;
-/** Object code bases: blocks movement and sight / blocks movement only / walkable (rugs, papers, chairs). */
-export const PROP_TALL = 16;
-export const PROP_SOLID = 64;
-export const PROP_LOW = 128;
-/** The other tiles of a prop bigger than one tile (drawn by its anchor, the footprint's back corner). */
-export const PROP_COVER = 240;
-export const PROP_COVER_TALL = 241;
-
-export const isWalkableGround = (g: number) => g === GROUND.floor || g === GROUND.floorAlt || g === GROUND.path || (g >= SURFACE_BASE && g < SURFACE_BASE + MAX_SURFACES);
-/** Objects you cannot walk through. */
-export const objBlocks = (o: number) => o === OBJ.tree || o === OBJ.rock || o === OBJ.furniture || o === OBJ.pillar || o === OBJ.light || (o >= PROP_TALL && o < PROP_SOLID + MAX_PROPS) || o === PROP_COVER || o === PROP_COVER_TALL;
-/** Objects you cannot see past. */
-export const objOpaque = (o: number) => o === OBJ.tree || o === OBJ.pillar || (o >= PROP_TALL && o < PROP_TALL + MAX_PROPS) || o === PROP_COVER_TALL;
-/** The tileset prop an object code stands for, or -1. */
-export function propIndex(o: number): number {
-  if (o >= PROP_TALL && o < PROP_TALL + MAX_PROPS) return o - PROP_TALL;
-  if (o >= PROP_SOLID && o < PROP_SOLID + MAX_PROPS) return o - PROP_SOLID;
-  if (o >= PROP_LOW && o < PROP_LOW + MAX_PROPS) return o - PROP_LOW;
-  return -1;
-}
-export const propCode = (index: number, p: Pick<PropDef, 'blocks' | 'height'>) => (!p.blocks ? PROP_LOW : p.height === 'tall' ? PROP_TALL : PROP_SOLID) + index;
-
-/** A specific thing that stands in a place (a desk, a server rack, a tent), painted once and placed by the plan. */
-export interface PropDef {
-  id: string;
-  name: string;
-  /** What it looks like (for the painter). */
-  prompt: string;
-  colors: string[];
-  /** Footprint in tiles (square). */
-  size: 1 | 2;
-  /** low: below the knee (a chair, a crate); mid: about waist to chest (a desk, a counter); tall: above head height (a rack, a tree). */
-  height: 'low' | 'mid' | 'tall';
-  /** Whether people must walk around it. */
-  blocks: boolean;
-  /** Gives off light. */
-  light?: boolean;
-  asset?: string;
+/** How a place feels to be in: its light, sky and weather (decided with its art direction). */
+export interface ZoneLook {
+  /** Ambient light: 0 pitch dark .. 1 bright day. */
+  ambient: number;
+  lightColor: string;
+  /** Tint of the fog over unexplored ground. */
+  fogColor: string;
+  /** Under the open sky: the day/night cycle and weather apply. */
+  outdoor: boolean;
+  weather: 'none' | 'rain' | 'snow' | 'ash' | 'spores' | 'embers' | 'dust' | 'fireflies';
 }
 
-/** An extra ground material for one part of a place (the break room's tiles, the lobby's marble). */
-export interface GroundDef {
-  id: string;
-  name: string;
-  prompt: string;
-  colors: string[];
-  asset?: string;
-}
-
-/** How copies of a prop are set out within an area. */
-export interface BlueprintArrangement {
-  prop: string;
-  pattern: 'rows' | 'grid' | 'along_walls' | 'around' | 'cluster' | 'scatter' | 'center' | 'corners' | 'line' | 'ring';
-  amount: 'few' | 'some' | 'many';
-  /** A second prop set beside each copy (chairs at desks, stools around a table). */
-  with?: string;
-}
-
-/** One part of a place with a purpose (an office, a server room, a campsite). */
-export interface BlueprintArea {
-  id: string;
-  name: string;
-  purpose: string;
-  /** How many such areas (four identical meeting rooms). */
-  count: number;
-  size: 'small' | 'medium' | 'large';
-  /** A surface id, one of the place's own floor, floorAlt or path, or water (a pond, a pool: impassable). */
-  floor: string;
-  /** Walled rooms have doorways; open areas are only set apart by their floor and furniture. */
-  enclosure: 'walled' | 'open';
-  where: 'entrance' | 'center' | 'edge' | 'deep' | 'any';
-  arrangements: BlueprintArrangement[];
-  /** The enterable building this area holds (its name), in towns. */
-  building?: string;
-  /** People spend their time here. */
-  gathering?: boolean;
-}
-
-/** A place's floor plan, designed per place and realised by the engine. */
-export interface Blueprint {
-  summary: string;
-  /** built: rooms and corridors on a grid; natural: organic regions joined by trails. */
-  style: 'built' | 'natural';
-  /** The ground of corridors, lanes and trails (a surface id or path). */
-  corridors: string;
-  /** Natural places: what lies between the areas (dense filler, impassable water crossed by causeways, or open ground). */
-  between?: 'filler' | 'water' | 'open';
-  /** What fills the edge and leftover ground (a prop id), e.g. dense trees around a clearing. */
-  filler?: string;
-  /** Small walkable props scattered thinly over all the ground (reeds, tufts, pebbles, litter, papers). */
-  groundCover?: string[];
-  /** Props set along the corridors, lanes or trails (lamps, planters, bins). */
-  corridorProps?: BlueprintArrangement[];
-  areas: BlueprintArea[];
-}
-
-/**
- * A place painted as one illustration: the painting is drawn as the ground, and everything a person can stand
- * behind is cut out of it (pieces in the atlas) and drawn at that thing's depth, so people pass in front of and
- * behind painted walls and furniture.
- */
-export interface Backdrop {
-  /** Asset keys of the painting and of the cut-outs atlas. */
+/** A place painted as one picture of its ground (see nav.ts for the projection). */
+export interface Painting {
+  /** Asset key of the image, already at game scale. */
   image: string;
-  atlas: string;
   width: number;
   height: number;
-  /** Pixel position of tile (0,0)'s centre in game pixels (64x32 pixel tiles). */
+  /** Picture position (px) of the ground origin. */
   ox: number;
   oy: number;
-  /** The art direction it was painted from (kept for repaints). */
-  brief?: string;
-  /** Image pixels per game pixel (2: painted at twice the game's resolution). Atlas and painting positions are in image pixels. */
-  scale?: number;
-  /** Cut-outs: [tile x, tile y, depth, kind (0 wall, 1 prop), footprint, atlas x, atlas y, w, h, painting x, painting y]. */
-  pieces: number[][];
-}
-
-export const TILE_ROLES = ['floor', 'floorAlt', 'path', 'water', 'wall', 'tree', 'rock', 'plant', 'light', 'furniture', 'rubble', 'pillar', 'door', 'chest', 'exit', 'shrine', 'sign', 'lever', 'bed'] as const;
-export type TileRole = (typeof TILE_ROLES)[number];
-
-export interface TileRoleDef {
-  name: string;
-  /** Hex colors used by the procedural renderer (and as an art hint). */
-  colors: string[];
-  /** Image prompt (without global style) used for generated art. */
-  prompt: string;
-  /** Asset key once art exists. */
-  asset?: string;
-}
-
-export interface TilesetDef {
-  id: string;
-  name: string;
-  /** Overall look: drives procedural textures. */
-  style: 'grass' | 'stone' | 'sand' | 'snow' | 'dirt' | 'wood' | 'metal' | 'crystal' | 'flesh' | 'void';
-  roles: Record<TileRole, TileRoleDef>;
-  /** Ambient light 0 (pitch dark) .. 1 (bright day), and fog tint. */
-  ambient: number;
-  fogColor: string;
-  lightColor: string;
-  /** Whether the outdoor day/night cycle applies. */
-  outdoor: boolean;
-  /** Ambient particles. */
-  weather?: 'none' | 'rain' | 'snow' | 'ash' | 'spores' | 'embers' | 'dust' | 'fireflies';
-  /** Set once the art-direction pass has made every element specific to its place. */
-  directed?: boolean;
-  /** Elements outside the fixed roles: building roofs (towns) and the crafting station. */
-  extras?: { roof?: TileRoleDef; craft?: TileRoleDef };
-  /** Specific props and extra surfaces of places built from a floor plan. */
-  props?: PropDef[];
-  surfaces?: GroundDef[];
 }
 
 export type ZoneKind = 'town' | 'wilderness' | 'dungeon' | 'interior';
 
-/**
- * How a zone is laid out, in environment-neutral terms the level designer (the LLM) picks per zone and the
- * engine turns into a map. The art direction then decides what each element looks like in that place.
- */
-export interface ZoneLayoutPlan {
-  /** open: free-form ground; grid: blocks between straight lanes; hub: a centre with enterable structures around it;
-   *  rooms: chambers joined by corridors; caves: irregular connected hollows. */
-  structure: 'open' | 'grid' | 'hub' | 'rooms' | 'caves';
-  /** Under a roof or ceiling: no sky, day/night, rain or snow. */
-  enclosed: boolean;
-  /** The large impassable elements (the "tree" role). */
-  blockers: { amount: 'sparse' | 'some' | 'dense'; arrangement: 'scattered' | 'clusters' | 'rows' | 'edges' };
-  /** Impassable liquid, chasm or void (the "water" role). */
-  hazard: 'none' | 'pools' | 'river' | 'channels';
-  /** How enterable structures look from outside: roofed buildings, or walled rooms seen from above. */
-  structures: 'roofed' | 'walled';
-  /** Small walkable or minor clutter (the "rock", "plant" and "rubble" roles). */
-  clutter: 'sparse' | 'some' | 'dense';
-}
+export type FeatureKind = 'door' | 'exit' | 'chest' | 'trap' | 'sign' | 'lore' | 'bed' | 'craft_station' | 'waypoint' | 'object';
 
-export const LAYOUT_STRUCTURES = ['open', 'grid', 'hub', 'rooms', 'caves'] as const;
-
-export type FeatureKind = 'door' | 'exit' | 'chest' | 'trap' | 'shrine' | 'sign' | 'lever' | 'gate' | 'lore' | 'bed' | 'craft_station' | 'waypoint';
-
+/** Something in a place people interact with. Positions are ground metres. */
 export interface FeatureDef {
   id: string;
   kind: FeatureKind;
@@ -261,19 +93,12 @@ export interface FeatureDef {
   lockLevel?: number;
   keyUniqueId?: string;
   items?: string[];
-  /** trap */
-  /** Ruleset trap id. */
+  /** trap: ruleset trap id and level. */
   trapKind?: string;
   trapLevel?: number;
-  /** shrine */
-  shrineEffect?: 'heal' | 'empower' | 'restore';
   /** sign / lore */
   text?: string;
   loreId?: string;
-  /** lever -> gate ids */
-  gateIds?: string[];
-  /** Exit direction for edge exits (for nice arrows on the client). */
-  facing?: 'n' | 's' | 'e' | 'w';
 }
 
 export interface SpawnDef {
@@ -296,32 +121,26 @@ export interface ZoneDef {
   description: string;
   regionIndex: number;
   levelRange: [number, number];
-  tilesetId: string;
+  look: ZoneLook;
+  /** Ground size in metres (set when painted). */
   width: number;
   height: number;
-  /** Base64-encoded Uint8Array (width*height) of GROUND codes. */
-  ground: string;
-  /** Base64-encoded Uint8Array (width*height) of OBJ codes. */
-  objects: string;
-  /** Base64-encoded Uint8Array of per-tile variation seeds (0-255). */
-  variation?: string;
+  /** The picture of the place, and where people can walk and see in it (set when painted). */
+  painting?: Painting;
+  nav?: NavDef;
+  /** The painting's art direction and layout (kept for repaints). */
+  design?: { style: string; layout: string };
   features: FeatureDef[];
   spawns: SpawnDef[];
   /** Interior parent (for buildings). */
   parentZoneId?: string;
-  /** Inside a structure (no sky, no day/night, no pitched roofs). */
+  /** Inside a structure. */
   indoor?: boolean;
-  /** The level design this zone was built from. */
-  layout?: ZoneLayoutPlan;
-  /** The floor plan this zone was built from (props and surfaces are in its tileset). */
-  blueprint?: Blueprint;
-  /** The place painted as one illustration (cleared whenever its map is rebuilt). */
-  backdrop?: Backdrop;
   /** Position on the world map (0..1). Interiors share their parent's. */
   mapPos: { x: number; y: number };
   /** Zones directly connected (for the world map). */
   links: string[];
-  /** Arrival point when entering without a specific exit. */
+  /** Arrival point when entering without a specific exit (ground metres). */
   entry: { x: number; y: number };
   /** Town building interiors list their purpose. */
   buildingPurpose?: string;
@@ -440,7 +259,7 @@ export interface ArcDef {
 
 export interface AssetRecord {
   key: string;
-  kind: 'texture' | 'sprite' | 'object' | 'icon' | 'portrait';
+  kind: 'painting' | 'sprite' | 'object' | 'icon' | 'portrait';
   file?: string;
   /** Short brief of what to depict. */
   prompt: string;
@@ -508,7 +327,6 @@ export interface WorldDefinition {
   uniqueItems: Record<string, UniqueItemDef>;
   families: MonsterFamily[];
   bosses: BossDef[];
-  tilesets: Record<string, TilesetDef>;
   zones: ZoneDef[];
   npcs: NpcDef[];
   quests: QuestDef[];
@@ -529,7 +347,7 @@ export interface WorldDefinition {
 /** World data that is safe to send to a client (spoilers removed). */
 export type ClientWorld = Omit<WorldDefinition, 'zones' | 'npcs' | 'concept' | 'arcs' | 'quests' | 'ending' | 'generationLog' | 'worldFacts'> & {
   concept: Omit<WorldConcept, 'secret'>;
-  zones: Omit<ZoneDef, 'ground' | 'objects' | 'variation' | 'spawns' | 'lore'>[];
+  zones: Omit<ZoneDef, 'nav' | 'design' | 'spawns' | 'lore'>[];
   npcs: Pick<NpcDef, 'id' | 'name' | 'title' | 'role' | 'zoneId' | 'asset' | 'colors' | 'pronouns' | 'appearance' | 'archetype'>[];
   arcs: Pick<ArcDef, 'index' | 'title'>[];
 };

@@ -635,7 +635,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 
 /* Daydream banners: the daydream's own ground and cast. */
 .daydream-art { position: relative; overflow: hidden; background: linear-gradient(180deg, color-mix(in srgb, var(--dd-tint) 22%, #0b0a0e), #08070a); }
-.daydream-art .dd-floor { position: absolute; inset: 0; background-size: 88px 88px; background-position: center bottom; filter: saturate(0.7) brightness(0.55); }
+.daydream-art .dd-scene { position: absolute; inset: 0; background-size: cover; background-position: center; filter: saturate(0.85) brightness(0.62); }
 .daydream-art .dd-shade { position: absolute; inset: 0; background: radial-gradient(ellipse at 50% 85%, transparent 20%, rgba(8, 7, 10, 0.85) 75%), linear-gradient(180deg, rgba(8, 7, 10, 0.7), transparent 60%), var(--grain); }
 .daydream-art .dd-figures { position: absolute; left: 0; right: 0; bottom: 4%; display: flex; justify-content: center; align-items: flex-end; gap: 2%; }
 .daydream-art .dd-figures img { object-fit: contain; filter: drop-shadow(0 6px 10px rgba(0, 0, 0, 0.7)); }

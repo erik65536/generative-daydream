@@ -6,6 +6,8 @@ export * from './rules/progression';
 export * from './rules/actors';
 export * from './rules/quests';
 export * from './world/types';
+export * from './world/nav';
+export * from './world/walking';
 export * from './world/instance';
 export * from './protocol';
 export * from './util/motion';

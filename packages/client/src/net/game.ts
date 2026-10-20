@@ -1,17 +1,16 @@
 /** WebSocket connection + client-side game state store shared by the renderer and React UI. */
 import { useSyncExternalStore } from 'react';
 import {
-  BitSet, base64ToBytes, sampleMotion, characterStats, itemDisplayName, rx,
+  BitSet, Nav, fogSize, sampleMotion, characterStats, itemDisplayName, rx,
   type ClientMessage, type ClientWorld, type ClockView, type CombatView, type DialogState, type EntityView, type FeatureState, type FxEvent,
   type LootPile, type LootView, type PlayerView, type ServerMessage, type Surface, type TradeState, type ZoneView, type CharacterState, type StatBlock,
   type JournalEntry, type ItemInstance, type Ruleset,
 } from '@gd/shared';
 import { setRules } from '../rules';
 
+/** The place the party is in: its view, and where people can walk and see in it. */
 export interface ZoneData extends ZoneView {
-  groundBytes: Uint8Array;
-  objectBytes: Uint8Array;
-  variationBytes: Uint8Array;
+  walk: Nav;
 }
 
 export interface WheelItem { id: string; label: string; sub?: string; icon?: string; disabled?: boolean }
@@ -201,12 +200,14 @@ export class GameClient {
       }
       case 'zone': {
         const z = m.zone;
-        s.zone = { ...z, groundBytes: base64ToBytes(z.ground), objectBytes: base64ToBytes(z.objects), variationBytes: z.variation ? base64ToBytes(z.variation) : new Uint8Array(z.width * z.height) };
+        if (!z.nav) break;
+        s.zone = { ...z, walk: new Nav(z.nav) };
         s.entities = new Map(m.entities.map((e) => [e.id, e]));
         s.features = new Map(m.features.map((f) => [f.id, f]));
         s.surfaces = m.surfaces;
         s.lootPiles = m.loot;
-        s.explored = new BitSet(z.width * z.height, m.explored);
+        const fog = fogSize(z);
+        s.explored = new BitSet(fog.w * fog.h, m.explored);
         s.zoneVersion++;
         s.targeting = null;
         break;
@@ -389,6 +390,15 @@ export class GameClient {
     if ((!rec || rec.status !== 'ok') && legacy) rec = this.state.world.assets[legacy[1]!];
     if (!rec || rec.status !== 'ok' || !rec.file) return undefined;
     return `/api/worlds/${this.state.world.id}/assets/${rec.file}`;
+  }
+
+  /** Whether the party has seen the ground at (x, y) metres (the fog of war remembers it per square metre). */
+  seen(x: number, y: number): boolean {
+    const { zone: z, explored } = this.state;
+    if (!z || !explored) return true;
+    const { w, h } = fogSize(z);
+    const cx = Math.round(x), cy = Math.round(y);
+    return cx >= 0 && cy >= 0 && cx < w && cy < h && explored.get(cy * w + cx);
   }
 
   /** Estimated game clock now. */

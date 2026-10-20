@@ -188,14 +188,13 @@ app.patch('/api/admin/users/:id', auth, adminOnly, (req, res) => {
 
 // ------------------------------------------------------------------------------ worlds
 
-/** A daydream's own art for its card: the ground of its first place and a few of its people and foes. */
-function coverArt(w: WorldDefinition): { floor?: string; figures: string[] } | undefined {
+/** A daydream's own art for its card: the painting of its first place and a few of its people and foes. */
+function coverArt(w: WorldDefinition): { scene?: string; figures: string[] } | undefined {
   const ok = (k: string) => (w.assets[k]?.status === 'ok' ? w.assets[k]!.file : undefined);
-  const start = w.zones.find((z) => z.id === w.startZoneId) ?? w.zones[0];
-  const floor = start ? ok(`tex_${start.tilesetId}_floor`) : undefined;
+  const scene = ok(`place_${w.startZoneId}`);
   const keys = [...w.bosses.map((b) => `spr_boss_${b.id}`), ...w.npcs.filter((n) => n.essential).map((n) => `spr_npc_${n.id}`), ...w.origins.map((o) => `spr_origin_${o.id}_androgynous`), ...w.npcs.map((n) => `spr_npc_${n.id}`)];
   const figures = [...new Set(keys.map(ok).filter((f): f is string => !!f))].slice(0, 4);
-  return floor || figures.length ? { floor, figures } : undefined;
+  return scene || figures.length ? { scene, figures } : undefined;
 }
 
 function worldSummary(w: WorldDefinition) {
@@ -211,7 +210,7 @@ function worldSummary(w: WorldDefinition) {
     public: w.public,
     status: job ? 'generating' : w.status,
     createdAt: w.createdAt,
-    input: { size: w.input.size, length: w.input.length, combatMode: w.input.combatMode, communication: w.input.communication, art: w.input.art, difficulty: w.input.difficulty ?? 'normal' },
+    input: { size: w.input.size, length: w.input.length, combatMode: w.input.combatMode, communication: w.input.communication, difficulty: w.input.difficulty ?? 'normal' },
     rules: w.ruleset ? { name: w.ruleset.name, classes: w.ruleset.classes.map((c) => c.name), balance: w.ruleset.balance ? { at: w.ruleset.balance.at, ok: w.ruleset.balance.scenarios.filter((x) => x.ok).length, total: w.ruleset.balance.scenarios.length, durationMs: w.ruleset.balance.durationMs } : undefined } : undefined,
     zones: w.zones.filter((z) => z.kind !== 'interior').length,
     npcs: w.npcs.length,
@@ -335,7 +334,7 @@ app.post('/api/worlds/:id/art', auth, (req, res) => {
   const w = store.loadWorld(String(req.params.id));
   if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'Not found.' });
   if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your daydream.' });
-  if (genai().isProcedural('image.texture') && genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
+  if (genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
   const level = req.body?.level === 'full' ? 'full' : 'essential';
   if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this daydream; wait for it to finish.' });
   if (req.body?.retryFailed) {
@@ -394,7 +393,7 @@ app.post('/api/worlds/:id/studio/task', auth, (req, res) => {
   if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this daydream.' });
   const task = TaskSchema.safeParse(req.body);
   if (!task.success) return void res.status(400).json({ error: task.error.issues[0]?.message ?? 'Invalid task.' });
-  if (task.data.kind !== 'rewrite' && task.data.kind !== 'zone' && genai().isProcedural('image.texture') && genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
+  if (task.data.kind === 'paint' && genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
   const u = (req as AuthedRequest).user;
   if (!queueJob(res, 'studio', w, u, { task: task.data }, 3)) return;
   res.json({ ok: true });

@@ -149,7 +149,7 @@ export class OpenAIResponsesProvider implements TextProvider {
     });
     const u = data.usage;
     if (u) {
-      chargeUsage(this.cfg, { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens, output: u.output_tokens });
+      chargeUsage(this.cfg, { input: u.input_tokens, cached: u.input_tokens_details?.cached_tokens, output: u.output_tokens }, String(body.model));
       openaiUsage.calls++;
       openaiUsage.input += u.input_tokens ?? 0;
       openaiUsage.cached += u.input_tokens_details?.cached_tokens ?? 0;

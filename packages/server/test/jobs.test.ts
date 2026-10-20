@@ -1,20 +1,29 @@
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import crypto from 'node:crypto';
 import { globalDb, loadWorld } from '../src/storage';
 import { claimNext, enqueue, getJobRecord, JobConflict, logTail, requestCancel } from '../src/jobs/queue';
 import { Job, JobYield, workerState } from '../src/jobs/job';
 import { startWorker } from '../src/jobs/worker';
 import { runGeneration, startWorldGeneration } from '../src/worldgen/pipeline';
-import { validateWorld } from './helpers';
+import { mockModels, plainPlaces, validateWorld, type MockModels } from './helpers';
 
 const owner = { id: 'u_jobs', name: 'Jobs' };
-const input = { setting: 'A drowned city of bell towers and lantern boats.', size: 'small' as const, length: 'short' as const, communication: 2 as const, combatMode: 'solo' as const, art: 'none' as const };
+const input = { setting: 'A drowned city of bell towers and lantern boats.', size: 'small' as const, length: 'short' as const, communication: 2 as const, combatMode: 'solo' as const };
 const wid = () => `w_jt_${crypto.randomBytes(4).toString('hex')}`;
 const expireLease = (id: string) => globalDb().prepare('UPDATE jobs SET lease_until = 1 WHERE id = ?').run(id);
 
 describe('durable jobs', () => {
   // Only this file makes jobs; leftovers from earlier runs would be claimed first.
-  beforeAll(() => void globalDb().prepare(`UPDATE jobs SET status = 'cancelled' WHERE status IN ('queued', 'running', 'waiting')`).run());
+  let models: MockModels, restore: () => void;
+  beforeAll(async () => {
+    globalDb().prepare(`UPDATE jobs SET status = 'cancelled' WHERE status IN ('queued', 'running', 'waiting')`).run();
+    models = await mockModels();
+    restore = plainPlaces();
+  });
+  afterAll(() => {
+    restore();
+    models.stop();
+  });
 
   it('queues one job per world, leases it, and hands it to another worker when the lease runs out', () => {
     const w = wid();
@@ -40,9 +49,9 @@ describe('durable jobs', () => {
     globalDb().prepare(`UPDATE jobs SET status = 'running' WHERE id = ?`).run(rec.id);
     // First run: the worker is asked to restart when the story stage begins.
     class Restarting extends Job {
-      phase(id: string, counts?: { done?: number; total?: number }) {
+      begin(id: string, counts?: { done?: number; total?: number }) {
         if (id === 'story') workerState.yieldRequested = true;
-        super.phase(id, counts);
+        super.begin(id, counts);
       }
     }
     const first = new Restarting(w, input, owner, getJobRecord(rec.id));

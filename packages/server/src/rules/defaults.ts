@@ -2,7 +2,7 @@
  * Procedural fallback intent: a complete, well-formed ruleset intent for each genre, used field by field
  * whenever the model output is missing or unusable. Structure is shared; names are themed per genre.
  */
-import type { Genre } from '../worldgen/genres';
+import type { Genre } from './genre';
 import type { ClassTreeIntent, ClassesIntent, CoreIntent, GearIntent, RulesetIntent, SkillIntent } from './intent';
 
 interface Theme {

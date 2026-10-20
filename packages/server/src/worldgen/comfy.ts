@@ -1,190 +1,211 @@
 /**
- * Direct ComfyUI calls for the painted-zone prototype: text-to-image, inpainting and SAM 3 segmentation,
- * returning every image a workflow saves (SAM saves one mask per object).
+ * ComfyUI calls for painting and reading places: Krea 2 (paint, continue), SAM 3 (find things), MoGe 2 (normals,
+ * depth) and SeedVR2 (upscale). Everything goes over ComfyUI's HTTP API, so ComfyUI can run on another machine:
+ * its address is the configured comfyui provider's baseUrl (COMFY_URL overrides it). Calls take turns on the GPU
+ * with every other model through genai's GPU scheduler, which unloads one model before the next needs the memory.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import sharp from 'sharp';
 import { ROOT_DIR } from '../paths';
+import { genai } from '../genai/service';
 
-const BASE = process.env.COMFY_URL ?? 'http://127.0.0.1:8188';
-const QWEN = 'qwen_image_2.1_turbo_int8_convrot.safetensors';
+const KREA = 'krea2_turbo_fp8_scaled.safetensors';
 const SAM = 'sam3.1_multiplex_fp16.safetensors';
-const TURBO = '1.0, 0.978453, 0.95418, 0.926626, 0.89508, 0.845148, 0.704534, 0.414568, 0';
-const QWEN_FULL = 'qwen_image_2.1_int8_convrot.safetensors';
+const MOGE = 'moge_2_vitl_normal_fp16.safetensors';
+const SEEDVR2 = 'seedvr2_7b_int8_convrot.safetensors';
+/** AnyPaint sees the whole window as a reference this many pixels across (its default 384 loses small objects). */
+const ANYPAINT_REFERENCE = 768;
 
-/** ZP_MODEL=full: the non-turbo model with a normal scheduler, more steps and real guidance. */
-function model(wf: Workflow): Workflow {
-  if (process.env.ZP_MODEL !== 'full') return wf;
-  wf['451']!.inputs.unet_name = QWEN_FULL;
-  wf['484'] = { class_type: 'BasicScheduler', inputs: { model: ['490', 0], scheduler: 'simple', steps: Number(process.env.ZP_STEPS ?? 25), denoise: 1 } };
-  wf['489']!.inputs.cfg = Number(process.env.ZP_CFG ?? 1);
-  // The negative prompt only counts when CFG is above 1.
-  if (process.env.ZP_NEG) wf['452']!.inputs.negative_prompt = process.env.ZP_NEG;
-  return wf;
+const CACHE = path.join(ROOT_DIR, 'data', 'cache');
+
+const provider = () => Object.entries(genai().config.providers).find(([, p]) => p.type === 'comfyui');
+
+function base(): string {
+  if (process.env.COMFY_URL) return process.env.COMFY_URL.replace(/\/+$/, '');
+  return (provider()?.[1].baseUrl ?? 'http://127.0.0.1:8188').replace(/\/+$/, '');
+}
+
+/** Run on the GPU when it is free and `model` is loaded (SAM 3 and MoGe 2 fit together, as "reader"). */
+function onGpu<T>(model: string, fn: () => Promise<T>): Promise<T> {
+  const p = provider();
+  return p?.[1].gpu ? genai().gpu.group(p[1].gpu).run(p[0], model, p[1], fn) : fn();
 }
 
 type Workflow = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 
-function template(name: string): Workflow {
-  return JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'config', 'comfyui', name), 'utf8'));
+function workflow(name: string, vars: Record<string, string | number>): unknown {
+  const fill = (node: unknown): unknown => {
+    if (typeof node === 'string') {
+      const whole = node.match(/^\{\{(\w+)\}\}$/);
+      if (whole && whole[1]! in vars) return vars[whole[1]!];
+      return node.replace(/\{\{(\w+)\}\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));
+    }
+    if (Array.isArray(node)) return node.map(fill);
+    if (node && typeof node === 'object') return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, fill(v)]));
+    return node;
+  };
+  return fill(JSON.parse(fs.readFileSync(path.join(ROOT_DIR, 'config', 'comfyui', name), 'utf8')) as Workflow);
 }
 
-function fill(node: unknown, vars: Record<string, string | number>): unknown {
-  if (typeof node === 'string') {
-    const whole = node.match(/^\{\{(\w+)\}\}$/);
-    if (whole && whole[1]! in vars) return vars[whole[1]!];
-    return node.replace(/\{\{(\w+)\}\}/g, (m, k: string) => (k in vars ? String(vars[k]) : m));
-  }
-  if (Array.isArray(node)) return node.map((n) => fill(n, vars));
-  if (node && typeof node === 'object') return Object.fromEntries(Object.entries(node).map(([k, v]) => [k, fill(v, vars)]));
-  return node;
-}
-
-export async function upload(png: Buffer): Promise<string> {
-  const name = `zp_${crypto.createHash('sha1').update(png).digest('hex').slice(0, 16)}.png`;
+async function upload(png: Buffer): Promise<string> {
+  const name = `gd_${crypto.createHash('sha1').update(png).digest('hex').slice(0, 16)}.png`;
   const form = new FormData();
   form.append('image', new Blob([new Uint8Array(png)], { type: 'image/png' }), name);
   form.append('subfolder', 'gd_refs');
   form.append('overwrite', 'true');
-  const res = await fetch(`${BASE}/upload/image`, { method: 'POST', body: form });
+  const res = await fetch(`${base()}/upload/image`, { method: 'POST', body: form });
   if (!res.ok) throw new Error(`ComfyUI upload failed: ${res.status}`);
   const out = (await res.json()) as { name: string; subfolder?: string };
   return out.subfolder ? `${out.subfolder}/${out.name}` : out.name;
 }
 
-/** Queue a workflow and return every saved image (empty when the workflow saved none). */
-export async function run(workflow: unknown, timeoutMs = 600_000): Promise<Buffer[]> {
-  const q = await fetch(`${BASE}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: workflow, client_id: 'gd-zonepaint' }) });
-  const queued = (await q.json()) as any;
-  const id = queued.prompt_id as string;
-  if (!id) throw new Error(`ComfyUI did not queue: ${JSON.stringify(queued).slice(0, 400)}`);
+/** Queue a workflow and return every image it saved (empty when it saved none). */
+function run(model: string, wf: unknown, timeoutMs = 900_000): Promise<Buffer[]> {
+  return onGpu(model, () => execute(wf, timeoutMs));
+}
+
+async function execute(wf: unknown, timeoutMs: number): Promise<Buffer[]> {
+  const b = base();
+  const queued = (await (await fetch(`${b}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: wf, client_id: 'generative-daydream' }) })).json()) as { prompt_id?: string };
+  if (!queued.prompt_id) throw new Error(`ComfyUI did not queue: ${JSON.stringify(queued).slice(0, 400)}`);
+  const id = queued.prompt_id;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 600));
-    const hist = (await (await fetch(`${BASE}/history/${id}`)).json()) as any;
-    const entry = hist[id];
+    const entry = ((await (await fetch(`${b}/history/${id}`)).json()) as Record<string, any>)[id];
     if (!entry) continue;
-    if (entry.status?.status_str === 'error') throw new Error(`ComfyUI error: ${JSON.stringify(entry.status.messages?.find((m: any) => m[0] === 'execution_error')?.[1]?.exception_message ?? entry.status).slice(0, 400)}`);
+    if (entry.status?.status_str === 'error') {
+      const err = entry.status.messages?.find((m: [string, any]) => m[0] === 'execution_error')?.[1];
+      throw new ComfyError(String(err?.exception_message ?? 'execution error').slice(0, 400));
+    }
     if (!entry.status?.completed) continue;
     const out: Buffer[] = [];
-    for (const o of Object.values(entry.outputs ?? {}) as any[]) {
+    for (const o of Object.values(entry.outputs ?? {}) as { images?: { filename: string; subfolder?: string; type?: string }[] }[])
       for (const img of o.images ?? []) {
-        const p = new URLSearchParams({ filename: img.filename, subfolder: img.subfolder ?? '', type: img.type ?? 'output' });
-        out.push(Buffer.from(await (await fetch(`${BASE}/view?${p}`)).arrayBuffer()));
+        const q = new URLSearchParams({ filename: img.filename, subfolder: img.subfolder ?? '', type: img.type ?? 'output' });
+        out.push(Buffer.from(await (await fetch(`${b}/view?${q}`)).arrayBuffer()));
       }
-    }
     return out;
   }
-  throw new Error('ComfyUI timed out');
+  throw new ComfyError('timed out');
 }
 
-export async function textToImage(prompt: string, width: number, height: number, seed: number): Promise<Buffer> {
-  const [img] = await run(fill(template('qwen_image_2_1_turbo_t2i.json'), { prompt, width, height, seed, checkpoint: QWEN }));
-  if (!img) throw new Error('no image');
-  return img;
-}
+export class ComfyError extends Error {}
 
-/**
- * Repaint the white part of `mask` (binary) in `init`. The model also sees `ref` (default: init itself; null: no
- * reference image), encoded at `refres` (0 = its own size).
- */
-export async function inpaint(init: Buffer, mask: Buffer, prompt: string, width: number, height: number, seed: number, ref?: Buffer | null, refres = 0): Promise<Buffer> {
-  const wf = model(template('qwen_image_2_1_turbo_inpaint.json'));
-  if (ref === null) delete wf['452']!.inputs['images.image_1'];
-  const [img] = await run(fill(wf, { ref_1: ref === null ? '' : await upload(ref ?? init), init: await upload(init), mask: await upload(mask), prompt, negative: '', width, height, seed, checkpoint: QWEN, sigmas: TURBO, refres }));
-  if (!img) throw new Error('no image');
-  return img;
-}
-
-/** SAM 3: one mask image per detected object for a text prompt ("door", "tree:40" for up to 40). */
-export async function segment(png: Buffer, prompt: string, threshold = 0.4): Promise<Buffer[]> {
-  // Cached on disk by image, prompt and threshold (SAM is deterministic).
-  const key = crypto.createHash('sha1').update(png).update(`|${prompt}|${threshold}`).digest('hex');
-  const dir = path.join(ROOT_DIR, 'data', 'cache', 'sam', key);
-  if (fs.existsSync(path.join(dir, 'done'))) return fs.readdirSync(dir).filter((n) => n.endsWith('.png')).sort().map((n) => fs.readFileSync(path.join(dir, n)));
-  const store = (ms: Buffer[]) => {
-    fs.mkdirSync(dir, { recursive: true });
-    ms.forEach((m, i) => fs.writeFileSync(path.join(dir, `${String(i).padStart(3, '0')}.png`), m));
-    fs.writeFileSync(path.join(dir, 'done'), '');
-    return ms;
-  };
+/** Whether ComfyUI answers. */
+export async function comfyAlive(): Promise<boolean> {
   try {
-    return store(await run(fill(template('sam3_detect.json'), { ref_1: await upload(png), prompt, threshold, checkpoint: SAM })));
+    return (await fetch(`${base()}/system_stats`, { signal: AbortSignal.timeout(4000) })).ok;
+  } catch {
+    return false;
+  }
+}
+
+const one = (imgs: Buffer[], what: string) => {
+  if (!imgs[0]) throw new ComfyError(`${what} returned no image`);
+  return imgs[0];
+};
+
+/** Krea 2 Turbo, text to image (its turbo settings: 8 steps, cfg 1). */
+export async function kreaPaint(prompt: string, width: number, height: number, seed: number): Promise<Buffer> {
+  return one(await run(KREA, workflow('krea2_turbo_t2i.json', { prompt, width, height, seed, steps: 8, cfg: 1, checkpoint: KREA })), 'Krea');
+}
+
+/** Krea 2 AnyPaint: paint the white part of `mask` to continue `init`, redrawing `redraw` px of its boundary. */
+export async function kreaContinue(init: Buffer, mask: Buffer, prompt: string, seed: number, redraw = 32): Promise<Buffer> {
+  return one(await run(KREA, workflow('krea2_anypaint.json', { init: await upload(init), mask: await upload(mask), prompt, seed, redraw, refmax: ANYPAINT_REFERENCE, checkpoint: KREA })), 'AnyPaint');
+}
+
+/** A disk cache keyed by the image and the request (SAM, MoGe and SeedVR2 are deterministic). */
+function cached(kind: string, png: Buffer, key: string) {
+  const dir = path.join(CACHE, kind, crypto.createHash('sha1').update(png).update(`|${key}`).digest('hex'));
+  return {
+    get: (): Buffer[] | null => (fs.existsSync(path.join(dir, 'done')) ? fs.readdirSync(dir).filter((n) => n.endsWith('.png')).sort().map((n) => fs.readFileSync(path.join(dir, n))) : null),
+    put: (imgs: Buffer[]) => {
+      fs.mkdirSync(dir, { recursive: true });
+      imgs.forEach((m, i) => fs.writeFileSync(path.join(dir, `${String(i).padStart(3, '0')}.png`), m));
+      fs.writeFileSync(path.join(dir, 'done'), '');
+      return imgs;
+    },
+  };
+}
+
+/** SAM 3: one mask per detected object for a prompt ("door", or "tree:40" for up to 40). */
+export async function segment(png: Buffer, prompt: string, threshold = 0.35): Promise<Buffer[]> {
+  const c = cached('sam', png, `${prompt}|${threshold}`);
+  const hit = c.get();
+  if (hit) return hit;
+  try {
+    return c.put(await run('reader', workflow('sam3_detect.json', { ref_1: await upload(png), prompt, threshold, checkpoint: SAM })));
   } catch (e) {
     // Nothing found: the empty mask batch fails to save.
-    if (/size|empty|shape|0 elements|cannot/i.test(String(e))) return store([]);
+    if (e instanceof ComfyError && /size|empty|shape|0 elements|cannot/i.test(e.message)) return c.put([]);
     throw e;
   }
 }
 
-export async function freeGpu() {
-  await fetch(`${BASE}/free`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ unload_models: true, free_memory: true }) }).catch(() => {});
+/** MoGe 2: per-pixel surface normals (OpenGL: x right, y up, z towards the viewer). */
+export async function normals(png: Buffer): Promise<Buffer> {
+  const c = cached('moge', png, 'normal');
+  const hit = c.get();
+  if (hit) return hit[0]!;
+  const [normal] = await run('reader', workflow('moge_geometry.json', { ref_1: await upload(png), checkpoint: MOGE }));
+  return c.put([one(normal ? [normal] : [], 'MoGe')])[0]!;
 }
 
-/** Paint from pure noise while the edit model looks at reference images (kept at their own size). */
-export async function edit(refs: Buffer[], prompt: string, width: number, height: number, seed: number, refres = 0): Promise<Buffer> {
-  const wf = model(template('qwen_image_2_1_turbo_edit.json'));
-  const vars: Record<string, string | number> = { prompt, width, height, seed, checkpoint: QWEN, refres };
-  for (let i = 0; i < refs.length; i++) {
-    vars[`ref_${i + 1}`] = await upload(refs[i]!);
-    if (i > 0) {
-      wf[`500_${i + 1}`] = { class_type: 'LoadImage', inputs: { image: `{{ref_${i + 1}}}` } };
-      wf['452']!.inputs[`images.image_${i + 1}`] = [`500_${i + 1}`, 0];
-    }
-  }
-  const [img] = await run(fill(wf, vars));
-  if (!img) throw new Error('no image');
-  return img;
-}
-
-/** MoGe-2: per-pixel surface normals (camera frame, OpenGL: x right, y up, z towards the viewer) and depth. */
-export async function geometry(png: Buffer): Promise<{ normal: Buffer; depth: Buffer }> {
-  const key = crypto.createHash('sha1').update(png).update('|moge2').digest('hex');
-  const dir = path.join(ROOT_DIR, 'data', 'cache', 'moge', key);
-  if (fs.existsSync(path.join(dir, 'depth.png'))) return { normal: fs.readFileSync(path.join(dir, 'normal.png')), depth: fs.readFileSync(path.join(dir, 'depth.png')) };
-  const [normal, depth] = await run(fill(template('moge_geometry.json'), { ref_1: await upload(png), checkpoint: 'moge_2_vitl_normal_fp16.safetensors' }));
-  if (!normal || !depth) throw new Error('MoGe returned no images');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'normal.png'), normal);
-  fs.writeFileSync(path.join(dir, 'depth.png'), depth);
-  return { normal, depth };
+/** MoGe 2: disparity (nearer is brighter), normalised over the picture. */
+export async function depth(png: Buffer): Promise<Buffer> {
+  const c = cached('moge', png, 'depth');
+  const hit = c.get();
+  if (hit) return hit[0]!;
+  const [, d] = await run('reader', workflow('moge_geometry.json', { ref_1: await upload(png), checkpoint: MOGE }));
+  return c.put([one(d ? [d] : [], 'MoGe depth')])[0]!;
 }
 
 /**
- * Edit-mode outpainting: the window (unknown parts flat grey #808080) is the edit reference at its own size, and the
- * model paints the whole window from noise, seeing the known part cleanly at every step. Optional LoRA (model only).
+ * SeedVR2 upscale by an integer factor, in overlapping tiles (one 4K tile does not fit in memory) blended over a
+ * narrow band. SeedVR2 restores detail rather than blurring.
  */
-export async function outpaintEdit(win: Buffer, prompt: string, width: number, height: number, seed: number, lora?: string): Promise<Buffer> {
-  const wf = model(template('qwen_image_2_1_turbo_edit.json'));
-  if (lora) {
-    wf['455'] = { class_type: 'LoraLoaderModelOnly', inputs: { model: ['451', 0], lora_name: lora, strength_model: 1 } };
-    wf['490']!.inputs.model = ['455', 0];
-  }
-  const [img] = await run(fill(wf, { ref_1: await upload(win), prompt, width, height, seed, checkpoint: wf['451']!.inputs.unet_name === '{{checkpoint}}' ? QWEN : String(wf['451']!.inputs.unet_name), refres: 0 }));
-  if (!img) throw new Error('no image');
-  return img;
-}
-
-const KREA = 'krea2_turbo_fp8_scaled.safetensors';
-
-/** Krea 2 Turbo text-to-image (official turbo settings: 8 steps, cfg 1, euler/simple). */
-export async function kreaTextToImage(prompt: string, width: number, height: number, seed: number): Promise<Buffer> {
-  const [img] = await run(fill(template('krea2_turbo_t2i.json'), { prompt, width, height, seed, steps: 8, cfg: 1, checkpoint: KREA }));
-  if (!img) throw new Error('no image');
-  return img;
-}
-
-/** Krea 2 Turbo mask inpainting (SetLatentNoiseMask + Differential Diffusion): repaint the white part of `mask`. */
-export async function kreaInpaint(init: Buffer, mask: Buffer, prompt: string, seed: number): Promise<Buffer> {
-  const [img] = await run(fill(template('krea2_turbo_inpaint.json'), { init: await upload(init), mask: await upload(mask), prompt, seed, checkpoint: KREA }));
-  if (!img) throw new Error('no image');
-  return img;
-}
-
-/** Krea 2 AnyPaint (community LoRA + nodes): repaint the white part of `mask`, redrawing `redraw` px of the boundary. */
-export async function kreaAnyPaint(init: Buffer, mask: Buffer, prompt: string, seed: number, redraw = 32): Promise<Buffer> {
-  const [img] = await run(fill(template('krea2_anypaint.json'), { init: await upload(init), mask: await upload(mask), prompt, seed, redraw, refmax: Number(process.env.ZP_REFMAX ?? 768), checkpoint: KREA }));
-  if (!img) throw new Error('no image');
-  return img;
+export async function upscale(png: Buffer, factor: number, seed: number): Promise<Buffer> {
+  const c = cached('seedvr2', png, `${factor}|${seed}`);
+  const hit = c.get();
+  if (hit) return hit[0]!;
+  const F = factor;
+  const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const W = info.width, H = info.height, OW = W * F, OH = H * F;
+  const TW = Math.min(W, Math.round(3200 / F)), TH = Math.min(H, Math.round(1920 / F)), OV = Math.round(192 / F);
+  const starts = (total: number, size: number) => {
+    const out: number[] = [];
+    for (let v = 0; ; v += size - OV) {
+      out.push(Math.min(v, total - size));
+      if (v + size >= total) break;
+    }
+    return out;
+  };
+  const acc = new Float32Array(OW * OH * 3), wsum = new Float32Array(OW * OH);
+  for (const y0 of starts(H, TH))
+    for (const x0 of starts(W, TW)) {
+      const tile = await sharp(data, { raw: { width: W, height: H, channels: 3 } }).extract({ left: x0, top: y0, width: TW, height: TH }).png().toBuffer();
+      const up = one(await run(SEEDVR2, workflow('seedvr2_upscale.json', { ref_1: await upload(tile), scale: F, seed, checkpoint: SEEDVR2 })), 'SeedVR2');
+      const px = await sharp(up).resize(TW * F, TH * F).removeAlpha().raw().toBuffer();
+      const band = 16 * F, start = (OV * F) / 2 - band / 2;
+      const ramp = (d: number) => Math.max(0, Math.min(1, (d - start) / band));
+      for (let y = 0; y < TH * F; y++)
+        for (let x = 0; x < TW * F; x++) {
+          let a = 1;
+          if (x0 > 0) a = Math.min(a, ramp(x));
+          if (x0 + TW < W) a = Math.min(a, ramp(TW * F - 1 - x));
+          if (y0 > 0) a = Math.min(a, ramp(y));
+          if (y0 + TH < H) a = Math.min(a, ramp(TH * F - 1 - y));
+          if (!a) continue;
+          const k = (y0 * F + y) * OW + x0 * F + x, t = y * TW * F + x;
+          wsum[k]! += a;
+          for (let ch = 0; ch < 3; ch++) acc[k * 3 + ch]! += px[t * 3 + ch]! * a;
+        }
+    }
+  const out = Buffer.alloc(OW * OH * 3);
+  for (let k = 0; k < OW * OH; k++) for (let ch = 0; ch < 3; ch++) out[k * 3 + ch] = Math.round(acc[k * 3 + ch]! / Math.max(1e-6, wsum[k]!));
+  return c.put([await sharp(out, { raw: { width: OW, height: OH, channels: 3 } }).png().toBuffer()])[0]!;
 }

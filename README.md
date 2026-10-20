@@ -29,15 +29,16 @@ packages/server   TypeScript (Node) authoritative game server.
                   OpenAI images, Gemini images, llama.cpp decision models, procedural. Structured output with zod
                   validation, JSON repair, retry-with-feedback, concurrency limits, call log, and a GPU scheduler
                   that keeps one local model resident at a time. Image pipeline: LLM-written descriptive prompts,
-                  native alpha or background removal, seamless textures, cut-off detection, scoring by a decision
+                  native alpha or background removal, cut-off detection, scoring by a decision
                   model or vision LLM, regenerate until good enough.
-  worldgen/       Generation pipeline: concept → atlas → monsters/skills/items/affixes → main story →
-                  per-town and per-area content → procedural layouts → assembly & validation → art.
+  worldgen/       Generation as a task graph: concept → rules ∥ atlas → creatures → story → every place's
+                  people and lore → assembly → balancing; places are painted, read and furnished on the GPU
+                  meanwhile (from the atlas on), then characters, objects and icons.
   game/           Instances: zones, movement, traps, interactions, loot, trade, crafting, quests, NPC dialogue,
                   gossip/memory, combat (turns, AP, armor, statuses, surfaces), tactical AI, saves.
-packages/client   React UI + canvas isometric renderer (chunk-cached ground with soft blending, pitched-roof
-                  buildings, lighting and day/night, fog of war, weather, particles, combat overlays).
-config/           genai.example.json, ComfyUI workflow template.
+packages/client   React UI + canvas isometric renderer (each place's painting as the ground, figures in depth
+                  order, lighting and day/night, fog of war, weather, particles, combat reach rings).
+config/           genai.example.json, ComfyUI workflow templates.
 ```
 
 ### Design principles
@@ -59,7 +60,7 @@ Older layouts are migrated automatically on start (originals of JSON files go to
 
 ### Gameplay summary
 
-- Towns with enterable buildings (shops, inns, homes), wilderness, and dungeons with bosses, gates and levers, traps, chests, shrines, readable lore, waypoints for fast travel.
+- Towns with enterable buildings (shops, inns, homes), wilderness, and dungeons with bosses, traps, chests, readable lore, waypoints for fast travel. Every place is one painting (see `docs/world-art.md`).
 - Real-time exploration; combat starts when enemies spot you (or you strike first). Turn-based combat: action points, movement cost, physical/magic armor that must be broken before control effects land, surfaces (fire, water, ice, poison, blessed) and element interactions (wet + shock may stun).
 - Solo (with a "lone wolf" bonus), a party of up to four you control, or recruit NPC companions (AI-controlled unless you choose to command them).
 - Main story in arcs; each arc ends with a revelation. Side quests per town; NPCs can adapt quests in response to what you say and do, and (optionally) create new ones.
@@ -76,16 +77,16 @@ Each purpose maps to a provider:
 | Purpose | Used for | Notes |
 |---|---|---|
 | `world.design` | Concept, map, monsters, main story | Smartest model you have |
-| `world.content` | Towns, residents, side quests, tilesets, item/skill names | Many calls; can run in parallel |
+| `world.content` | Towns, residents, side quests, lore, item/skill names | Many calls; run in parallel |
 | `npc.decision` | NPC actions + speech each conversation turn | Latency matters; structured output, or a decision model (actions) with the LLM for speech |
 | `npc.dialogue` | Optional separate speech model | Only when `combineNpcDecisionAndDialogue` is false |
-| `image.texture` / `image.sprite` / `image.icon` | Art | ComfyUI, OpenAI images, Gemini images |
+| `image.sprite` / `image.icon` | Characters, objects and item icons | ComfyUI, OpenAI images, Gemini images |
 | `image.check` | Scoring generated images | Decision model or vision LLM; heuristics run regardless |
 | `image.prompt` | Writing long descriptive prompts for the image model | Used when the image provider has `"promptStyle": "descriptive"` |
 
 Provider types: `openai-chat` (OpenAI and any OpenAI-compatible server: llama.cpp, LM Studio, vLLM, Ollama, OpenRouter), `llamacpp-decision` (llama.cpp `/v1/systemone` decision models), `openai-responses`, `anthropic` (official SDK, structured outputs, server-side refusal fallbacks enabled — set `"extraBody": {"fallbacks": false}` to disable), `google`, `comfyui`, `openai-image`, `google-image`, `procedural`. API keys can be literal or `"env:VAR_NAME"`. `structured` can be `json_schema` (native constrained decoding), `json_object`, or `prompt` (schema in the prompt only) for servers without schema support.
 
-World generation runs all text steps first (including writing image prompts) and images last. Providers that share a `"gpu"` group never run at the same time: before switching models the engine unloads the resident one (llama.cpp router `/models/unload`, ComfyUI `/free`), and when it takes the GPU it also evicts anything another process left loaded. Image providers can set `"promptStyle": "descriptive"` (long observer-style paragraphs, for Qwen Image / Flux / Krea) or `"tags"` (SDXL), and `"alpha": "native"` (the model outputs transparency) or `"cutout"` (background removed in code).
+World generation runs text and image work side by side: places are painted (on the local ComfyUI) as soon as they have a name, while the story is still being written. Places need ComfyUI with Krea 2, SAM 3, MoGe 2 and SeedVR2 (`config/comfyui/`); its address is the comfyui provider's `baseUrl` (or `COMFY_URL`). Providers that share a `"gpu"` group never run at the same time: before switching models the engine unloads the resident one (llama.cpp router `/models/unload`, ComfyUI `/free`), and when it takes the GPU it also evicts anything another process left loaded. Image providers can set `"promptStyle": "descriptive"` (long observer-style paragraphs, for Qwen Image / Flux / Krea) or `"tags"` (SDXL), and `"alpha": "native"` (the model outputs transparency) or `"cutout"` (background removed in code).
 
 ## Local setup (16 GB VRAM)
 
@@ -98,7 +99,8 @@ All three share the GPU group `local`, so only one is loaded at a time.
 
 ## Known limitations (v1)
 
-- Without an image model, all art is procedural vector art drawn by the client. It is coherent and readable, but generated sprites/textures are what will make worlds feel unique. Generated character sprites are single-pose images (animated with bob/lean/flip), not frame-animated.
+- Building a world needs the configured models: there is no procedural stand-in for a missing one (the build waits, retries, and can be resumed).
+- People walking behind a painted building are drawn over it (no occlusion yet).
 - Combat balance was tuned with automated AI-vs-AI simulations (`packages/server/test/balance.test.ts`); it needs human playtesting, especially for higher levels and long campaigns.
 - The rule-based fallback NPC brain handles common intents (work, trade, rest, news, joining, persuasion, gifts, remembering dates) but real conversation quality depends on the decision model.
 - Multiplayer works mechanically but is lightly tested; there is no lobby chat or invite flow beyond "open to others".

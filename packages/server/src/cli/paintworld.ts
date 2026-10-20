@@ -21,29 +21,18 @@ if (redoArg > 0) {
 }
 const t0 = Date.now();
 let lastSave = Date.now();
-let current = '';
-await generateArt(
-  w,
-  level === 'essential' ? 'essential' : 'full',
-  (msg) => console.log(`[${((Date.now() - t0) / 60000).toFixed(1)}m] ${msg}`),
-  {
-    phase: (id, counts) => {
-      current = id;
-      console.log(`== ${id}${counts?.total ? ` (${counts.total})` : ''}`);
-    },
-    count: () => {},
-  },
-  () => {
+await generateArt(w, level === 'essential' ? 'essential' : 'full', {
+  only,
+  report: (msg) => console.log(`[${((Date.now() - t0) / 60000).toFixed(1)}m] ${msg}`),
+  onAsset: () => {
     if (Date.now() - lastSave > 10_000) {
       saveWorld(w);
       lastSave = Date.now();
     }
   },
-  undefined,
-  only,
-);
+});
 linkAssets(w);
 saveWorld(w);
 await genai().releaseGpu();
 const assets = Object.values(w.assets);
-console.log(`Done (${current}) in ${((Date.now() - t0) / 60000).toFixed(1)} min: ${assets.filter((a) => a.status === 'ok').length} ok, ${assets.filter((a) => a.status === 'failed').length} failed of ${assets.length}.`);
+console.log(`Done in ${((Date.now() - t0) / 60000).toFixed(1)} min: ${assets.filter((a) => a.status === 'ok').length} ok, ${assets.filter((a) => a.status === 'failed').length} failed of ${assets.length}.`);
