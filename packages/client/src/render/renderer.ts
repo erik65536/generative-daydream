@@ -5,12 +5,13 @@
  * the painting is the same isometric projection of that ground (a metre runs ISO_X pixels across and ISO_Y down).
  */
 import {
-  BODY, ISO_X, ISO_Y, NAV_CELL, PX_PER_METRE_UP, SPACING, fogSize, rx, skillRange, squeezeCost, walkAmong, walkCost,
-  type EntityView, type FeatureDef, type FxEvent, type Vec2,
+  BODY, ISO_X, ISO_Y, NAV_CELL, PX_PER_METRE_UP, SPACING, clipKey, fogSize, rx, skillRange, squeezeCost, walkAmong, walkCost,
+  type ActorAnim, type ClipName, type EntityView, type FeatureDef, type FxEvent, type Vec2,
 } from '@gd/shared';
 import type { GameClient, ZoneData } from '../net/game';
 import { hexToRgb, mix, rgb, type RGB } from './color';
-import { drawFigure, drawImageSprite, loadImage, type PoseFrames } from './sprites';
+import { drawFigure, drawImageSprite, loadImage } from './sprites';
+import { advance, cellBounds, drawCell, frameOf, newMotion, playOnce, rowOf, type Motion } from './actors';
 import { PlaceLight, type FigureLight } from './light';
 import { Mist, type MistFrame } from './mist';
 import { FxSystem } from './fx';
@@ -84,8 +85,8 @@ interface Anim {
   death: number;
   lastHp: number;
   fade: number;
-  /** 1 while walking up or down the screen (standing figure with a step bob), 0 for the painted stride. */
-  vert: number;
+  /** The animated actor's clip and timing (actors with clip sheets). */
+  motion: Motion;
 }
 
 interface Drawable {
@@ -609,22 +610,25 @@ export class Renderer {
 
   // ---------------------------------------------------------------------------- entities
 
-  /** Painted pose frames of a generated character, once loaded (walk frames only count as a pair). */
-  private poseFrames(key: string | undefined): PoseFrames | undefined {
-    const w = this.client.state.world;
-    if (!key || !w) return undefined;
-    const frame = (v: string) => {
-      const k = `${key}@${v}`;
-      const img = loadImage(this.client.assetUrl(k));
-      return img ? { img, rel: w.assets[k]?.relHeight ?? 1 } : undefined;
-    };
-    const strip = frame('walk');
-    const n = w.assets[`${key}@walk`]?.frames;
-    const strike = frame('strike');
-    const sn = w.assets[`${key}@strike`]?.frames;
-    const out: PoseFrames = { walk: strip && n ? { ...strip, frames: n } : undefined, strike: strike && sn ? { ...strike, frames: sn } : undefined, walk_a: frame('walk_a'), walk_b: frame('walk_b'), attack: frame('attack') };
-    return out.walk || out.strike || out.walk_a || out.attack ? out : undefined;
+  /** An actor's animation (clip sheets rendered from its rig), when its world has one. */
+  private actorAnim(key: string | undefined): ActorAnim | undefined {
+    return key ? this.client.state.world?.assets[key]?.anim : undefined;
   }
+
+  /** A clip's sheet, once loaded. The other clips of the actor start loading with it. */
+  private clipSheet(key: string, clip: ClipName): HTMLImageElement | null {
+    const anim = this.actorAnim(key);
+    if (!anim) return null;
+    const img = loadImage(this.client.assetUrl(clipKey(key, clip)));
+    if (!this.preloaded.has(key)) {
+      this.preloaded.add(key);
+      for (const c of Object.keys(anim.clips) as ClipName[]) loadImage(this.client.assetUrl(clipKey(key, c)));
+    }
+    return img && img.complete && img.naturalWidth > 0 ? img : null;
+  }
+  private preloaded = new Set<string>();
+  /** Developer option: light figures like the place (off: drawn as painted or rendered). */
+  figureLight = true;
 
   /** The steered leader's position this frame: walked locally, pulled gently toward where the server has it. */
   private predict(server: { x: number; y: number; moving: boolean; facing: number }, a: Anim, dt: number) {
@@ -674,7 +678,7 @@ export class Renderer {
   private anim(e: EntityView): Anim {
     let a = this.anims.get(e.id);
     if (!a) {
-      a = { px: e.x, py: e.y, walk: 0, moving: false, amt: 0, dir: 1, face: e.facing, hurt: 0, attack: 0, death: 0, lastHp: e.hp, fade: 0, vert: 0 };
+      a = { px: e.x, py: e.y, walk: 0, moving: false, amt: 0, dir: 1, face: e.facing, hurt: 0, attack: 0, death: 0, lastHp: e.hp, fade: 0, motion: newMotion() };
       this.anims.set(e.id, a);
     }
     return a;
@@ -717,10 +721,8 @@ export class Renderer {
       const sdx = fx - fy, sdy = (fx + fy) / 2;
       if (sdx < -0.3) a.dir = -1;
       else if (sdx > 0.3) a.dir = 1;
-      // Walking mostly up or down the screen: a painted side-on stride would look wrong, so the standing figure bobs.
-      // With hysteresis (in at a steep angle, out at a shallower one), so the change of walk never flickers.
-      const steep = Math.abs(sdy) / Math.max(1e-6, Math.abs(sdx));
-      a.vert = (a.vert > 0.5 ? steep > 1.0 : steep > 1.4) ? 1 : 0;
+      const anim = this.actorAnim(e.sprite);
+      if (anim) advance(a.motion, anim, dt, a.moving && gap <= 2.5, gap > 2.5 || !dt ? 0 : moved / dt, !!(e.dead || e.downed));
       const dir = a.dir;
       const back = sdy < -0.25;
       const depth = a.px + a.py + 0.1;
@@ -765,9 +767,13 @@ export class Renderer {
             ctx.restore();
           }
           const walk = a.amt > 0.02 ? a.walk : NaN;
-          const frames = this.poseFrames(e.sprite);
-          this.drawLit(height * 1.5, height * 1.1, l, (g) => {
-            if (img) drawImageSprite(g, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames, vertical: a.vert > 0.5 });
+          const sheet = anim && this.clipSheet(e.sprite!, a.motion.clip);
+          if (anim && sheet) {
+            const c = anim.clips[a.motion.clip]!, b = cellBounds(anim, e.scale);
+            const fallen = a.motion.clip === 'die' && a.motion.t > 0.4 * (c.frames / c.fps);
+            this.drawLit(b.half * 2, b.above, l, (g) => drawCell(g, sheet, anim, frameOf(a.motion, c), rowOf(a.face), e.scale), fallen, b.below);
+          } else this.drawLit(height * 1.5, height * 1.1, l, (g) => {
+            if (img) drawImageSprite(g, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack });
             else
               drawFigure(g, {
                 shape: e.shape, colors: e.colors.length ? e.colors : e.kind === 'character' ? ['#4a6a9a', '#2a3448', '#e0c060'] : ['#7a6a5a', '#4a3a30', '#d0b080'], scale: e.scale * 1.15, dir, back, walk, t: this.t, weapon: e.weapon, archetype: e.archetype,
@@ -815,11 +821,12 @@ export class Renderer {
    * its shape, washed with the light from the upper left, and put on the view (keeping the caller's alpha and glow). `w` x `h` (picture
    * px) bounds the figure above its feet; a downed figure lies on its side, so it gets a box around it.
    */
-  private drawLit(w: number, h: number, l: FigureLight, draw: (g: CanvasRenderingContext2D) => void, lying = false) {
+  private drawLit(w: number, h: number, l: FigureLight, draw: (g: CanvasRenderingContext2D) => void, lying = false, under?: number) {
     const ctx = this.ctx;
+    if (!this.figureLight) return draw(ctx);
     const T = ctx.getTransform();
     const k = T.a;
-    const top = lying ? h * 0.6 : h, below = lying ? h * 0.6 : h * 0.12;
+    const top = lying && under === undefined ? h * 0.6 : h, below = under ?? (lying ? h * 0.6 : h * 0.12);
     const bx = Math.floor(T.e - (w / 2) * k), by = Math.floor(T.f - top * k);
     const bw = Math.ceil(w * k) + 2, bh = Math.ceil((top + below) * k) + 2;
     if (bw * bh > 4e6) return draw(ctx);
@@ -1139,6 +1146,13 @@ export class Renderer {
 
   // ---------------------------------------------------------------------------- fx
 
+  /** Start a one-shot clip (a blow, a spell, a flinch) on an actor that has clip sheets. */
+  private playClip(id: string | undefined, clip: ClipName) {
+    const a = id ? this.anims.get(id) : undefined;
+    const e = id ? this.client.state.entities.get(id) : undefined;
+    if (a && e) playOnce(a.motion, clip, this.actorAnim(e.sprite));
+  }
+
   private onFx(events: FxEvent[]) {
     const st = this.client.state;
     const posOf = (id?: string) => {
@@ -1154,6 +1168,7 @@ export class Renderer {
           if (ev.damage.type !== 'heal' && !ev.damage.type.startsWith('armor')) {
             const a = ev.targetId ? this.anims.get(ev.targetId) : undefined;
             if (a) a.hurt = 0.3;
+            this.playClip(ev.targetId, 'hit');
             this.fx.burst(tp.x, tp.y, kindColor(ev.damage.type), ev.damage.crit ? 16 : 8, 1.8, 1);
           }
           break;
@@ -1167,6 +1182,7 @@ export class Renderer {
           const color = kindColor(ev.element);
           const a = ev.sourceId ? this.anims.get(ev.sourceId) : undefined;
           if (a) a.attack = 1;
+          this.playClip(ev.sourceId, ev.fx === 'arrow' ? 'attack' : 'cast');
           const kind = ev.fx === 'arrow' ? 'arrow' : ev.fx === 'beam' ? 'beam' : 'bolt';
           this.fx.projectile(sp.x, sp.y, to.x, to.y, color, kind, () => {
             this.fx.burst(to.x, to.y, color, ev.radius ? 30 : 12, ev.radius ? 3.5 : 2);
@@ -1180,6 +1196,7 @@ export class Renderer {
           const color = kindColor(ev.element);
           const a = ev.sourceId ? this.anims.get(ev.sourceId) : undefined;
           if (a) a.attack = 1;
+          this.playClip(ev.sourceId, ev.fx === 'slash' || ev.fx === 'arrow' || ev.fx === 'none' ? 'attack' : 'cast');
           if (ev.fx === 'heal') this.fx.rise(center.x, center.y, '#8dffb0', ev.radius ? 30 : 16);
           else if (ev.fx === 'buff') this.fx.rise(center.x, center.y, '#ffd880', 14);
           else if (ev.fx === 'debuff') this.fx.rise(center.x, center.y, '#d080ff', 12);

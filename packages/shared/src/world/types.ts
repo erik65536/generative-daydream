@@ -1,5 +1,6 @@
 /** The saved, pre-generated world. Instances (save states) reference a world by id. */
 import type { CombatMode, CommunicationLevel, GameLength, WorldSize } from '../rules/progression';
+import type { ActorAnim } from './anim';
 import type { MonsterArchetype, NpcRole, MerchantKind } from '../rules/actors';
 import type { QuestDef } from '../rules/quests';
 import type { DifficultyId, Modifier, Ruleset } from '../ruleset/types';
@@ -292,6 +293,8 @@ export interface AssetRecord {
   gen?: number;
   /** Re-roll count: each owner-requested repaint uses fresh seeds. */
   roll?: number;
+  /** A character or creature's animation: its clip sheets are the assets `<key>@anim-<clip>` (see world/anim.ts). */
+  anim?: ActorAnim;
 }
 
 /** The owner's changes to one asset: a custom brief or image prompt, and how often it was re-rolled. */

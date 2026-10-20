@@ -110,6 +110,21 @@ export interface GenAIConfig {
   waitForModelsMs?: number;
   /** Daily budgets for paid models, in dollars: per user (an admin can set each user's own) and for the whole server. */
   spending?: { dailyPerUserUsd?: number; dailyTotalUsd?: number; adminsUnlimited?: boolean };
+  /** Actor animation (packages/server/animator): mesh, rig and clip sheets for characters and creatures. */
+  animation?: AnimationConfig;
+}
+
+export interface AnimationConfig {
+  /** A Python with numpy, scipy and Pillow (ComfyUI's embedded Python has them). */
+  python: string;
+  /** Humanoid clip library: a glTF with UE-style bone names (Quaternius Universal Animation Library). */
+  library: string;
+  /** SkinTokens checkout and its own Python, for bodies other than humanoids. Without it, those keep their still image. */
+  skintokens?: { dir: string; python: string; device?: 'cuda' | 'cpu' };
+  /** The ComfyUI provider meshing runs on (default: the first comfyui provider). */
+  comfyProvider?: string;
+  /** Sheet pixels per game picture pixel (default 2). */
+  scale?: number;
 }
 
 // ------------------------------------------------------------------------------- decision models

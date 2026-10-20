@@ -13,6 +13,7 @@ export function DevPanel({ renderer, hudHidden, setHudHidden, onClose }: { rende
   const [q, setQ] = useState('');
   const [peace, setPeace] = useState(false);
   const [clamp, setClamp] = useState(!!renderer?.clampCamera);
+  const [figureLight, setFigureLight] = useState(renderer?.figureLight ?? true);
   if (!world) return null;
   const outer = world.zones.filter((z) => z.kind !== 'interior');
   const list = outer.flatMap((z) => [z, ...world.zones.filter((i) => i.parentZoneId === z.id)]).filter((z) => !q || z.name.toLowerCase().includes(q.toLowerCase()));
@@ -30,6 +31,7 @@ export function DevPanel({ renderer, hudHidden, setHudHidden, onClose }: { rende
         <button className="btn sm" onClick={() => renderer && (renderer.devZoom = !renderer.devZoom)}>Far zoom</button>
         <button className="btn sm" onClick={() => (c.send({ t: 'dev', action: 'peace', on: !peace }), setPeace(!peace))}>{peace ? 'Peaceful ✓' : 'Peaceful'}</button>
         <button className="btn sm" title="Show where people can walk (green) and what blocks sight (blue)" onClick={() => renderer && (renderer.showWalk = !renderer.showWalk)}>Walkable</button>
+        <button className="btn sm" title="Tint characters and creatures with the place's light (off: as painted or rendered)" onClick={() => { if (!renderer) return; renderer.figureLight = !renderer.figureLight; setFigureLight(renderer.figureLight); }}>{figureLight ? 'Figure light ✓' : 'Figure light'}</button>
         <button className="btn sm" title="Keep the view inside the painting (a small place sits centred with mist around it)" onClick={() => (renderer?.setClampCamera(!renderer.clampCamera), setClamp(!clamp))}>{clamp ? 'Clamp camera ✓' : 'Clamp camera'}</button>
       </div>
       <input className="input" placeholder="Find a place…" value={q} onChange={(e) => setQ(e.target.value)} />

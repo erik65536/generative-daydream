@@ -466,65 +466,19 @@ export function onImageSettled(url: string, cb: () => void) {
   waiters.set(url, [...(waiters.get(url) ?? []), cb]);
 }
 
-/** Painted pose frames of a generated character (each with its height relative to the standing pose). */
-export interface PoseFrames {
-  /** A walk-cycle strip: `frames` equal frames side by side, one full stride pair. */
-  walk?: { img: HTMLImageElement; rel: number; frames: number };
-  /** An attack strip: ready, wind-up, strike, follow-through. */
-  strike?: { img: HTMLImageElement; rel: number; frames: number };
-  walk_a?: { img: HTMLImageElement; rel: number };
-  walk_b?: { img: HTMLImageElement; rel: number };
-  attack?: { img: HTMLImageElement; rel: number };
-}
-
-/** Painted walk-cycle speed relative to the gait phase. */
-const STRIP_PACE = 0.3;
-
-export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; amt?: number; t: number; downed?: boolean; hurt?: number; attack?: number; frames?: PoseFrames; vertical?: boolean }) {
+/**
+ * A still sprite (an actor without clip sheets yet, see actors.ts): the painted standing view, mirrored to face
+ * the way it goes, with a breathing bob, a step bounce and a lean while walking, a lunge for an attack.
+ */
+export function drawImageSprite(ctx: CanvasRenderingContext2D, img: HTMLImageElement, opts: { height: number; dir: 1 | -1; walk: number; amt?: number; t: number; downed?: boolean; hurt?: number; attack?: number }) {
   const walking = !Number.isNaN(opts.walk);
   const m = walking ? opts.amt ?? 1 : 0;
-  // Pick the painted frame: a four-beat walk (stride, pass, other stride, pass) and the attack pose.
-  let img = base, rel = 1;
-  /** Source rectangle within `img` (a strip frame), or the whole image. */
-  let src: [number, number, number, number] | null = null;
-  const f = opts.frames;
-  const striking = !!opts.attack && opts.attack > 0.08 && opts.attack < 0.92;
-  const cycle = walking && m > 0.3 && !opts.vertical && f?.walk && f.walk.img.complete && f.walk.img.naturalWidth > 0;
-  const strikeReady = !!f?.strike && f.strike.img.complete && f.strike.img.naturalWidth > 0;
-  if (strikeReady && opts.attack && opts.attack > 0.02 && opts.attack < 0.98) {
-    // Hold each key a moment: ready, then the wind-up, the blow (longest), the follow-through.
-    const a = opts.attack, n = f!.strike!.frames;
-    const i = Math.min(n - 1, a < 0.14 ? 0 : a < 0.38 ? 1 : a < 0.7 ? 2 : 3);
-    img = f!.strike!.img;
-    rel = f!.strike!.rel;
-    const fw = img.naturalWidth / n;
-    src = [i * fw, 0, fw, img.naturalHeight];
-  } else if (f?.attack && striking) ({ img, rel } = f.attack);
-  else if (cycle) {
-    // One period of the walk phase is a full cycle (two steps): pick the frame for this moment of it.
-    const n = f!.walk!.frames;
-    // The gait phase runs at the procedural bob's pace (about 29 per second at walking speed); a painted cycle
-    // plays at about 1.4 per second, a natural walking cadence.
-    const t = opts.walk * STRIP_PACE;
-    const phase = (((t % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2);
-    const i = Math.floor(phase * n) % n;
-    img = f!.walk!.img;
-    rel = f!.walk!.rel;
-    const fw = img.naturalWidth / n;
-    src = [i * fw, 0, fw, img.naturalHeight];
-  } else if (walking && m > 0.3 && !opts.vertical && f?.walk_a && f.walk_b) {
-    const s = Math.sin(opts.walk);
-    if (s > 0.38) ({ img, rel } = f.walk_a);
-    else if (s < -0.38) ({ img, rel } = f.walk_b);
-  }
-  const framed = img !== base;
-  const h = opts.height * rel;
-  const w = ((src ? src[2] : img.naturalWidth) / img.naturalHeight) * h;
+  const h = opts.height;
+  const w = (img.naturalWidth / img.naturalHeight) * h;
   // Idle breathing blended with a walking gait: a rise on each step, a slight compression at foot-fall.
   const idleBob = Math.sin(opts.t * 2) * 0.6, idleSq = 1 + Math.sin(opts.t * 2) * 0.008;
-  // A painted walk cycle carries its own rise and fall: the procedural bounce is only for still poses.
-  const stepBob = walking ? Math.abs(Math.sin(opts.walk)) * (src ? 0.4 : 2.6) : 0;
-  const stepSq = walking && !src ? 1 - Math.pow(Math.cos(opts.walk), 8) * 0.035 : 1;
+  const stepBob = walking ? Math.abs(Math.sin(opts.walk)) * 2.6 : 0;
+  const stepSq = walking ? 1 - Math.pow(Math.cos(opts.walk), 8) * 0.035 : 1;
   const bob = idleBob * (1 - m) + stepBob * m;
   const squash = idleSq * (1 - m) + stepSq * m;
   ctx.save();
@@ -533,16 +487,13 @@ export function drawImageSprite(ctx: CanvasRenderingContext2D, base: HTMLImageEl
     ctx.globalAlpha *= 0.85;
   }
   if (opts.hurt && opts.hurt > 0) ctx.translate(Math.sin(opts.hurt * 40) * 2.5, 0);
-  // Lean into the direction of travel plus a gentle side-to-side sway per step (painted poses lean less: the pose does it).
-  const lean = opts.attack ? Math.sin(opts.attack * Math.PI) * (framed ? 0.05 : 0.18) : walking ? (framed ? 0.02 : 0.05 + Math.sin(opts.walk) * 0.025) * m : 0;
-  // A painted strike lunges forward a little.
-  if (framed && striking) ctx.translate(Math.sin(opts.attack! * Math.PI) * 6 * opts.dir, 0);
+  // Lean into the direction of travel plus a gentle side-to-side sway per step, and into a blow.
+  const lean = opts.attack ? Math.sin(opts.attack * Math.PI) * 0.18 : walking ? (0.05 + Math.sin(opts.walk) * 0.025) * m : 0;
   ctx.rotate(lean * opts.dir);
   // Painted characters face left (as their art direction asks): mirrored to go right.
   ctx.scale(-opts.dir, 1);
   // Widen slightly as it squashes, so the volume reads as constant.
   const wq = w * (1 + (1 - squash) * 0.6);
-  if (src) ctx.drawImage(img, src[0], src[1], src[2], src[3], -wq / 2, -h * squash - bob, wq, h * squash);
-  else ctx.drawImage(img, -wq / 2, -h * squash - bob, wq, h * squash);
+  ctx.drawImage(img, -wq / 2, -h * squash - bob, wq, h * squash);
   ctx.restore();
 }

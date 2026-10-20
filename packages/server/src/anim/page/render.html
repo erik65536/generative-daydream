@@ -1,0 +1,98 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Actor sheets</title>
+<script type="importmap">{ "imports": { "three": "/three/three.module.js" } }</script>
+</head><body>
+<script type="module">
+// Renders an actor's clips to sprite sheets at the game's camera, for packages/server/src/anim/render.ts.
+// window.renderActor({ job, body, scale, ss, clips: [names], outline }) →
+//   { cell: [w, h], anchor: [x, y], clips: { name: { frames, fps, loop, stride?, event? } }, sheets: { name: dataURL } }
+// A sheet has one row per direction (S, SW, W, NW, N, NE, E, SE) and one column per frame, at `scale` sheet pixels
+// per game picture pixel; the anchor is the ground point under the actor in every cell.
+import * as THREE from 'three';
+import { loadRig, isoScene, DIRS, dirYaw, UP_STRETCH, PX_PER_M } from './rig.js';
+import { PROCEDURAL, libraryClips, pose } from './clips.js';
+
+function frameGrid(clip) {
+  return Array.from({ length: clip.frames }, (_, f) => f / clip.frames);
+}
+
+window.renderActor = async (spec) => {
+  const rig = await loadRig(`/job/${spec.job}`, { outline: spec.outline ?? 0.014 });
+  const all = rig.meta.body === 'humanoid' ? libraryClips(await (await fetch(`/job/${spec.job}/clips.json`)).json()) : PROCEDURAL[rig.meta.body];
+  if (!all) throw new Error(`no clips for body ${rig.meta.body}`);
+  const names = spec.clips.filter((n) => all[n]);
+  const scale = spec.scale ?? 2, ss = spec.ss ?? 2;
+  const ppm = PX_PER_M * scale;
+  const holder = new THREE.Group();
+  holder.add(rig.root);
+  holder.scale.y = UP_STRETCH;
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(1);
+  renderer.setClearColor(0x000000, 0);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+  // Pass 1: the union of every frame's silhouette around the anchor, at sheet scale.
+  const h = rig.meta.height ?? 1.8;
+  const P = Math.ceil(Math.max(2, h) * ppm * 1.4) * 2 + 64, pax = P / 2, pay = Math.round(P * 0.7);
+  let { scene, cam } = isoScene(P, P, pax, pay, ppm);
+  scene.add(holder);
+  renderer.setSize(P, P);
+  const probe = document.createElement('canvas');
+  probe.width = probe.height = P;
+  const pg = probe.getContext('2d', { willReadFrequently: true });
+  let x0 = P, y0 = P, x1 = 0, y1 = 0;
+  for (const n of names)
+    for (let d = 0; d < 8; d++) {
+      holder.rotation.y = dirYaw(d);
+      for (const t of frameGrid(all[n])) {
+        pose(rig, all[n], t);
+        renderer.render(scene, cam);
+        pg.clearRect(0, 0, P, P);
+        pg.drawImage(renderer.domElement, 0, 0);
+        const px = pg.getImageData(0, 0, P, P).data;
+        for (let y = 0; y < P; y++)
+          for (let x = 0; x < P; x++)
+            if (px[(y * P + x) * 4 + 3] > 8) {
+              if (x < x0) x0 = x;
+              if (x > x1) x1 = x;
+              if (y < y0) y0 = y;
+              if (y > y1) y1 = y;
+            }
+      }
+    }
+  const pad = 4;
+  const ax = Math.ceil(Math.max(pax - x0, x1 - pax)) + pad; // symmetric about the anchor: mirroring stays simple
+  const cell = [2 * ax, Math.ceil(y1 - y0) + 2 * pad];
+  const anchor = [ax, Math.round(pay - y0) + pad];
+
+  // Pass 2: each clip into its sheet, rendered at ss× and reduced.
+  scene.remove(holder);
+  ({ scene, cam } = isoScene(cell[0] * ss, cell[1] * ss, anchor[0] * ss, anchor[1] * ss, ppm * ss));
+  scene.add(holder);
+  renderer.setSize(cell[0] * ss, cell[1] * ss);
+  const sheets = {}, clips = {};
+  for (const n of names) {
+    const c = all[n];
+    const sheet = document.createElement('canvas');
+    sheet.width = cell[0] * c.frames;
+    sheet.height = cell[1] * 8;
+    const sg = sheet.getContext('2d');
+    sg.imageSmoothingEnabled = true;
+    sg.imageSmoothingQuality = 'high';
+    for (let d = 0; d < 8; d++) {
+      holder.rotation.y = dirYaw(d);
+      frameGrid(c).forEach((t, f) => {
+        pose(rig, c, t);
+        renderer.render(scene, cam);
+        sg.drawImage(renderer.domElement, f * cell[0], d * cell[1], cell[0], cell[1]);
+      });
+    }
+    sheets[n] = sheet.toDataURL('image/png');
+    clips[n] = { frames: c.frames, fps: c.fps, loop: !!c.loop, ...(c.stride ? { stride: c.stride } : {}), ...(c.event !== undefined ? { event: c.event } : {}) };
+  }
+  renderer.dispose();
+  return { cell, anchor, clips, sheets, dirs: DIRS };
+};
+window.READY = true;
+</script>
+</body></html>

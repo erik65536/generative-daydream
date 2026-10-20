@@ -8,3 +8,6 @@ config/server.json
 coverage/
 data-test/
 config/genai.local-only.json
+
+# Python (packages/server/animator)
+__pycache__/
