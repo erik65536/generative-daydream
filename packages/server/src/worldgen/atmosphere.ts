@@ -10,7 +10,7 @@
  */
 import sharp from 'sharp';
 import { z } from 'zod';
-import { profileFor } from '../genai/promptprofiles';
+import { KREA_WRITER_NOTES } from '../genai/images';
 import { genai } from '../genai/service';
 import { kreaContinue, kreaPaint } from './comfy';
 import type { GpuQueue } from './gpu';
@@ -64,13 +64,12 @@ export async function designMist(b: MistBrief): Promise<string> {
   const g = genai();
   const plain = `Drifting ${b.weather === 'none' ? (b.indoor ? 'dusty haze' : 'mist') : `${b.weather} haze`} in tones of ${b.fogColor} and ${b.lightColor}.`;
   if (g.isProcedural('world.design')) return `${plain} ${FRAMING}`;
-  const profile = profileFor({ checkpoint: 'krea2' });
   const out = await g.structured('world.design', {
     system: 'You are the art director of a 2D isometric RPG. Each place has a layer of drifting air painted as a tileable texture, laid over unexplored ground and the edges of the place.',
     prompt: `PLACE: ${b.name} (${b.kind}${b.indoor ? ', indoors' : ''}): ${b.description}
 ${b.style ? `Art direction: ${b.style}\n` : ''}Light colour ${b.lightColor}, shadow colour ${b.fogColor}${b.weather !== 'none' ? `, weather: ${b.weather}` : ''}.
 
-Describe the air of this place as it would drift across it, seen from above: what it is (sea fog, river mist, ash haze, cave spores, smoke, dust, steam, pollen), its colours (from the palette, with the denser parts lighter than the thin parts), and its texture (soft billows, fine streaks, curling wisps, sparse motes). Two or three sentences, describing only the drifting air itself, in the art style.${profile.writerNotes ? `\n\n${profile.writerNotes}` : ''}`,
+Describe the air of this place as it would drift across it, seen from above: what it is (sea fog, river mist, ash haze, cave spores, smoke, dust, steam, pollen), its colours (from the palette, with the denser parts lighter than the thin parts), and its texture (soft billows, fine streaks, curling wisps, sparse motes). Two or three sentences, describing only the drifting air itself, in the art style.\n\n${KREA_WRITER_NOTES}`,
     schema: MistSchema,
     name: 'mist',
     maxTokens: 800,

@@ -18,7 +18,17 @@ describe('world studio', () => {
     expect(applyEdit(w, { type: 'quest', id: 'missing', title: 'x' })).toMatch(/No such/);
   });
 
-  it('owner briefs and re-rolls mark exactly that asset (and its variants) for repainting', async () => {
+  it('plans one base image per actor: people from the front, creatures in the view the prompt writer picks', async () => {
+    const w = await genWorld('A sleepy harbor town plagued by smugglers.');
+    const plan = planAssets(w, 'full');
+    expect(plan.some((r) => r.key.includes('@'))).toBe(false);
+    const people = plan.filter((r) => r.key.startsWith('spr_npc_') || r.key.startsWith('spr_origin_'));
+    expect(people.length).toBeGreaterThan(0);
+    expect(people.every((r) => r.view === 'front')).toBe(true);
+    expect(plan.filter((r) => r.key.startsWith('spr_mon_')).every((r) => r.view === undefined)).toBe(true);
+  });
+
+  it('owner briefs and re-rolls mark exactly that asset for repainting', async () => {
     const w = await genWorld('A sleepy harbor town plagued by smugglers.');
     // Pretend everything is painted.
     for (const r of planAssets(w, 'full')) w.assets[r.key] = { ...r, status: 'ok', file: `${r.key}.png` };
@@ -27,7 +37,7 @@ describe('world studio', () => {
     const key = `spr_npc_${npc.id}`;
     applyEdit(w, { type: 'art', key, brief: 'A tall figure in a yellow raincoat' });
     const plan = planAssets(w, 'full');
-    expect(plan.every((r) => r.key === key || r.ref === key)).toBe(true);
+    expect(plan.every((r) => r.key === key)).toBe(true);
     expect(plan.find((r) => r.key === key)?.prompt).toBe('A tall figure in a yellow raincoat');
     const entry = listArt(w).find((a) => a.key === key)!;
     expect(entry.defaultBrief).not.toBe(entry.brief);

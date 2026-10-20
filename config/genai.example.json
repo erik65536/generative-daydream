@@ -24,44 +24,18 @@
       "timeoutMs": 120000,
       "gpu": "local"
     },
-    "comfy-qwen": {
+    "comfy": {
       "type": "comfyui",
       "baseUrl": "http://127.0.0.1:8188",
-      "_comment": "editWorkflow paints variants (walking and attack poses, an opened chest) from an approved image as a reference, so they stay the same character. promptProfile picks the prompt wording for this model family (qwen-image-2, flux, sdxl); override any field in config/prompt-profiles/<id>.json.",
-      "workflow": "config/comfyui/qwen_image_2_1_turbo_t2i.json",
-      "editWorkflow": "config/comfyui/qwen_image_2_1_turbo_edit.json",
-      "checkpoint": "qwen_image_2.1_turbo_int8_convrot.safetensors",
-      "promptStyle": "descriptive",
-      "promptProfile": "qwen-image-2",
-      "alpha": "native",
+      "_comment": "Places, mist and every asset are painted with Krea 2 here. Assets (characters, creatures, objects, icons) use the workflow below: Krea paints the subject on the chroma-key backdrop the prompt writer picked and the cutter model (BiRefNet, ComfyUI's built-in Remove Background) marks it, in one job; the engine cuts it out against the known backdrop and scores the cut. Models: diffusion_models/krea2_turbo_fp8_scaled.safetensors, background_removal/birefnet.safetensors (Comfy-Org/BiRefNet).",
+      "workflow": "config/comfyui/krea2_cutout.json",
+      "checkpoint": "krea2_turbo_fp8_scaled.safetensors",
+      "cutter": "birefnet.safetensors",
+      "steps": 8,
+      "cfg": 1,
       "concurrency": 1,
       "timeoutMs": 300000,
       "gpu": "local"
-    },
-    "comfy-krea": {
-      "type": "comfyui",
-      "baseUrl": "http://127.0.0.1:8188",
-      "workflow": "config/comfyui/krea2_turbo_t2i.json",
-      "checkpoint": "krea2_turbo_fp8_scaled.safetensors",
-      "promptStyle": "descriptive",
-      "alpha": "cutout",
-      "concurrency": 1,
-      "timeoutMs": 300000,
-      "gpu": "local",
-      "upscaleWorkflow": "config/comfyui/seedvr2_upscale.json",
-      "upscaleModel": "seedvr2_7b_int8_convrot.safetensors"
-    },
-    "comfy-sdxl": {
-      "type": "comfyui",
-      "baseUrl": "http://127.0.0.1:8188",
-      "workflow": "config/comfyui/sdxl_txt2img.json",
-      "checkpoint": "sd_xl_base_1.0.safetensors",
-      "steps": 28,
-      "cfg": 6.5,
-      "concurrency": 1,
-      "gpu": "local",
-      "promptStyle": "tags",
-      "alpha": "cutout"
     },
     "openai": {
       "type": "openai-responses",
@@ -75,11 +49,6 @@
       "reasoningTokens": 12000,
       "_comment": "Hosted text and structured output. Put OPENAI_API_KEY in .env at the repository root. 'flex' is half price; busy capacity is waited out. 'strict' enforces the schema while decoding."
     },
-    "openai-images": {
-      "type": "openai-image",
-      "apiKey": "env:OPENAI_API_KEY",
-      "model": "gpt-image-1"
-    },
     "anthropic": {
       "type": "anthropic",
       "apiKey": "env:ANTHROPIC_API_KEY",
@@ -89,11 +58,6 @@
       "type": "google",
       "apiKey": "env:GEMINI_API_KEY",
       "model": "gemini-2.5-flash"
-    },
-    "gemini-images": {
-      "type": "google-image",
-      "apiKey": "env:GEMINI_API_KEY",
-      "model": "gemini-2.5-flash-image"
     },
     "openai-decide": {
       "type": "openai-decision",
@@ -157,23 +121,21 @@
       "provider": "llm",
       "temperature": 0.7,
       "maxTokens": 4000,
-      "retries": 1
+      "retries": 1,
+      "_comment": "Writes each asset's Krea prompt and picks its chroma-key backdrop (green, blue or magenta) and, for creatures, the view (front or side)."
     },
     "image.sprite": {
-      "provider": "comfy-qwen",
-      "width": 832,
-      "height": 1216,
+      "provider": "comfy",
       "maxAttempts": 3
     },
     "image.icon": {
-      "provider": "comfy-qwen",
-      "width": 1024,
-      "height": 1024,
+      "provider": "comfy",
       "maxAttempts": 2
     },
     "image.check": {
       "provider": "decider",
-      "minScore": 6
+      "minScore": 6,
+      "_comment": "Judges each painting's content (subject, framing, pose). The cut itself is scored without a model, against the known backdrop."
     },
     "speech.input": {
       "provider": "openai-stt"

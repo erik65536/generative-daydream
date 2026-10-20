@@ -288,6 +288,10 @@ export interface AssetRecord {
   relHeight?: number;
   /** Animation strips (the walk cycle): number of equal frames side by side. */
   frames?: number;
+  /** Actors: the base view painted (front for people and upright figures, side for animals and other body plans), the one the 3D animation step builds from. */
+  view?: 'front' | 'side';
+  /** The chroma-key backdrop it was painted on (picked by the prompt writer; another one when the colours clash). */
+  backdrop?: 'green' | 'blue' | 'magenta';
   /** Art pipeline version that painted it (older art is repainted when the pipeline improves). */
   gen?: number;
   /** Re-roll count: each owner-requested repaint uses fresh seeds. */

@@ -8,7 +8,7 @@
  */
 
 /** Which model a task loads (the reader is SAM 3 and MoGe 2 together: both are small). */
-export type GpuModel = 'krea' | 'reader' | 'seedvr2' | 'qwen';
+export type GpuModel = 'krea' | 'reader' | 'seedvr2';
 
 interface Task {
   model: GpuModel;
