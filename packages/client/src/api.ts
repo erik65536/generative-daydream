@@ -116,6 +116,8 @@ export interface StudioView {
   world: Omit<import('@gd/shared').WorldDefinition, 'generationLog' | 'rulesIntent'>;
   art: ArtEntry[];
   busy: boolean;
+  /** Each character's and creature's animation: done, waiting its turn, failed (with why), or not configured. */
+  motion?: Record<string, { state: 'animated' | 'waiting' | 'failed' | 'off'; error?: string }>;
 }
 
 export type StudioEdit =
@@ -126,7 +128,8 @@ export type StudioEdit =
 
 export type StudioTask =
   | { kind: 'rewrite'; target: { type: 'npc' | 'quest' | 'zone'; id: string }; guidance: string }
-  | { kind: 'paint'; keys: string[]; reroll?: boolean };
+  | { kind: 'paint'; keys: string[]; reroll?: boolean }
+  | { kind: 'animate'; keys: string[]; from?: 'render' | 'clips' | 'rig' | 'mesh' };
 
 export type CharSpec = Omit<import('@gd/shared').CharacterSpec, 'sprite'>;
 
@@ -160,6 +163,7 @@ export const api = {
   studio: (id: string) => call<StudioView>('GET', `/api/worlds/${id}/studio`),
   studioEdit: (id: string, edits: StudioEdit | StudioEdit[]) => call<StudioView>('POST', `/api/worlds/${id}/studio/edit`, edits),
   studioTask: (id: string, task: StudioTask) => call<{ ok: true }>('POST', `/api/worlds/${id}/studio/task`, task),
+  studioAnimate: (id: string, keys: string[], from: 'render' | 'clips' | 'rig' | 'mesh') => call<StudioView>('POST', `/api/worlds/${id}/studio/task`, { kind: 'animate', keys, from }),
   genai: () => call<{ purposes: { purpose: string; provider: string; type: string; model?: string; gpu?: string }[]; recent: { at: number; purpose: string; provider: string; ms: number; ok: boolean; error?: string; attempt: number; preview?: string }[]; gpu: { group: string; resident: string | null; switches: number }[]; configFile: string | null }>('GET', '/api/genai'),
   genaiRelease: () => call<{ gpu: { group: string; resident: string | null; switches: number }[] }>('POST', '/api/genai/release'),
   genaiReload: () => call<unknown>('POST', '/api/genai/reload', {}),

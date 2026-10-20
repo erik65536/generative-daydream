@@ -11,11 +11,15 @@ import { conceptSummary } from './prompts';
 import { ART_PHASE, paintArt, WorldGenJob } from './pipeline';
 import { activeJob } from '../jobs/queue';
 import { listArt, planAssets } from './art';
+import { actorSprites } from '../anim/actors';
+import { animationState } from '../anim/job';
 
 /** Everything the studio shows (the owner may see spoilers: it is their world). */
 export function studioView(w: WorldDefinition) {
   const { generationLog: _log, rulesIntent: _intent, ...world } = w;
-  return { world, art: listArt(w), busy: !!activeJob(w.id) };
+  // Each character's and creature's animation: done, waiting its turn, or failed (with why).
+  const motion = Object.fromEntries(actorSprites(w).map((a) => [a.key, animationState(w, a)]));
+  return { world, art: listArt(w), busy: !!activeJob(w.id), motion };
 }
 
 // ------------------------------------------------------------------------------------ direct edits
@@ -201,6 +205,8 @@ export async function rewrite(w: WorldDefinition, target: RewriteTarget, guidanc
 export const TaskSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('rewrite'), target: z.object({ type: z.enum(['npc', 'quest', 'zone']), id: z.string() }), guidance: z.string().max(2000).default('') }),
   z.object({ kind: z.literal('paint'), keys: z.array(z.string()).min(1).max(400), reroll: z.boolean().default(true) }),
+  // Animate again from a step (render: a new look; mesh: a new model). Runs in the background animation job.
+  z.object({ kind: z.literal('animate'), keys: z.array(z.string()).min(1).max(400), from: z.enum(['render', 'clips', 'rig', 'mesh']).default('mesh') }),
 ]);
 export type StudioTask = z.infer<typeof TaskSchema>;
 
@@ -209,6 +215,7 @@ export type StudioTask = z.infer<typeof TaskSchema>;
  * restart skips its finished first stage and paints whatever is still out of date.
  */
 export async function runStudioJob(job: WorldGenJob, w: WorldDefinition, task: StudioTask): Promise<void> {
+  if (task.kind === 'animate') return; // queued directly (see the studio task route)
   const first = task.kind === 'rewrite' ? { id: 'rewrite', label: 'Rewriting', detail: 'The text model revises it' } : null;
   const resumed = job.phases.some((p) => p.status !== 'pending');
   const firstDone = !!first && job.phases.some((p) => p.id === first.id && p.status === 'done');

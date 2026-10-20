@@ -139,10 +139,12 @@ re-render. Server code: `src/anim/` (TypeScript) and `animator/` (Python); clien
    feet-to-neck axis (the image's camera may look down) and turned to face +Z. Then the ankles are checked: each
    should sit in a boot, a few centimetres from the mesh around it. Some seeds make the lower body one mass (a long
    coat down to the ground, no legs), which reads as a figure standing in front of a post; an ankle more than 9 cm
-   from the mesh has the model made again with another seed, and the one that covers the ankles better is kept. *Other bodies* (`skintokens.py`,
-   `rig_auto.py`): SkinTokens (UniRig's successor) rigs any mesh; its chains are named: quadrupeds' four lowest
-   leaves are feet (legs FL/FR/BL/BR), the path to the far, high end is the spine and head, chains behind the hips
-   the tail; floaters are levelled so their chains hang straight down (tentacles). The texture's colours are
+   from the mesh has the model made again with another seed, and the one that covers the ankles better is kept.
+   *Other bodies* (`skintokens.py`, `rig_auto.py`): SkinTokens (UniRig's successor) rigs any mesh, and its chains
+   are named. Legged walkers (dogs, crabs, spiders): the leaves near the ground are feet, each leg gets its side,
+   its place front to back and its gait phase (a lateral-sequence walk for four legs, alternating tripods for more);
+   the path to the far, high end is the spine and head, chains behind the hips the tail. Floaters are levelled so
+   their chains hang straight down (tentacles). The texture's colours are
    matched to the painting (TRELLIS bakes a flat, muddy albedo) and sharpened a little.
 3. **Clips.** *Humanoids* (`retarget.py`): Quaternius' Universal Animation Library (CC0), retargeted by bone
    direction (A-pose and T-pose rigs map onto each other); per clip it measures the stride (from how fast a planted
@@ -159,6 +161,18 @@ re-render. Server code: `src/anim/` (TypeScript) and `animator/` (Python); clien
 order S, SW, W, NW, N, NE, E, SE and a column per frame, at `scale` (2) sheet pixels per picture pixel; the
 sprite's own record carries `anim`: cell, anchor, height, body plan, the image it was made from, and per clip its
 frames, frame rate, loop, stride and event frame. A repainted actor (a new image file) is animated again.
+
+**Body plans** come from the painted view: people and upright figures are painted from the front (humanoid);
+animals and other bodies from the side, and of those, ones that hover or drift are floaters and the rest walk on
+legs. Art without a recorded view is read from its brief the same way (`anim/actors.ts`).
+
+**When**: animation follows the art in the background. Whenever a build, an art job or a studio task finishes, the
+world's `animate` job is queued if any character or creature lacks current sheets (`anim/job.ts`). It does one
+actor per run (the heroes, then the first place's people and creatures, then the rest by place, bosses last) and
+queues itself again, at a low priority, so builds and studio work take turns with it; it does not count as the
+world's one active job, and it saves only its actor's records onto the world as it is on disk. An actor that fails
+keeps its still image until its picture changes or the owner asks again. Steps are kept per actor in
+`data/worlds/<id>/anim/<key>/`, so a stopped job resumes.
 
 **In the game** (`render/actors.ts`): the row is the screen direction the actor faces; dead or downed actors fall
 and stay down; damage plays the hit, a blow or arrow the attack, any other skill the cast, over whatever else is
@@ -191,7 +205,9 @@ Owners open `#/world/<id>/studio` to see and change everything a world is made o
 - **People**, **Quests**: every text field is editable; "Rewrite with AI" revises one with the owner's
   direction. Renames carry into every text that mentions the old name. A person whose look changes is repainted.
 - **Creatures** and **Art**: every image with its brief and image prompt; the owner can replace either
-  (`world.artOverrides`), reset, or repaint with new seeds.
+  (`world.artOverrides`), reset, or repaint with new seeds. A character's or creature's card shows its animation:
+  its clips playing in turn while it turns through the eight directions (or one clip and direction picked), or that
+  it waits its turn or failed and why; "Render the clips again" and "Make a new 3D model" queue it again.
 
 ## Tools
 

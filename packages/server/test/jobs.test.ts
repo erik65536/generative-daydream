@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import crypto from 'node:crypto';
 import { globalDb, loadWorld } from '../src/storage';
-import { claimNext, enqueue, getJobRecord, JobConflict, logTail, requestCancel } from '../src/jobs/queue';
+import { activeJob, claimNext, enqueue, enqueueAnimation, getJobRecord, JobConflict, latestJob, logTail, requestCancel } from '../src/jobs/queue';
 import { Job, JobYield, workerState } from '../src/jobs/job';
 import { startWorker } from '../src/jobs/worker';
 import { runGeneration, startWorldGeneration } from '../src/worldgen/pipeline';
@@ -84,5 +84,22 @@ describe('durable jobs', () => {
     }
     expect(loadWorld(worldId)?.status).toBe('ready');
     expect((globalDb().prepare('SELECT status FROM jobs WHERE world_id = ?').get(worldId) as { status: string }).status).toBe('done');
+  });
+
+  it('animation runs beside the world jobs, queued once, after them', () => {
+    const w = wid();
+    enqueueAnimation(w, owner);
+    enqueueAnimation(w, owner);
+    const anims = globalDb().prepare(`SELECT id, priority FROM jobs WHERE world_id = ? AND kind = 'animate' AND status = 'queued'`).all(w) as { id: string; priority: number }[];
+    expect(anims).toHaveLength(1);
+    // It neither blocks nor shows as the world's job.
+    expect(activeJob(w)).toBeUndefined();
+    expect(latestJob(w)).toBeUndefined();
+    const art = enqueue('art', w, owner, { level: 'full' }, { priority: 5 });
+    expect(activeJob(w)?.id).toBe(art.id);
+    // Everything else is claimed first.
+    expect(claimNext('t-anim')?.id).toBe(art.id);
+    expect(claimNext('t-anim')?.id).toBe(anims[0]!.id);
+    globalDb().prepare(`UPDATE jobs SET status = 'cancelled' WHERE world_id = ?`).run(w);
   });
 });

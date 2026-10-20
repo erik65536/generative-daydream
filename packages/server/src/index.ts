@@ -19,6 +19,8 @@ import { dailyLimitFor, installSpendLedger } from './spending';
 import { withCallContext } from './genai/context';
 import { BudgetExceeded } from './genai/spend';
 import { applyEdit, EditSchema, studioView, TaskSchema } from './worldgen/studio';
+import { animationConfig } from './anim/animator';
+import { queueAnimation, requestRedo } from './anim/job';
 import { incompatibility, instances } from './game/manager';
 
 const PORT = Number(process.env.GD_PORT ?? 3000);
@@ -392,9 +394,16 @@ app.post('/api/worlds/:id/studio/edit', auth, (req, res) => {
 app.post('/api/worlds/:id/studio/task', auth, (req, res) => {
   const w = ownedWorld(req, res);
   if (!w) return;
-  if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this daydream.' });
   const task = TaskSchema.safeParse(req.body);
   if (!task.success) return void res.status(400).json({ error: task.error.issues[0]?.message ?? 'Invalid task.' });
+  if (task.data.kind === 'animate') {
+    // Animation runs in its own background job, beside whatever else is being made.
+    if (!animationConfig()) return void res.status(400).json({ error: 'Animation is not configured (config/genai.json "animation").' });
+    for (const k of task.data.keys) if (w.assets[k]) requestRedo(w.id, k, task.data.from);
+    queueAnimation(w, { id: w.ownerId, name: w.ownerName });
+    return void res.json(studioView(w));
+  }
+  if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this daydream.' });
   if (task.data.kind === 'paint' && genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
   const u = (req as AuthedRequest).user;
   if (!queueJob(res, 'studio', w, u, { task: task.data }, 3)) return;

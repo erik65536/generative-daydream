@@ -505,6 +505,7 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .art-thumb.texture img { width: 100%; height: 100%; object-fit: cover; }
 .art-thumb.mini { width: 40px; height: 40px; border-radius: 6px; cursor: default; }
 .art-card .art-thumb.tiny-thumb { width: 44px; height: 44px; cursor: default; }
+.clip-preview { width: auto; height: 220px; max-width: 100%; border-radius: 8px; border: 1px solid var(--line); background: #6f7469; image-rendering: auto; }
 .art-card:not(.compact) > .row { flex-wrap: wrap; }
 .clamp1, .clamp2 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; }
 .clamp1 { -webkit-line-clamp: 1; }

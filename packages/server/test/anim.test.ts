@@ -54,6 +54,12 @@ describe('actors', () => {
     expect(bodyPlan(sprite('spr_boss_b0_d', 'A tall knight whose wolf pelt hangs from his shoulders'))).toBe('humanoid');
   });
 
+  it('takes the body plan from the painted view when the art plan recorded it', () => {
+    expect(bodyPlan(sprite('spr_mon_f0_a', 'A gaunt grey wolf', { view: 'front' }))).toBe('humanoid');
+    expect(bodyPlan(sprite('spr_mon_f0_b', 'A squat bronze guardian', { view: 'side' }))).toBe('quadruped');
+    expect(bodyPlan(sprite('spr_mon_f0_c', 'A drifting jellyfish lantern', { view: 'side' }))).toBe('floater');
+  });
+
   it('animates character and creature sprites only, again when repainted', () => {
     const w = {
       assets: {

@@ -1,8 +1,8 @@
 /**
- * Which of a world's sprites are actors to animate, and their body plans. Until the art plan records a body plan
- * per actor, it is read from the actor's brief: people are humanoid; creatures that hover or drift are floaters;
- * animals that walk on four or more legs (dogs, crabs, spiders) are "quadrupeds"; anything else is tried as a
- * humanoid.
+ * Which of a world's sprites are actors to animate, and their body plans. The art plan paints people and upright
+ * figures from the front (humanoid) and animals and other bodies from the side: of those, ones that hover or drift
+ * are floaters, the rest walk on legs ("quadruped": dogs, crabs, spiders). Art without a recorded view (older
+ * worlds) is read from its brief the same way; anything unclear is tried as a humanoid.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,6 +21,9 @@ const FEET = /\b(boots|soles|legs|feet)\b/i;
 export function bodyPlan(rec: AssetRecord): BodyPlan {
   if (/^spr_(origin|npc)_/.test(rec.key)) return 'humanoid';
   const text = `${rec.prompt ?? ''} ${rec.imagePrompt ?? ''}`;
+  // The art plan paints people and upright figures from the front, animals and other body plans from the side.
+  if (rec.view === 'front') return 'humanoid';
+  if (rec.view === 'side') return FLOATER.test(text) && !FEET.test(rec.prompt ?? '') ? 'floater' : 'quadruped';
   if (FLOATER.test(text) && !FEET.test(rec.prompt ?? '')) return 'floater';
   if (LEGGED.test(text) || (ANIMAL.test(text) && !PERSON.test(text))) return 'quadruped';
   return 'humanoid';

@@ -8,7 +8,8 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { globalDb, tx } from '../storage';
 
-export type JobKind = 'world' | 'rules' | 'art' | 'studio';
+/** `animate` (one actor's 3D model, rig and clip sheets per run) runs beside a world's other jobs. */
+export type JobKind = 'world' | 'rules' | 'art' | 'studio' | 'animate';
 export type JobStatus = 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'cancelled';
 export const ACTIVE: JobStatus[] = ['queued', 'running', 'waiting'];
 
@@ -97,8 +98,9 @@ const q = {
   insert: db.prepare(`INSERT INTO jobs (id, kind, world_id, owner_id, owner_name, params, status, priority, created_at, updated_at, step, phases)
     VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?)`),
   get: db.prepare('SELECT * FROM jobs WHERE id = ?'),
-  latestForWorld: db.prepare('SELECT * FROM jobs WHERE world_id = ? ORDER BY created_at DESC LIMIT 1'),
-  activeForWorld: db.prepare(`SELECT * FROM jobs WHERE world_id = ? AND status IN ('queued', 'running', 'waiting') ORDER BY created_at LIMIT 1`),
+  latestForWorld: db.prepare(`SELECT * FROM jobs WHERE world_id = ? AND kind != 'animate' ORDER BY created_at DESC LIMIT 1`),
+  activeForWorld: db.prepare(`SELECT * FROM jobs WHERE world_id = ? AND kind != 'animate' AND status IN ('queued', 'running', 'waiting') ORDER BY created_at LIMIT 1`),
+  queuedAnimation: db.prepare(`SELECT id FROM jobs WHERE world_id = ? AND kind = 'animate' AND status = 'queued' LIMIT 1`),
   activeForOwner: db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE owner_id = ? AND status IN ('queued', 'running', 'waiting')`),
   // Runnable: queued, or running/waiting under a lease that ran out (its worker stopped).
   claimable: db.prepare(`SELECT * FROM jobs WHERE status = 'queued' OR (status IN ('running', 'waiting') AND (lease_until IS NULL OR lease_until < ?))
@@ -131,6 +133,16 @@ export function enqueue(kind: JobKind, worldId: string, owner: { id: string; nam
     const now = Date.now();
     q.insert.run(id, kind, worldId, owner.id, owner.name, JSON.stringify(params ?? {}), opts.priority ?? 5, now, now, opts.step ?? 'Waiting for a free worker', JSON.stringify((opts.phases ?? []).map((p) => ({ ...p, status: 'pending' }))));
     return toJob(q.get.get(id) as unknown as Row)!;
+  });
+}
+
+/** Queue a world's animation job (low priority: everything else goes first), unless one is already queued. */
+export function enqueueAnimation(worldId: string, owner: { id: string; name: string }): void {
+  tx(() => {
+    if (q.queuedAnimation.get(worldId)) return;
+    const id = `j_${crypto.randomBytes(6).toString('hex')}`;
+    const now = Date.now();
+    q.insert.run(id, 'animate', worldId, owner.id, owner.name, '{}', 8, now, now, 'Waiting for a free worker', '[]');
   });
 }
 

@@ -11,6 +11,7 @@ import { withCallContext } from '../genai/context';
 import { loadWorld, saveWorld } from '../storage';
 import { placeholderWorld, runArtJob, runGeneration, runRulesJob } from '../worldgen/pipeline';
 import { runStudioJob, type StudioTask } from '../worldgen/studio';
+import { queueAnimation, runAnimateJob } from '../anim/job';
 import { Job, JobYield, workerState } from './job';
 import { claimNext, HOLDER, purgeOldLogs, renewLease, requeue, type JobRecord } from './queue';
 
@@ -33,6 +34,8 @@ async function execute(rec: JobRecord, job: Job): Promise<void> {
       return runArtJob(job, world());
     case 'studio':
       return runStudioJob(job, world(), p.task as StudioTask);
+    case 'animate':
+      return runAnimateJob(job, rec.worldId);
   }
 }
 
@@ -47,6 +50,11 @@ async function run(rec: JobRecord): Promise<void> {
     // The daydream's owner pays for its building, painting and studio work.
     await withCallContext({ priority: rec.kind === 'studio' ? 'studio' : 'background', onWait: (why) => job.waiting(why), userId: rec.ownerId }, () => execute(rec, job));
     job.finish(job.cancelled ? 'cancelled' : 'done');
+    // New or repainted characters and creatures: their animation follows in the background.
+    if (rec.kind !== 'animate' && !job.cancelled) {
+      const w = loadWorld(rec.worldId);
+      if (w?.status === 'ready') queueAnimation(w, { id: rec.ownerId, name: rec.ownerName });
+    }
   } catch (e) {
     if (e instanceof JobYield) {
       job.push('Paused for a worker restart; it continues where it left off.', 'step');

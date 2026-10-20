@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { groundToPicture, type AssetRecord, type NpcDef, type ZoneDef } from '@gd/shared';
 import { api, assetUrl, jobActive, type ArtEntry, type JobStatus, type Me, type StudioEdit, type StudioTask, type StudioView } from '../api';
+import { ClipPreview } from '../ui/clips';
 import { Backdrop } from '../ui/Backdrop';
 import { TopBar } from './Lobby';
 import { PhaseList } from './WorldPage';
@@ -16,6 +17,9 @@ interface Ctx {
   busy: boolean;
   edit: (e: StudioEdit | StudioEdit[]) => Promise<void>;
   task: (t: StudioTask, confirmText?: string) => Promise<void>;
+  /** Animate actors again from a step (in the background animation job). */
+  animate: (keys: string[], from: 'render' | 'mesh') => Promise<void>;
+  motion: NonNullable<StudioView['motion']>;
   go: (tab: Tab, id?: string) => void;
 }
 
@@ -72,6 +76,14 @@ export function Studio({ me, worldId }: { me: Me; worldId: string }) {
         alert((x as Error).message);
       }
     },
+    animate: async (keys, from) => {
+      try {
+        setView(await api.studioAnimate(worldId, keys, from));
+      } catch (x) {
+        alert((x as Error).message);
+      }
+    },
+    motion: view.motion ?? {},
     go: (t, id) => {
       setTab(t);
       setSel(id);
@@ -190,6 +202,26 @@ function Rewrite({ ctx, target, what }: { ctx: Ctx; target: { type: 'npc' | 'que
   );
 }
 
+/** A character's or creature's animation: its clips playing, or why it has none yet, and buttons to redo it. */
+function Motion({ ctx, k, rec }: { ctx: Ctx; k: string; rec: AssetRecord | undefined }) {
+  const m = ctx.motion[k];
+  if (!m || m.state === 'off') return null;
+  return (
+    <div className="col" style={{ gap: 6 }}>
+      <div className="row wrap" style={{ gap: 6 }}>
+        <span className={`badge ${m.state === 'animated' ? 'green' : m.state === 'failed' ? 'red' : 'gray'}`}>{{ animated: 'animated', waiting: 'animation waiting its turn', failed: 'not animated' }[m.state]}</span>
+        {rec?.anim && <span className="tiny dim">{rec.anim.body}, {Object.keys(rec.anim.clips).length} clips, 8 directions</span>}
+      </div>
+      {m.error && <div className="tiny bad clamp2" title={m.error}>{m.error}</div>}
+      {rec?.anim && m.state === 'animated' && <ClipPreview w={ctx.w} k={k} anim={rec.anim} />}
+      <div className="row" style={{ gap: 6 }}>
+        {rec?.anim && <button className="btn sm ghost" onClick={() => ctx.animate([k], 'render')}>Render the clips again</button>}
+        <button className="btn sm ghost" onClick={() => ctx.animate([k], 'mesh')}>Make a new 3D model</button>
+      </div>
+    </div>
+  );
+}
+
 /** One image: what it is, the prompts behind it, and buttons to edit them or repaint. */
 function ArtCard({ ctx, k, compact }: { ctx: Ctx; k: string; compact?: boolean }) {
   const e = ctx.art.get(k);
@@ -221,6 +253,7 @@ function ArtCard({ ctx, k, compact }: { ctx: Ctx; k: string; compact?: boolean }
           </div>
           {!open && <div className="small muted clamp2">{e.brief}</div>}
           {rec?.error && open && <div className="tiny bad">{rec.error}</div>}
+          {open && <Motion ctx={ctx} k={k} rec={rec} />}
           {variants.length > 0 && open && (
             <div className="row" style={{ gap: 6 }}>
               {variants.map((v) => {
