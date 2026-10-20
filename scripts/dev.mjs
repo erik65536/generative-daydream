@@ -26,7 +26,9 @@ const fatal = ({ p, tag }) =>
     stop();
   });
 
-const server = run('server', ['run', 'dev', '-w', '@gd/server'], 33, { GD_WORKER: 'external', GD_DEV_CLIENT: 'http://localhost:5173' });
+// GD_PORT and GD_CLIENT_PORT move both (a second checkout running beside the first).
+const clientPort = process.env.GD_CLIENT_PORT ?? '5173';
+const server = run('server', ['run', 'dev', '-w', '@gd/server'], 33, { GD_WORKER: 'external', GD_DEV_CLIENT: `http://localhost:${clientPort}` });
 const client = run('client', ['run', 'dev', '-w', '@gd/client'], 36);
 fatal(server);
 fatal(client);

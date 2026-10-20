@@ -8,7 +8,7 @@ import path from 'node:path';
 import type { AssetRecord } from '@gd/shared';
 import { ROOT_DIR } from '../paths';
 
-export type AssetKind = Exclude<AssetRecord['kind'], 'painting'>;
+export type AssetKind = Exclude<AssetRecord['kind'], 'painting' | 'texture'>;
 
 export interface PromptProfile {
   id: string;

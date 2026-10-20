@@ -18,6 +18,8 @@ separate images drawn over the paintings.
    must grow) and saved as `place_<zoneId>`; the walk and sight masks become the place's navigation grid; and
    monster packs, the boss and traps are spread by walking distance from the way in. A building the painting
    has no entrance for is dropped (its interior goes, its people move outdoors).
+   While Luna places things, the place's air is made (`atmosphere.ts`, below), and the light its painting carries
+   is measured from its pixels.
 
 Every step is saved under `data/worlds/<id>/draft/places/<zoneId>/`, so a resumed build continues where it
 stopped.
@@ -33,6 +35,40 @@ People are discs of 0.45 m (`shared/world/walking.ts`): two never stand closer t
 strangers and can squeeze past allies at a cost. Combat movement budgets are metres, and a move stops exactly
 where the budget runs out. The client draws the reach as a ring (traced over the reachable cells) with a ring
 per action point. Surfaces (fire, ice, oil) lie in square-metre patches.
+
+## Air and light
+
+Every place has one mist of its own, used for both fog of war and the painting's edge, and its characters are lit
+like the painting they stand in. The game never paints past the walkable ground; mist covers the rest.
+
+- **Mist tile** (`worldgen/atmosphere.ts`, saved as `mist_<zoneId>`, `look.mist`). Luna writes what drifts in the
+  place (sea fog, ash haze, cave spores) from its description, art direction and colours; fixed framing asks for
+  a top-down texture of wisps over near-black, filling the frame. Krea 2 paints a 1024 px square on the place's
+  turn of the build's GPU queue. It is made seamless as texture artists do: rolled by half so its edges meet in a
+  cross in the middle, and the cross painted over by AnyPaint (only the band is kept, so the edges still meet
+  exactly). Circular padding does not help a transformer like Krea's, and no extra nodes are needed. Then its
+  large-scale brightness is divided out (a wrap-around blur) and stretched to the full range, so it repeats
+  without a visible pattern and its brightness reads as density. The prompt and the painted tile are draft steps.
+- **Light** (`look.painted`): the mean colour of the painting's brightest tenth (its light), of its darkest third
+  (its shadows) and its mean brightness.
+- **Mist in the game** (client `render/mist.ts`): WebGL at half resolution, drawn onto the view twice a frame,
+  both times as two layers of the tile drifting at different speeds (the nearer one moves a little faster with
+  the camera, for depth). The *ground pass*, right after the painting, fills everything past its edge, so there
+  is never a border, and figures drawn after it stay crisp when they walk out to a way at the edge. The *air
+  pass*, over the figures, covers unexplored ground (a dim veil over ground out of sight) and lays a veil inside
+  the edge, solid over the last half metre (paintings often darken their outer rows), thinning over about two
+  metres, and clear around the party, so the painting sinks softly into the mist. The mist's density erodes the coverage, so it breaks into wisps rather than a blur. Its
+  thin parts take the place's fog colour, its wisps the measured light; the view's light (night, gloom, the
+  party's light) falls on both passes alike. Places without a tile get generated noise. Without WebGL the fog of
+  war is a plain veil. The minimap fades the painting's edge.
+- **Figures in the place's light** (client `render/light.ts`). Each figure (people, creatures, the chest, sign
+  and waypoint) is drawn once into a scratch canvas, and a copy is multiplied by a top-to-bottom gradient: the
+  place's light hue at the head, the painting's own colour around its feet at the feet (a tiny blurred copy of the
+  painting, sampled under it), brighter or darker with that ground; then cut back to the figure's shape and washed
+  faintly with the light from the upper left. Under it lies a soft isometric contact shadow sized from the body
+  (0.45 m) in the place's own shadow colour, stronger on brighter ground.
+- **Camera clamp** (developer panel, "Clamp camera", remembered per browser, off by default): the view stays
+  inside the painting; a place smaller than the screen sits centred with mist around it.
 
 ## The image pipeline (characters, objects, icons)
 
@@ -67,5 +103,6 @@ Owners open `#/world/<id>/studio` to see and change everything a world is made o
 
 - `src/cli/genlive.ts`: build a world end to end outside the web server.
 - `src/cli/paintworld.ts`: paint (or repaint) a world's character and item art.
+- `src/cli/air.ts`: give a built world's places their mist and measured light (from their saved paintings).
 - `src/cli/placepeek.ts`: a settled place's painting with its walkable ground and everything placed in it marked.
 - `src/cli/sheet.ts`: contact sheet of any folder of PNGs on magenta.

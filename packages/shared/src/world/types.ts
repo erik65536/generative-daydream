@@ -61,6 +61,13 @@ export interface ZoneLook {
   /** Under the open sky: the day/night cycle and weather apply. */
   outdoor: boolean;
   weather: 'none' | 'rain' | 'snow' | 'ash' | 'spores' | 'embers' | 'dust' | 'fireflies';
+  /** Asset key of the place's tileable mist (brightness is density): over unexplored ground and past the painting. */
+  mist?: string;
+  /**
+   * The light the painting carries, measured from its pixels: the colour of its lit parts and of its shadows, and
+   * its mean brightness (0..1). Characters take it, so they stand in the place's light.
+   */
+  painted?: { light: string; shade: string; level: number };
 }
 
 /** A place painted as one picture of its ground (see nav.ts for the projection). */
@@ -259,7 +266,7 @@ export interface ArcDef {
 
 export interface AssetRecord {
   key: string;
-  kind: 'painting' | 'sprite' | 'object' | 'icon' | 'portrait';
+  kind: 'painting' | 'texture' | 'sprite' | 'object' | 'icon' | 'portrait';
   file?: string;
   /** Short brief of what to depict. */
   prompt: string;

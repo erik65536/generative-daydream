@@ -1,15 +1,18 @@
 /**
  * The game view and its mouse input. The place's painting is the ground; everything that moves is drawn over it in
- * depth order, then light, fog of war, weather, and the combat and targeting overlays. Positions are ground metres:
+ * depth order (lit like the place, see light.ts), then the place's mist (fog of war and the painting's edge, see
+ * mist.ts: what lies past the edge is drawn with the ground), light, weather, and the combat and targeting overlays. Positions are ground metres:
  * the painting is the same isometric projection of that ground (a metre runs ISO_X pixels across and ISO_Y down).
  */
 import {
-  ISO_X, ISO_Y, NAV_CELL, PX_PER_METRE_UP, SPACING, fogSize, rx, skillRange, squeezeCost, walkAmong, walkCost,
+  BODY, ISO_X, ISO_Y, NAV_CELL, PX_PER_METRE_UP, SPACING, fogSize, rx, skillRange, squeezeCost, walkAmong, walkCost,
   type EntityView, type FeatureDef, type FxEvent, type Vec2,
 } from '@gd/shared';
 import type { GameClient, ZoneData } from '../net/game';
 import { hexToRgb, mix, rgb, type RGB } from './color';
-import { drawFigure, drawImageSprite, drawShadow, loadImage, type PoseFrames } from './sprites';
+import { drawFigure, drawImageSprite, loadImage, type PoseFrames } from './sprites';
+import { PlaceLight, type FigureLight } from './light';
+import { Mist, type MistFrame } from './mist';
 import { FxSystem } from './fx';
 import { HIGHLIGHT, drawOutline } from './highlight';
 import { kindColor } from '../rules';
@@ -140,6 +143,10 @@ export class Renderer {
   private zoneKey = '';
   private lightCanvas = document.createElement('canvas');
   private fogCanvas = document.createElement('canvas');
+  private mist = new Mist();
+  private light = new PlaceLight();
+  /** Where a figure is drawn, and then lit, before it goes onto the view. */
+  private scratch = [document.createElement('canvas'), document.createElement('canvas')] as const;
   private anims = new Map<string, Anim>();
   readonly fx = new FxSystem();
   hover: HoverInfo = { point: null, screenX: 0, screenY: 0 };
@@ -271,6 +278,36 @@ export class Renderer {
   devZoom = false;
   /** Developer option: show where people can walk (green) and see through (blue). */
   showWalk = false;
+  /**
+   * Keep the view inside the painting: a place smaller than the screen sits centred with mist around it. Off by
+   * default (the developer panel switches it, remembered in this browser) until it is decided how it should feel.
+   */
+  clampCamera = (() => {
+    try {
+      return localStorage.getItem('gd.clampCamera') === '1';
+    } catch {
+      return false;
+    }
+  })();
+
+  setClampCamera(on: boolean) {
+    this.clampCamera = on;
+    try {
+      localStorage.setItem('gd.clampCamera', on ? '1' : '0');
+    } catch {
+      /* not remembered */
+    }
+  }
+
+  /** Where the camera may look to show ground point `g`: kept inside the painting when clamping. */
+  private framed(z: ZoneData, g: Vec2): Vec2 {
+    if (!this.clampCamera || !z.painting) return g;
+    const c = iso(g.x, g.y), P = z.painting;
+    const fit = (v: number, lo: number, hi: number, half: number) => (hi - lo <= half * 2 ? (lo + hi) / 2 : Math.max(lo + half, Math.min(hi - half, v)));
+    const cx = fit(c.x, -P.ox, P.width - P.ox, this.W / 2 / this.zoom), cy = fit(c.y, -P.oy, P.height - P.oy, this.H / 2 / this.zoom);
+    return { x: (cy / HH + cx / HW) / 2, y: (cy / HH - cx / HW) / 2 };
+  }
+
   private get minZoom() {
     return this.devZoom ? 0.12 : 0.55;
   }
@@ -334,7 +371,7 @@ export class Renderer {
     this.camInit = false;
     this.weather = [];
     this.reach = null;
-    this.fogMap = null;
+    this.fogBytes = null;
   }
 
   /** The place's painting, once loaded. */
@@ -357,8 +394,9 @@ export class Renderer {
     if (leader) {
       const lp = this.client.entityPos(leader);
       const k = this.camInit ? Math.min(1, dt * 6) : 1;
-      this.camX += (lp.x - this.camX) * k;
-      this.camY += (lp.y - this.camY) * k;
+      const look = this.framed(z, lp);
+      this.camX += (look.x - this.camX) * k;
+      this.camY += (look.y - this.camY) * k;
       this.camInit = true;
       this.updateExplored(z, lp);
     }
@@ -368,6 +406,8 @@ export class Renderer {
     this.setWorldTransform();
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, -z.painting.ox, -z.painting.oy, z.painting.width, z.painting.height);
+    this.light.update(`${this.zoneKey}:${z.painting.image}`, z.look, img, -z.painting.ox, -z.painting.oy);
+    this.drawMist(z, 'ground');
     if (this.showWalk) this.drawWalkable(z);
     // 2. On the ground: surfaces, then combat and targeting overlays.
     this.drawSurfaces();
@@ -388,10 +428,10 @@ export class Renderer {
         this.warned = true;
       }
     }
-    // 4. Particles and projectiles, light, fog of war, weather; floating texts and labels on top.
+    // 4. Particles and projectiles, the mist (fog of war), light, weather; floating texts and labels on top.
     this.drawFx();
+    this.drawMist(z, 'air');
     this.drawLighting(z);
-    this.drawFog(z);
     this.drawWeather(dt, z);
     this.setWorldTransform();
     this.drawTexts();
@@ -464,8 +504,12 @@ export class Renderer {
         draw: () => {
           if (art) {
             const x = p.x - art.width / 2, y = p.y - art.height + 3;
-            drawShadow(ctx, art.width * 0.4);
-            ctx.drawImage(art, x, y);
+            const l = this.light.at(p.x, p.y);
+            ctx.save();
+            ctx.translate(p.x, p.y);
+            this.contactShadow(art.width / (2 * Math.SQRT2 * HW), l);
+            this.drawLit(art.width, art.height, l, (g) => g.drawImage(art, -art.width / 2, 3 - art.height));
+            ctx.restore();
             if (usable || hovered) drawOutline(ctx, art, x, y, HIGHLIGHT.use, hovered ? 1 : usable ? proximity * (0.35 + pulse * 0.35) : 0);
             const s = this.worldToScreen(x, y);
             this.hitRects.push({ id: f.id, kind: 'feature', x: s.x, y: s.y, w: art.width * this.zoom, h: art.height * this.zoom, depth });
@@ -701,7 +745,8 @@ export class Renderer {
             ctx.stroke();
             ctx.restore();
           }
-          drawShadow(ctx, 15 * e.scale);
+          const l = this.light.at(p.x, p.y);
+          if (!e.downed) this.contactShadow(BODY * e.scale, l);
           const img = loadImage(this.client.assetUrl(e.sprite));
           const height = 1.75 * PX_PER_METRE_UP * e.scale;
           if (hovered) {
@@ -720,12 +765,15 @@ export class Renderer {
             ctx.restore();
           }
           const walk = a.amt > 0.02 ? a.walk : NaN;
-          if (img) drawImageSprite(ctx, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames: this.poseFrames(e.sprite), vertical: a.vert > 0.5 });
-          else
-            drawFigure(ctx, {
-              shape: e.shape, colors: e.colors.length ? e.colors : e.kind === 'character' ? ['#4a6a9a', '#2a3448', '#e0c060'] : ['#7a6a5a', '#4a3a30', '#d0b080'], scale: e.scale * 1.15, dir, back, walk, t: this.t, weapon: e.weapon, archetype: e.archetype,
-              seed: e.id, downed: e.downed, hurt: a.hurt, attack: a.attack, role: e.role, kind: e.kind, amt: a.amt, presentation: e.presentation,
-            });
+          const frames = this.poseFrames(e.sprite);
+          this.drawLit(height * 1.5, height * 1.1, l, (g) => {
+            if (img) drawImageSprite(g, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack, frames, vertical: a.vert > 0.5 });
+            else
+              drawFigure(g, {
+                shape: e.shape, colors: e.colors.length ? e.colors : e.kind === 'character' ? ['#4a6a9a', '#2a3448', '#e0c060'] : ['#7a6a5a', '#4a3a30', '#d0b080'], scale: e.scale * 1.15, dir, back, walk, t: this.t, weapon: e.weapon, archetype: e.archetype,
+                seed: e.id, downed: e.downed, hurt: a.hurt, attack: a.attack, role: e.role, kind: e.kind, amt: a.amt, presentation: e.presentation,
+              });
+          }, e.downed);
           ctx.shadowBlur = 0;
           if (e.statuses.some((s) => s.id === 'frozen')) {
             ctx.fillStyle = 'rgba(160,220,255,0.35)';
@@ -739,6 +787,76 @@ export class Renderer {
         },
       });
     }
+  }
+
+  /**
+   * A soft contact shadow on the ground under a figure (at the current origin, its feet): a body `r` metres across
+   * as an isometric ellipse, a dark core under the feet and a wider penumbra, in the place's own shadow colour.
+   */
+  private contactShadow(r: number, l: FigureLight) {
+    const ctx = this.ctx;
+    ctx.save();
+    ctx.scale(1, HH / HW);
+    const R = r * Math.SQRT2 * HW * 1.25;
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+    g.addColorStop(0, `rgba(${l.shadow},${l.shadowAlpha})`);
+    g.addColorStop(0.45, `rgba(${l.shadow},${l.shadowAlpha * 0.7})`);
+    g.addColorStop(1, `rgba(${l.shadow},0)`);
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(0, 0, R, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  /**
+   * Draw a figure lit like the place (see light.ts): `draw` paints it once at the current origin (its feet) into a
+   * scratch canvas; a copy is tinted from the key light at its top to the ground's bounce at its feet, cut back to
+   * its shape, washed with the light from the upper left, and put on the view (keeping the caller's alpha and glow). `w` x `h` (picture
+   * px) bounds the figure above its feet; a downed figure lies on its side, so it gets a box around it.
+   */
+  private drawLit(w: number, h: number, l: FigureLight, draw: (g: CanvasRenderingContext2D) => void, lying = false) {
+    const ctx = this.ctx;
+    const T = ctx.getTransform();
+    const k = T.a;
+    const top = lying ? h * 0.6 : h, below = lying ? h * 0.6 : h * 0.12;
+    const bx = Math.floor(T.e - (w / 2) * k), by = Math.floor(T.f - top * k);
+    const bw = Math.ceil(w * k) + 2, bh = Math.ceil((top + below) * k) + 2;
+    if (bw * bh > 4e6) return draw(ctx);
+    const [fig, lit] = this.scratch;
+    for (const c of this.scratch) if (c.width < bw || c.height < bh) [c.width, c.height] = [Math.max(c.width, bw), Math.max(c.height, bh)];
+    const f = fig.getContext('2d')!, g = lit.getContext('2d')!;
+    f.setTransform(1, 0, 0, 1, 0, 0);
+    f.clearRect(0, 0, bw, bh);
+    f.setTransform(T.a, T.b, T.c, T.d, T.e - bx, T.f - by);
+    f.globalAlpha = 1;
+    f.imageSmoothingQuality = 'high';
+    draw(f);
+    // Key light at the head to ground bounce at the feet (multiply), cut back to the figure's own shape.
+    const feet = T.f - by, head = feet - (lying ? h * 0.3 : h) * k;
+    const grad = g.createLinearGradient(0, head, 0, feet);
+    grad.addColorStop(0, l.top);
+    grad.addColorStop(0.55, l.top);
+    grad.addColorStop(1, l.bottom);
+    g.globalCompositeOperation = 'source-over';
+    g.clearRect(0, 0, bw, bh);
+    g.drawImage(fig, 0, 0, bw, bh, 0, 0, bw, bh);
+    g.globalCompositeOperation = 'multiply';
+    g.fillStyle = grad;
+    g.fillRect(0, 0, bw, bh);
+    g.globalCompositeOperation = 'destination-in';
+    g.drawImage(fig, 0, 0, bw, bh, 0, 0, bw, bh);
+    const wash = g.createLinearGradient(0, 0, bw * 0.6, bh * 0.4);
+    wash.addColorStop(0, l.wash);
+    wash.addColorStop(1, 'rgba(0,0,0,0)');
+    g.globalCompositeOperation = 'source-atop';
+    g.fillStyle = wash;
+    g.fillRect(0, 0, bw, bh);
+    g.globalCompositeOperation = 'source-over';
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.drawImage(lit, 0, 0, bw, bh, bx, by, bw, bh);
+    ctx.restore();
   }
 
   private labels: { e: EntityView; x: number; y: number; hovered: boolean; marker?: string; inCombat: boolean }[] = [];
@@ -1288,46 +1406,94 @@ export class Renderer {
     ctx.restore();
   }
 
-  private fogMap: { key: string; canvas: HTMLCanvasElement; img: ImageData } | null = null;
+  /** Fog of war per square metre for the mist: unexplored (0/255) and remembered-but-unseen (dim) bytes. */
+  private fogBytes: { key: string; data: Uint8Array; w: number; h: number } | null = null;
 
-  /**
-   * Fog of war: one alpha value per square metre, written into a tiny map-sized image (in the place's fog colour)
-   * and drawn with an isometric transform and bilinear smoothing, so it is one continuous gradient.
-   */
-  private drawFog(z: ZoneData) {
+  /** The fog of war of each square metre in view: unexplored, or how dim remembered ground is (a veil once out of sight). */
+  private visibleFog(w: number, h: number, write: (x: number, y: number, unseen: boolean, dim: number) => void) {
     const st = this.client.state;
-    if (!st.explored) return;
-    const { w, h } = fogSize(z);
-    const key = `${z.id}:${w}x${h}`;
-    if (this.fogMap?.key !== key) {
-      const canvas = document.createElement('canvas');
-      canvas.width = w;
-      canvas.height = h;
-      const img = canvas.getContext('2d')!.createImageData(w, h);
-      const [r, g, b] = hexToRgb(z.look.fogColor);
-      for (let i = 0; i < w * h; i++) [img.data[i * 4], img.data[i * 4 + 1], img.data[i * 4 + 2]] = [r * 0.35, g * 0.35, b * 0.35];
-      this.fogMap = { key, canvas, img };
-    }
-    const { canvas, img } = this.fogMap;
-    const data = img.data;
     const party = [...st.entities.values()].filter((e) => e.ownerUserId === st.userId).map((e) => this.client.entityPos(e));
     const view = [this.screenToGround(0, 0), this.screenToGround(this.W, 0), this.screenToGround(0, this.H), this.screenToGround(this.W, this.H)];
     const x0 = Math.max(0, Math.floor(Math.min(...view.map((v) => v.x))) - 3), x1 = Math.min(w - 1, Math.ceil(Math.max(...view.map((v) => v.x))) + 3);
     const y0 = Math.max(0, Math.floor(Math.min(...view.map((v) => v.y))) - 3), y1 = Math.min(h - 1, Math.ceil(Math.max(...view.map((v) => v.y))) + 3);
-    if (x1 < x0 || y1 < y0) return;
     for (let y = y0; y <= y1; y++)
       for (let x = x0; x <= x1; x++) {
-        let alpha: number;
-        if (!st.explored.get(y * w + x)) alpha = 1;
-        else {
-          let d = 99;
-          for (const p of party) d = Math.min(d, Math.hypot(p.x - x, p.y - y));
-          // Remembered-but-unseen ground dims smoothly with distance from the party.
-          alpha = d > 13 ? 0.45 : d > 8 ? ((d - 8) / 5) ** 1.5 * 0.45 : 0;
+        if (!st.explored!.get(y * w + x)) {
+          write(x, y, true, 0);
+          continue;
         }
-        data[(y * w + x) * 4 + 3] = Math.round(alpha * 255);
+        let d = 99;
+        for (const p of party) d = Math.min(d, Math.hypot(p.x - x, p.y - y));
+        // Remembered-but-unseen ground dims smoothly with distance from the party.
+        write(x, y, false, d > 13 ? 0.45 : d > 8 ? ((d - 8) / 5) ** 1.5 * 0.45 : 0);
       }
-    canvas.getContext('2d')!.putImageData(img, 0, 0, x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+  }
+
+  /** This frame's mist (see mist.ts), shared by its two passes. */
+  private mistFrame: MistFrame | null = null;
+
+  /** The fog of war per square metre for the mist (null where there is none). */
+  private fogOfWar(z: ZoneData): { data: Uint8Array; w: number; h: number } | null {
+    if (!this.client.state.explored) return null;
+    const { w, h } = fogSize(z);
+    const key = `${this.zoneKey}:${w}x${h}`;
+    if (this.fogBytes?.key !== key) this.fogBytes = { key, data: new Uint8Array(w * h * 2).fill(255), w, h };
+    const data = this.fogBytes.data;
+    for (let i = 1; i < data.length; i += 2) data[i] = 0;
+    this.visibleFog(w, h, (x, y, unseen, dim) => {
+      data[(y * w + x) * 2] = unseen ? 255 : 0;
+      data[(y * w + x) * 2 + 1] = Math.round(dim * 255);
+    });
+    return this.fogBytes;
+  }
+
+  /**
+   * One pass of the place's mist (see mist.ts) onto the view: the ground past the painting's edge (before the
+   * figures), or the air (fog of war and the veil along the edge, over everything). The frame is set up by the first.
+   */
+  private drawMist(z: ZoneData, pass: 'ground' | 'air') {
+    if (!z.painting) return;
+    if (pass === 'ground') {
+      const st = this.client.state;
+      const p = z.look.painted;
+      const level = p?.level ?? z.look.ambient * 0.55;
+      // The thin mist takes the place's shadow colour, its wisps the place's light, dimmer in darker places.
+      const key = hexToRgb(p?.light ?? z.look.lightColor), km = Math.max(1, ...key);
+      const c = iso(this.camX, this.camY);
+      this.mistFrame = {
+        W: this.W, H: this.H, camX: c.x, camY: c.y, zoom: this.zoom, t: this.t, fog: this.fogOfWar(z),
+        rect: [-z.painting.ox, -z.painting.oy, z.painting.width - z.painting.ox, z.painting.height - z.painting.oy],
+        base: hexToRgb(z.look.fogColor),
+        tint: key.map((v) => Math.min(255, (0.7 + (0.3 * v) / km) * (0.55 + level * 0.8) * 255)) as RGB,
+        tile: z.look.mist ? loadImage(this.client.assetUrl(z.look.mist)) : null,
+        party: [...st.entities.values()].filter((e) => e.ownerUserId === st.userId).map((e) => {
+          const a = this.anims.get(e.id);
+          return iso(a?.px ?? e.x, a?.py ?? e.y);
+        }),
+      };
+    }
+    const f = this.mistFrame;
+    if (!f) return;
+    if (!this.mist.ok) return pass === 'air' ? this.drawPlainFog(z, f.fog) : undefined;
+    const out = this.mist.render(f, pass);
+    if (!out) return;
+    this.ctx.save();
+    this.setScreenTransform();
+    this.ctx.imageSmoothingEnabled = true;
+    this.ctx.drawImage(out, 0, 0, this.W, this.H);
+    this.ctx.restore();
+  }
+
+  /** Without WebGL: the fog of war as a plain veil in the place's fog colour (no mist, no edge). */
+  private drawPlainFog(z: ZoneData, fog: { data: Uint8Array; w: number; h: number } | null) {
+    if (!fog) return;
+    const { w, h } = fog;
+    const canvas = document.createElement('canvas');
+    [canvas.width, canvas.height] = [w, h];
+    const img = canvas.getContext('2d')!.createImageData(w, h);
+    const [r, g, b] = hexToRgb(z.look.fogColor);
+    for (let i = 0; i < w * h; i++) img.data.set([r * 0.35, g * 0.35, b * 0.35, fog.data[i * 2]! || fog.data[i * 2 + 1]!], i * 4);
+    canvas.getContext('2d')!.putImageData(img, 0, 0);
     const fc = this.fogCanvas;
     const f = fc.getContext('2d')!;
     f.setTransform(1, 0, 0, 1, 0, 0);
@@ -1338,11 +1504,8 @@ export class Renderer {
     // Square metre (x, y) maps to screen ((x−y)·HW, (x+y)·HH); pixel corners sit half a metre before the centres.
     f.setTransform(HW * k, HH * k, -HW * k, HH * k, o.x * sc, o.y * sc);
     f.imageSmoothingEnabled = true;
-    f.imageSmoothingQuality = 'high';
     f.drawImage(canvas, -0.5, -0.5);
-    f.setTransform(1, 0, 0, 1, 0, 0);
     this.setScreenTransform();
-    this.ctx.imageSmoothingEnabled = true;
     this.ctx.drawImage(fc, 0, 0, this.W, this.H);
   }
 

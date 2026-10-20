@@ -8,7 +8,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import {
   BitSet, NAV_CELL, Nav, PX_PER_METRE_UP, Rng, groundToPicture, pictureToGround,
-  type FeatureDef, type NavDef, type Vec2, type WorldDefinition, type ZoneDef, type ZoneKind,
+  type AssetRecord, type FeatureDef, type NavDef, type Vec2, type WorldDefinition, type ZoneDef, type ZoneKind,
 } from '@gd/shared';
 import { buildPack } from '../rules/encounters';
 import { worldAssetDir, worldDir, writeJsonAtomic } from '../storage';
@@ -16,6 +16,7 @@ import { genai } from '../genai/service';
 import { upscale } from './comfy';
 import type { GpuQueue } from './gpu';
 import { paintPlace, planPlace, type PaintPlan, type PlaceBrief } from './outpaint';
+import { MIST_SIZE, measureLight, paintMist, type MistBrief } from './atmosphere';
 import { normColor } from './schemas';
 import { analyse, applyCheck, candidates, checkChanges, checkReading, colouring, place, readPainting, type Candidate, type PlaceNeeds, type Reading } from './reading';
 
@@ -227,7 +228,11 @@ export async function settlePlace(w: WorldDefinition, z: ZoneDef, { plan, seed, 
   const cands = candidates(reading);
   // Spots are picture positions, so a saved placement belongs to one painting (a resumed build may pick another).
   const placed = draft.json<[string, Candidate][]>(`placement_${seed}`);
-  const spots = placed ? new Map(placed) : (await place(canvas, needs, cands)).spots;
+  // The place's mist is designed and painted while Luna places everything (both on this place's turn).
+  const [spots, mist] = await Promise.all([
+    placed ? new Map(placed) : place(canvas, needs, cands).then((p) => p.spots),
+    paintMist(mistBrief(z), draft, ctx.gpu, ctx.priority, ctx.seed),
+  ]);
   draft.saveJson(`placement_${seed}`, [...spots.entries()]);
 
   // SeedVR2 adds the detail an enlarged painting needs (painted at 2×, then resampled down to the exact size).
@@ -235,14 +240,40 @@ export async function settlePlace(w: WorldDefinition, z: ZoneDef, { plan, seed, 
   const FW = Math.round(reading.width * k), FH = Math.round(reading.height * k);
   const source = k > 1.02 ? await ctx.gpu.run('seedvr2', ctx.priority, () => upscale(canvas, 2, ctx.seed)) : canvas;
   const image = await sharp(source).resize(FW, FH, { kernel: 'lanczos3' }).webp({ quality: 90 }).toBuffer();
-  const dir = worldAssetDir(w.id);
-  fs.mkdirSync(dir, { recursive: true });
-  const key = `place_${z.id}`, file = `${key}_${Date.now().toString(36)}.webp`;
-  for (const f of fs.readdirSync(dir)) if (f.startsWith(`${key}_`)) fs.rmSync(path.join(dir, f));
-  fs.writeFileSync(path.join(dir, file), image);
-  w.assets[key] = { key, kind: 'painting', file, prompt: `painting of ${z.name}`, status: 'ok', width: FW, height: FH };
+  const key = saveAsset(w, `place_${z.id}`, image, { kind: 'painting', prompt: `painting of ${z.name}`, width: FW, height: FH });
+  await setAir(w, z, image, mist);
 
   furnish(w, z, reading, spots, { k, width: FW, height: FH, image: key });
+}
+
+/** Write a place's image into the world's assets (replacing its earlier file) and record it; returns its key. */
+function saveAsset(w: WorldDefinition, key: string, image: Buffer, rec: Pick<AssetRecord, 'kind' | 'prompt' | 'width' | 'height'>): string {
+  const dir = worldAssetDir(w.id);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = `${key}_${Date.now().toString(36)}.webp`;
+  for (const f of fs.readdirSync(dir)) if (f.startsWith(`${key}_`)) fs.rmSync(path.join(dir, f));
+  fs.writeFileSync(path.join(dir, file), image);
+  w.assets[key] = { key, file, status: 'ok', ...rec };
+  return key;
+}
+
+export const mistBrief = (z: ZoneDef): MistBrief => ({
+  name: z.name, kind: z.kind, indoor: !!z.indoor, description: z.description, style: z.design?.style,
+  weather: z.look.weather, fogColor: z.look.fogColor, lightColor: z.look.lightColor,
+});
+
+/** A place's air and light: its mist tile saved with its assets, and the light measured from its painting. */
+export async function setAir(w: WorldDefinition, z: ZoneDef, painting: Buffer, mist: Buffer): Promise<void> {
+  z.look.mist = saveAsset(w, `mist_${z.id}`, mist, { kind: 'texture', prompt: `mist of ${z.name}`, width: MIST_SIZE, height: MIST_SIZE });
+  z.look.painted = await measureLight(painting);
+}
+
+/** Paint and set a place's air afterwards (a world built before places had it), from its saved painting. */
+export async function addAir(w: WorldDefinition, z: ZoneDef, ctx: Pick<PlaceContext, 'gpu' | 'priority' | 'seed'>): Promise<void> {
+  const file = z.painting && w.assets[z.painting.image]?.file;
+  if (!file) return;
+  const mist = await paintMist(mistBrief(z), new PlaceDraft(w.id, z.id), ctx.gpu, ctx.priority, ctx.seed);
+  await setAir(w, z, fs.readFileSync(path.join(worldAssetDir(w.id), file)), mist);
 }
 
 /**

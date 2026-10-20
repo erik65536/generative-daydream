@@ -107,8 +107,24 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
       const isoP = (x: number, y: number) => ({ x: cx + (x - y - (lp.x - lp.y)) * scale, y: cy + (x + y - (lp.x + lp.y)) * scale * 0.5 });
       const o = isoP(0, 0);
       ctx.globalAlpha = 0.85;
-      ctx.drawImage(img, o.x - z.painting.ox * k, o.y - z.painting.oy * k, z.painting.width * k, z.painting.height * k);
+      const px = o.x - z.painting.ox * k, py = o.y - z.painting.oy * k, pw = z.painting.width * k, ph = z.painting.height * k;
+      ctx.drawImage(img, px, py, pw, ph);
       ctx.globalAlpha = 1;
+      // The painting's edge fades out, as it sinks into the game view's mist (over about three metres here).
+      ctx.save();
+      ctx.globalCompositeOperation = 'destination-out';
+      const F = 3 * scale;
+      for (const [x0, y0, x1, y1, rx, ry, rw, rh] of [
+        [px, 0, px + F, 0, px, py, F, ph], [px + pw, 0, px + pw - F, 0, px + pw - F, py, F, ph],
+        [0, py, 0, py + F / 2, px, py, pw, F / 2], [0, py + ph, 0, py + ph - F / 2, px, py + ph - F / 2, pw, F / 2],
+      ] as const) {
+        const g = ctx.createLinearGradient(x0, y0, x1, y1);
+        g.addColorStop(0, 'rgba(0,0,0,1)');
+        g.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = g;
+        ctx.fillRect(rx, ry, rw, rh);
+      }
+      ctx.restore();
       const fog = fogSize(z);
       const mask = document.createElement('canvas');
       mask.width = fog.w;
