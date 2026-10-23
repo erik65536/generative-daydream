@@ -79,6 +79,45 @@ export function sketchOf(w: WorldDefinition, z: ZoneDef): PlaceSketch {
   };
 }
 
+/**
+ * Bring a world from before buildings were only painted up to date: each building interior becomes a building of
+ * its town (painted, not entered; whoever worked inside stands outside it), its people move to the town, a
+ * workbench inside moves out, beds go (health comes back outside combat), and everything that named the room (quest
+ * steps, people, doors) names the town instead. Returns how many rooms were removed.
+ */
+export function removeInteriors(w: WorldDefinition): number {
+  const rooms = w.zones.filter((z) => z.kind === 'interior' && z.parentZoneId);
+  const townOf = new Map(rooms.map((r) => [r.id, r.parentZoneId!]));
+  for (const room of rooms) {
+    const town = w.zones.find((z) => z.id === room.parentZoneId);
+    if (!town) continue;
+    const people = w.npcs.filter((n) => n.zoneId === room.id);
+    const worker = people.find((n) => ['innkeeper', 'merchant', 'trainer', 'crafter'].includes(n.role)) ?? people[0];
+    town.buildings ??= [];
+    if (worker) {
+      town.buildings.push({ id: room.id, name: room.name, purpose: room.buildingPurpose ?? 'house', npcId: worker.id });
+      worker.wanders = false;
+    }
+    for (const n of people) n.zoneId = town.id;
+    for (const f of room.features) if (f.kind === 'craft_station') town.features.push({ ...f, id: `${town.id}_craft_${room.id}` });
+    town.features = town.features.filter((f) => !(f.kind === 'door' && f.targetZoneId === room.id));
+    town.links = town.links.filter((l) => l !== room.id);
+  }
+  w.zones = w.zones.filter((z) => !townOf.has(z.id));
+  for (const z of w.zones) z.features = z.features.filter((f) => f.kind !== 'bed');
+  // Anything else naming a room (quest steps, lore, the start) names its town.
+  const swap = (v: unknown): unknown => {
+    if (typeof v === 'string') return townOf.get(v) ?? v;
+    if (Array.isArray(v)) return v.map(swap);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, swap(x)]));
+    return v;
+  };
+  const rec = w as unknown as Record<string, unknown>;
+  for (const k of Object.keys(rec)) if (k !== 'zones' && k !== 'assets' && k !== 'ruleset') rec[k] = swap(rec[k]);
+  for (const k of Object.keys(w.assets)) if ([...townOf.keys()].some((id) => k === `place_${id}` || k === `mist_${id}`)) delete w.assets[k];
+  return rooms.length;
+}
+
 /** What the place must hold: its entrances, ways out, people and things (by world id). */
 export function placeNeeds(w: WorldDefinition, z: ZoneDef): PlaceNeeds {
   return {

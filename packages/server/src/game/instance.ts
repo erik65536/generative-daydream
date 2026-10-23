@@ -82,7 +82,18 @@ export class GameInstance implements CombatHost {
     state.difficulty ??= world.input.difficulty ?? 'normal';
     this.rng = new Rng(`${state.id}:${Date.now()}`);
     this.mergeDynamicItems();
-    for (const p of Object.values(state.players)) p.inventory = normalizeInventory(this.r, p.inventory);
+    for (const p of Object.values(state.players)) {
+      p.inventory = normalizeInventory(this.r, p.inventory);
+      // A place that is gone (a building's room, now that buildings are only painted) leaves its visitors at the way
+      // in of the place that held it (a room's id starts with its town's), else at the start.
+      if (!this.ctx.zones.has(p.zoneId)) {
+        const holder = world.zones.filter((z) => p.zoneId.startsWith(`${z.id}_`)).sort((a, b) => b.id.length - a.id.length)[0];
+        const to = holder ?? this.ctx.zones.get(world.startZoneId)!;
+        p.zoneId = to.id;
+        p.x = to.entry.x;
+        p.y = to.entry.y;
+      }
+    }
     this.quests = new QuestEngine({
       ctx: this.ctx,
       rng: this.rng,
@@ -105,7 +116,8 @@ export class GameInstance implements CombatHost {
       questEvent: (p, q, kind) => this.questGossip(p, q, kind),
     });
     this.dialogue = new DialogueEngine(this.dialogueHost());
-    for (const n of world.npcs) if (!state.npcs[n.id]) state.npcs[n.id] = this.initNpc(n.id);
+    // (People saved in a place that is gone start again where the world puts them.)
+    for (const n of world.npcs) if (!state.npcs[n.id] || !this.ctx.zones.has(state.npcs[n.id]!.zoneId)) state.npcs[n.id] = this.initNpc(n.id);
   }
 
   // =================================================================== lifecycle

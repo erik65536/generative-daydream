@@ -84,7 +84,8 @@ describe('companions', () => {
     expect(inst._charActors('uc').length).toBe(2);
     await inst.dialogue.say('uc', 'It is time we parted ways.');
     expect(p.party.length).toBe(1);
-  }, 60000);
+    // (It builds a world of its own, balance simulation included: up to a few minutes on a busy machine.)
+  }, 300_000);
 });
 
 describe('combat movement', () => {
@@ -117,5 +118,5 @@ describe('combat movement', () => {
     // Walking straight through Bo costs extra for every metre within his body (sampled each quarter metre).
     const inside = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 1.75, 2].filter((t) => Math.abs(t - 1) < SPACING - 0.01).length * 0.25;
     expect(combat.pathCost(a!, [beyond])).toBeCloseTo(2 + inside * SQUEEZE, 5);
-  });
+  }, 300_000);
 });

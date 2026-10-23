@@ -3,8 +3,9 @@
  * from its saved steps (draft/places/<zone>/: plan, maps, view checks, names, readings, repair rounds), so only what
  * is missing is painted, read or repaired, then everything is placed anew (a saved placement for that map is
  * reused), the map is brought to game scale and the navigation grid, people, things, monster packs and traps are laid
- * out again. Places with no saved top-down map (a world from the old isometric pipeline) are left as they are unless
- * --paint is given: then they are painted from scratch.
+ * out again. Building interiors are removed first (buildings are only painted now: removeInteriors). Places with no
+ * saved top-down map (a world from the old isometric pipeline) are left as they are unless --paint is given: then they
+ * are painted from scratch.
  *
  * The world file and the place images are backed up first (data/worlds/<id>/backup/<time>/). Reveries keep their
  * players, conversations and quests; positions that are off a place's new ground move to its way in when loaded.
@@ -16,7 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { loadWorld, saveWorld, worldAssetDir, worldDir } from '../storage';
 import { GpuQueue } from '../worldgen/gpu';
-import { paintAndRead, settlePlace, sketchOf, worldLook } from '../worldgen/zones';
+import { paintAndRead, removeInteriors, settlePlace, sketchOf, worldLook } from '../worldgen/zones';
 
 const args = process.argv.slice(2);
 const dry = args.includes('--dry'), paint = args.includes('--paint');
@@ -35,10 +36,18 @@ if (!dry) {
   console.log(`backed up to ${backup}`);
 }
 
+// Buildings are only painted now: a world's rooms become buildings of their towns (removeInteriors).
+if (!dry) {
+  const rooms = removeInteriors(w);
+  if (rooms) {
+    saveWorld(w);
+    console.log(`removed ${rooms} building interiors (their people stand outside their buildings)`);
+  }
+}
+
 const gpu = new GpuQueue();
 const seedOf = (id: string) => [...`${w.seed}:${id}`].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % 1_000_000;
-// Towns before their rooms: settling a town drops the rooms whose building has no entrance in its map.
-const order = [...w.zones].sort((a, b) => (a.kind === 'interior' ? 1 : 0) - (b.kind === 'interior' ? 1 : 0)).map((z) => z.id);
+const order = w.zones.map((z) => z.id);
 for (const id of order) {
   const z = w.zones.find((x) => x.id === id);
   if (!z || (only.length && !only.includes(id))) continue;
