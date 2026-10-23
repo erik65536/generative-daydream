@@ -105,6 +105,8 @@ export interface AnimationConfig {
   comfyProvider?: string;
   /** Sheet pixels per game picture pixel (default 2). */
   scale?: number;
+  /** Degrees the sprite camera looks down at figures over the top-down maps (default 35: a classic three-quarter view). */
+  pitch?: number;
 }
 
 // ------------------------------------------------------------------------------- decision models

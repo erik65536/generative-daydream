@@ -43,7 +43,7 @@ function framing(rec: ImageRecord): string {
         ? `A game character model: ${VIEW_FRAMING[rec.view]}.`
         : `A game creature model. If its body runs lengthwise (four or more legs, a crab, an insect, a serpent or eel, a fish, a bird, a crawling body), show ${VIEW_FRAMING.side} (view: side). Otherwise (an upright figure on two legs, or a body with no front and back: a swarm, a cloud, an ooze, a floating shape), show ${VIEW_FRAMING.front} (view: front).`;
     case 'object':
-      return 'A game prop seen from a high three-quarter angle (about 35 degrees from above, as in an isometric game): one object shown whole and centred, standing upright as it would stand on the ground (a sign on its post, a lantern on its base or pole, a table on its legs), with empty space around it.';
+      return 'A game prop seen from a high three-quarter angle (about 35 degrees from above, as the figures of a top-down game are drawn): one object shown whole and centred, standing upright as it would stand on the ground (a sign on its post, a lantern on its base or pole, a table on its legs), with empty space around it.';
     case 'icon':
       return 'A game inventory icon: one item centred and shown whole, slightly angled, filling most of a square frame, no hands.';
     case 'portrait':

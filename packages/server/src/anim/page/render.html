@@ -4,12 +4,12 @@
 </head><body>
 <script type="module">
 // Renders an actor's clips to sprite sheets at the game's camera, for packages/server/src/anim/render.ts.
-// window.renderActor({ job, body, scale, ss, clips: [names], outline }) →
+// window.renderActor({ job, body, scale, ss, clips: [names], outline, pitch }) →
 //   { cell: [w, h], anchor: [x, y], clips: { name: { frames, fps, loop, stride?, event? } }, sheets: { name: dataURL } }
 // A sheet has one row per direction (S, SW, W, NW, N, NE, E, SE) and one column per frame, at `scale` sheet pixels
 // per game picture pixel; the anchor is the ground point under the actor in every cell.
 import * as THREE from 'three';
-import { loadRig, isoScene, DIRS, dirYaw, UP_STRETCH, PX_PER_M } from './rig.js';
+import { loadRig, figureScene, DIRS, dirYaw, upStretch, PX_PER_M, DEFAULT_PITCH } from './rig.js';
 import { PROCEDURAL, libraryClips, pose } from './clips.js';
 
 function frameGrid(clip) {
@@ -21,11 +21,11 @@ window.renderActor = async (spec) => {
   const all = rig.meta.body === 'humanoid' ? libraryClips(await (await fetch(`/job/${spec.job}/clips.json`)).json()) : PROCEDURAL[rig.meta.body];
   if (!all) throw new Error(`no clips for body ${rig.meta.body}`);
   const names = spec.clips.filter((n) => all[n]);
-  const scale = spec.scale ?? 2, ss = spec.ss ?? 2;
+  const scale = spec.scale ?? 2, ss = spec.ss ?? 2, pitch = spec.pitch ?? DEFAULT_PITCH;
   const ppm = PX_PER_M * scale;
   const holder = new THREE.Group();
   holder.add(rig.root);
-  holder.scale.y = UP_STRETCH;
+  holder.scale.y = upStretch(pitch);
   const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, premultipliedAlpha: false, preserveDrawingBuffer: true });
   renderer.setPixelRatio(1);
   renderer.setClearColor(0x000000, 0);
@@ -34,7 +34,7 @@ window.renderActor = async (spec) => {
   // Pass 1: the union of every frame's silhouette around the anchor, at sheet scale.
   const h = rig.meta.height ?? 1.8;
   const P = Math.ceil(Math.max(2, h) * ppm * 1.4) * 2 + 64, pax = P / 2, pay = Math.round(P * 0.7);
-  let { scene, cam } = isoScene(P, P, pax, pay, ppm);
+  let { scene, cam } = figureScene(P, P, pax, pay, ppm, pitch);
   scene.add(holder);
   renderer.setSize(P, P);
   const probe = document.createElement('canvas');
@@ -67,7 +67,7 @@ window.renderActor = async (spec) => {
 
   // Pass 2: each clip into its sheet, rendered at ss× and reduced.
   scene.remove(holder);
-  ({ scene, cam } = isoScene(cell[0] * ss, cell[1] * ss, anchor[0] * ss, anchor[1] * ss, ppm * ss));
+  ({ scene, cam } = figureScene(cell[0] * ss, cell[1] * ss, anchor[0] * ss, anchor[1] * ss, ppm * ss, pitch));
   scene.add(holder);
   renderer.setSize(cell[0] * ss, cell[1] * ss);
   const sheets = {}, clips = {};

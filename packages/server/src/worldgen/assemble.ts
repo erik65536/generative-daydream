@@ -87,7 +87,7 @@ export function missingRoles(residents: Pick<NpcOut, 'role' | 'merchantKind'>[],
     .map((r) => r.label);
 }
 
-/** People who work indoors get a building (and an interior) of their own. */
+/** People who work indoors get a building of their own (painted on the town's map; they stand outside it). */
 const WORKS_INDOORS: NpcRole[] = ['innkeeper', 'merchant', 'trainer', 'crafter'];
 
 /** How a place looks until its painting sets the light. */
@@ -475,7 +475,8 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     for (const link of s.links)
       add(zoneById.get(zid(s.slotId))!, { id: `${zid(s.slotId)}_exit_${link}`, kind: 'exit', targetZoneId: zid(link), targetFeatureId: `${zid(link)}_exit_${s.slotId}`, name: `To ${zoneInfo(link)?.name}` });
 
-  // Towns: a building (with an interior) for everyone who works indoors, the waypoint, a sign, a workbench.
+  // Towns: a building for everyone who works indoors (painted on the map, not entered: they stand outside it), the
+  // waypoint, a sign and a workbench (health comes back outside combat, so there are no beds).
   for (const t of townSlots) {
     const z = zoneById.get(zid(t.slotId))!;
     const content = d.towns[t.slotId];
@@ -489,45 +490,12 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       if (i >= 0) return named.splice(i, 1)[0]!.name;
       return `${n.name.split(' ')[0]}'s ${purpose === 'inn' ? 'Inn' : capital(purpose.replace(/^\w+ shop$/, 'shop'))}`;
     };
-    const inns: string[] = [];
-    workers.forEach((n, bi) => {
+    z.buildings = workers.map((n, bi) => {
       const purpose = purposeOf(n);
-      const name = nameFor(n, purpose);
-      const interiorId = `${z.id}_b${bi}`, doorId = `${z.id}_door${bi}`, innerDoorId = `${interiorId}_door`;
-      add(z, { id: doorId, kind: 'door', targetZoneId: interiorId, targetFeatureId: innerDoorId, name });
-      const iz: ZoneDef = {
-        id: interiorId,
-        name,
-        kind: 'interior',
-        description: `Inside ${name}, the ${purpose} in ${z.name} where ${n.name} (${n.title}) works.`,
-        regionIndex: z.regionIndex,
-        levelRange: z.levelRange,
-        look: defaultLook('interior', true),
-        width: 0,
-        height: 0,
-        features: [],
-        spawns: [],
-        indoor: true,
-        parentZoneId: z.id,
-        mapPos: z.mapPos,
-        links: [z.id],
-        entry: { x: 0, y: 0 },
-        buildingPurpose: purpose,
-        familyIds: [],
-      };
-      add(iz, { id: innerDoorId, kind: 'door', targetZoneId: z.id, targetFeatureId: doorId, name: `Out to ${z.name}` });
-      if (purpose === 'inn') {
-        add(iz, { id: `${interiorId}_bed`, kind: 'bed', name: 'Bed' });
-        inns.push(interiorId);
-      }
-      if (n.role === 'crafter' && systems.crafting) add(iz, { id: `${interiorId}_craft`, kind: 'craft_station', name: 'Workbench' });
-      n.zoneId = interiorId;
+      if (n.role === 'crafter' && systems.crafting) add(z, { id: `${z.id}_craft${bi}`, kind: 'craft_station', name: 'Workbench' });
       n.wanders = false;
-      zones.push(iz);
-      zoneById.set(interiorId, iz);
+      return { id: `${z.id}_b${bi}`, name: nameFor(n, purpose), purpose, npcId: n.id };
     });
-    // Companions often wait at the inn.
-    for (const c of here.filter((n) => n.role === 'companion')) if (inns[0] && rng.chance(0.6)) c.zoneId = inns[0];
     add(z, { id: `${z.id}_waypoint`, kind: 'waypoint', name: `${z.name} Waypoint` });
     add(z, { id: `${z.id}_sign`, kind: 'sign', text: content?.signText ?? `Welcome to ${z.name}.`, name: 'Sign' });
     if (systems.crafting && !workers.some((n) => n.role === 'crafter')) add(z, { id: `${z.id}_craft`, kind: 'craft_station', name: 'Workbench' });

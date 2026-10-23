@@ -70,7 +70,7 @@ describe('actor motion', () => {
   });
 
   it('faces the row of its ground direction', () => {
-    expect(rowOf(Math.PI / 4)).toBe(0); // ground (1, 1): down the screen
-    expect(rowOf(-Math.PI / 4)).toBe(6); // (1, -1): right
+    expect(rowOf(Math.PI / 2)).toBe(0); // ground (0, 1): down the screen
+    expect(rowOf(0)).toBe(6); // (1, 0): right
   });
 });

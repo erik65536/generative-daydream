@@ -79,7 +79,7 @@ export interface QuestProgress {
 export const NPC_ACTIONS = [
   'none', 'give_item', 'give_gold', 'accept_gift', 'refuse_gift', 'offer_quest', 'complete_objective', 'modify_objective',
   'add_objective', 'complete_quest', 'fail_quest', 'open_trade', 'attack', 'join_party', 'leave_party', 'change_disposition',
-  'remember', 'reveal_location', 'heal_player', 'teach_skill', 'create_quest', 'end_conversation', 'flee', 'call_guards',
+  'remember', 'reveal_location', 'teach_skill', 'create_quest', 'end_conversation', 'flee', 'call_guards',
   'give_gift', 'share_secret', 'share_lead',
 ] as const;
 export type NpcActionType = (typeof NPC_ACTIONS)[number];
@@ -103,7 +103,6 @@ export const NPC_ACTION_INFO: Record<NpcActionType, string> = {
   change_disposition: 'Change how much you like the player (amount from -25 to 25).',
   remember: 'Remember a fact for later (memory). Optionally due in N days and whether it spreads to others (spread).',
   reveal_location: 'Tell the player where a place is so it appears on their map (zoneId).',
-  heal_player: 'Heal the player\'s party fully.',
   teach_skill: 'Teach the player a skill you know (skillId).',
   create_quest: 'Create a brand-new small quest for the player (newQuest).',
   end_conversation: 'End the conversation.',

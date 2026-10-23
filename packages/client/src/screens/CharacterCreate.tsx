@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { DIFFICULTIES, characterStats, modifierLabel, rx, type DifficultyId, type ItemInstance, type Presentation, type Ruleset } from '@gd/shared';
+import { DIFFICULTIES, PRONOUNS, characterStats, kinPresentation, modifierLabel, rx, type DifficultyId, type ItemInstance, type Presentation, type Ruleset } from '@gd/shared';
 import { api, type CharSpec, type Me, type WorldSetup } from '../api';
 import { Backdrop } from '../ui/Backdrop';
 import { TopBar } from './Lobby';
@@ -19,7 +19,7 @@ const PALETTES = [
 ];
 
 const NAMES = ['Arin', 'Sela', 'Corvin', 'Mira', 'Tobin', 'Ysolde', 'Kael', 'Wren', 'Juno', 'Rook'];
-const PRONOUNS: Record<Presentation, string> = { feminine: 'she/her', masculine: 'he/him', androgynous: 'they/them' };
+const PRESENTATION_NAME: Record<Presentation, string> = { feminine: 'Female', masculine: 'Male', androgynous: 'Androgynous' };
 
 interface Draft extends CharSpec {
   colors: string[];
@@ -72,14 +72,16 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
   const t = r.terminology;
   const cls = ix.cls.get(d.classId)!;
   const kin = ix.kin.get(d.kinId);
+  // Each kin of a world is one presentation (shared/world/instance.ts): the hero is as their kin is.
+  const presentation = kinPresentation(r.kins, d.kinId);
   const look = setup.origins.find((o) => o.id === d.classId);
-  const lookAsset = look?.assets?.[d.presentation] ?? look?.asset;
+  const lookAsset = look?.assets?.[presentation] ?? look?.asset;
   const sprite = lookAsset && setup.assets[lookAsset] ? `/api/worlds/${worldId}/assets/${setup.assets[lookAsset]}` : undefined;
   const st = preview.stats;
   const start = async () => {
     setBusy(true);
     setError('');
-    const specs: CharSpec[] = party.map(({ name, classId, kinId, presentation, pronouns, colors }) => ({ name: name.trim(), classId, kinId, presentation, pronouns: pronouns.trim() || PRONOUNS[presentation], colors }));
+    const specs: CharSpec[] = party.map(({ name, classId, kinId, colors }) => ({ name: name.trim(), classId, kinId, colors }));
     try {
       if (joinInstanceId) {
         await api.joinInstance(joinInstanceId, specs);
@@ -120,21 +122,13 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
           <div className="panel ornate" style={{ width: 300, flex: 'none' }}>
             <div className="panel-body col" style={{ alignItems: 'center' }}>
               <div className="hero-stage">
-                <Portrait full size={210} sprite={sprite} colors={d.colors} archetype={cls.aiRole} weapon={weaponVisual({ equipment: preview.equipment })} seed={d.name + d.classId} presentation={d.presentation} />
+                <Portrait full size={210} sprite={sprite} colors={d.colors} archetype={cls.aiRole} weapon={weaponVisual({ equipment: preview.equipment })} seed={d.name + d.classId} presentation={presentation} />
               </div>
               <div className="field" style={{ width: '100%' }}>
                 <label>{idx === 0 ? 'Your name' : 'Their name'}</label>
                 <input className="input" style={{ width: '100%', textAlign: 'center', fontSize: 18 }} value={d.name} maxLength={24} placeholder="Type a name" autoFocus={idx === 0} onChange={(e) => update({ name: e.target.value })} />
               </div>
-              <div className="seg" style={{ width: '100%' }}>
-                {(['feminine', 'masculine', 'androgynous'] as const).map((p) => (
-                  <button key={p} className={`btn sm ${d.presentation === p ? 'primary' : 'ghost'}`} onClick={() => update({ presentation: p, pronouns: Object.values(PRONOUNS).includes(d.pronouns) ? PRONOUNS[p] : d.pronouns })}>{{ feminine: 'Feminine', masculine: 'Masculine', androgynous: 'Androgynous' }[p]}</button>
-                ))}
-              </div>
-              <div className="field" style={{ width: '100%' }}>
-                <label>Pronouns</label>
-                <input className="input" value={d.pronouns} maxLength={24} onChange={(e) => update({ pronouns: e.target.value })} placeholder="they/them" />
-              </div>
+              <div className="tiny muted">{kin ? `${kin.name}, ` : ''}{PRESENTATION_NAME[presentation].toLowerCase()} ({PRONOUNS[presentation]})</div>
               {!sprite && (
                 <div className="row" style={{ gap: 6 }}>
                   {PALETTES.map((p) => (
@@ -200,7 +194,7 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
                   <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
                     {r.kins.map((k) => (
                       <div key={k.id} className={`choice ${d.kinId === k.id ? 'on' : ''}`} onClick={() => update({ kinId: k.id })}>
-                        <div className="t">{k.name}</div>
+                        <div className="t">{k.name} <span className="badge gray">{PRESENTATION_NAME[kinPresentation(r.kins, k.id)]}</span></div>
                         <div className="d">{k.description}</div>
                         <div className="tiny dim" style={{ marginTop: 4 }}>
                           {[...Object.entries(k.attributes).filter(([, v]) => v).map(([a, v]) => `${v > 0 ? '+' : ''}${v} ${ix.attr.get(a)?.name ?? a}`), ...k.modifiers.map((m) => modifierLabel(r, m, 1))].join(' · ')}
@@ -253,14 +247,11 @@ const DIFFICULTY_TEXT: Record<DifficultyId, string> = {
 
 function newDraft(s: WorldSetup, i: number): Draft {
   const r = s.ruleset;
-  const presentation: Presentation = (['feminine', 'masculine', 'androgynous'] as const)[(i + s.id.length) % 2]!;
   return {
     // The player names their own hero; companions in a party they control start with a name to change.
     name: i === 0 ? '' : NAMES[(i * 3 + s.id.length) % NAMES.length]!,
     classId: r.classes[i % r.classes.length]!.id,
-    kinId: r.kins[0]!.id,
-    presentation,
-    pronouns: PRONOUNS[presentation],
+    kinId: r.kins[i % r.kins.length]!.id,
     colors: PALETTES[i % PALETTES.length]!,
   };
 }

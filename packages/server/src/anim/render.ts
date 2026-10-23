@@ -82,6 +82,8 @@ export interface RenderOptions {
   ss?: number;
   /** Ink outline width in metres. */
   outline?: number;
+  /** Degrees the camera looks down at the figures (default 35). */
+  pitch?: number;
 }
 
 export async function renderSheets(jobDir: string, opts: RenderOptions): Promise<Rendered> {
@@ -99,7 +101,7 @@ export async function renderSheets(jobDir: string, opts: RenderOptions): Promise
     });
     const out = (await page.evaluate(
       (spec) => (globalThis as unknown as { renderActor: (s: unknown) => Promise<unknown> }).renderActor(spec),
-      { job: token, clips: opts.clips, scale: opts.scale ?? 2, ss: opts.ss ?? 2, outline: opts.outline ?? 0.014 },
+      { job: token, clips: opts.clips, scale: opts.scale ?? 2, ss: opts.ss ?? 2, outline: opts.outline ?? 0.014, pitch: opts.pitch },
     )) as { cell: [number, number]; anchor: [number, number]; clips: Rendered['clips']; sheets: Record<string, string> };
     const sheets: Rendered['sheets'] = {};
     for (const [name, data] of Object.entries(out.sheets)) {

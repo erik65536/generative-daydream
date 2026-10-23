@@ -1,35 +1,38 @@
 # Places and art
 
-Every world is imagined from scratch, so nothing here names an environment. A place is one large painting, and
+Every world is imagined from scratch, so nothing here names an environment. A place is one top-down 2D map, and
 the game reads it back to learn where people can walk. Characters, creatures, a few objects and item icons are
-separate images drawn over the paintings.
+separate images drawn over the maps.
 
 ## A place, from words to ground
 
 `worldgen/zones.ts` builds each place in two stages, so painting can start before the world is assembled:
 
-1. **Paint and read** (`paintAndRead`, needs only what the place is: name, description, buildings, ways out).
-   Luna plans the place as one design cut into parts (`outpaint.ts`); Krea 2 paints it centre-out; Luna names
-   what to look for; SAM 3 and MoGe 2 find the walkable floor, entrances and landmarks (`reading.ts`); Luna
-   checks the colouring once. A painting that cannot work (too little ground, too few ways out) is painted
-   again with a new seed, at most three times. See `painted-zones.md` for the settings and why.
+1. **Make the map** (`paintAndRead`, needs only what the place is: name, description, buildings, ways out and the
+   sides they leave by). Luna plans the map; Krea 2 paints it from a frame guide that fixes the view, the closed
+   edge and the ways out; Luna checks the view; SAM 3 and Qwen's edit read it and Luna settles where they disagree;
+   the map is checked and repaired (ways out, joined ground). A map that is not top-down or has too little ground
+   is made again with a new seed, at most three times. See `places.md` for the pipeline, the settings and why.
 2. **Settle** (`settlePlace`, after assembly). Luna places every building, way out, person and thing on the
-   numbered spots of the reading; the painting is brought to game scale (SeedVR2 2× and a Lanczos resize when it
-   must grow) and saved as `place_<zoneId>`; the walk and sight masks become the place's navigation grid; and
-   monster packs, the boss and traps are spread by walking distance from the way in. A building the painting
-   has no entrance for is dropped (its interior goes, its people move outdoors).
-   While Luna places things, the place's air is made (`atmosphere.ts`, below), and the light its painting carries
-   is measured from its pixels.
+   numbered spots of the reading; the map is brought to game scale (SeedVR2 2× and a Lanczos resize when it must
+   grow) and saved as `place_<zoneId>`; the walk and sight plans become the place's navigation grid; and monster
+   packs, the boss and traps are spread by walking distance from the way in. Town buildings are painted, never
+   entered: each is someone's workplace (`zone.buildings`), and they stand outside its entrance; a workbench
+   stands in the town. (Worlds from before keep their interiors, which still work.)
+   While Luna places things, the place's air is made (`atmosphere.ts`, below), and the light its map carries is
+   measured from its pixels.
 
 Every step is saved under `data/worlds/<id>/draft/places/<zoneId>/`, so a resumed build continues where it
 stopped.
 
 ## Ground metres
 
-Game positions are metres on the ground. The painting is the 2:1 isometric projection of that ground: a metre
-runs 32 picture pixels across and 16 down (`ISO_X`, `ISO_Y`), and a person 1.75 m tall is 82 px. The navigation
-grid (`shared/world/nav.ts`) has half-metre cells: walkable (where a person's centre may stand) and see-through.
-Fog of war is remembered per square metre.
+Game positions are metres on the ground, x to the right and y down the map. The map is a top-down view of that
+ground at one scale, `PX_PER_METRE` (82/1.75, about 46.9 px): a metre runs that many pixels across and down, and a
+person 1.75 m tall is drawn 82 px tall. Figures are drawn from a three-quarter camera over the flat map (below),
+so what lies flat around their feet (contact shadows, the rings under them) is drawn flattened to match. The
+navigation grid (`shared/world/nav.ts`) has half-metre cells: walkable (where a person's centre may stand) and
+see-through. Fog of war is remembered per square metre.
 
 People are discs of 0.45 m (`shared/world/walking.ts`): two never stand closer than 0.9 m; walks go around
 strangers and can squeeze past allies at a cost. Combat movement budgets are metres, and a move stops exactly
@@ -65,8 +68,8 @@ like the painting they stand in. The game never paints past the walkable ground;
   and waypoint) is drawn once into a scratch canvas, and a copy is multiplied by a top-to-bottom gradient: the
   place's light hue at the head, the painting's own colour around its feet at the feet (a tiny blurred copy of the
   painting, sampled under it), brighter or darker with that ground; then cut back to the figure's shape and washed
-  faintly with the light from the upper left. Under it lies a soft isometric contact shadow sized from the body
-  (0.45 m) in the place's own shadow colour, stronger on brighter ground.
+  faintly with the light from the upper left. Under it lies a soft contact shadow, flattened as the figures' camera
+  sees the ground, sized from the body (0.45 m) in the place's own shadow colour, stronger on brighter ground.
 - **Camera clamp** (developer panel, "Clamp camera", remembered per browser, off by default): the view stays
   inside the painting; a place smaller than the screen sits centred with mist around it.
 
@@ -75,7 +78,7 @@ like the painting they stand in. The game never paints past the walkable ground;
 Everything is painted with Krea 2, like the places, so the art is one style. Krea has no transparency: each asset
 is painted on a plain chroma-key backdrop and cut out of it.
 
-1. **Plan** (`art.ts`, `planAssets`): heroes in every presentation, people, creatures, bosses, the objects the
+1. **Plan** (`art.ts`, `planAssets`): heroes in the presentations of the world's kins (each kin is one), people, creatures, bosses, the objects the
    game draws over every painting (`obj_chest`, `obj_sign`, `obj_waypoint`), and item icons. Every actor is one
    base image in a neutral standing pose, the view the 3D animation step builds the rigged figure from: **front**
    for people and upright figures, **side** (in profile, facing left) for animals and other body plans. The
@@ -151,9 +154,11 @@ re-render. Server code: `src/anim/` (TypeScript) and `animator/` (Python); clien
    foot slides under the hips) and the event frame (the hand's fastest moment). *Quadrupeds and floaters*:
    procedural clips per body plan (`src/anim/page/clips.js`): gaits with IK feet and ground contact, a lunge, a
    howl or a pulse, a flinch, a fall.
-4. **Sheets** (`src/anim/render.ts`): three.js in headless Chromium (Playwright): orthographic at 30° elevation,
-   45.25 px per ground metre and heights stretched to the game's 82 px person, three toon bands and an ink outline
-   (inverted hull), rendered at 2× sheet resolution and reduced. A first pass finds the smallest cell that holds
+4. **Sheets** (`src/anim/render.ts`): three.js in headless Chromium (Playwright): orthographic, looking down the
+   screen at the configured pitch (default 35°: a classic three-quarter view of figures standing on a flat map; the
+   faces read, since the rigs are made from front views, and heights stretch only 1.22× to the game's 82 px person),
+   `PX_PER_METRE` across, three toon bands and an ink outline (inverted hull), rendered at 2× sheet resolution and
+   reduced. A first pass finds the smallest cell that holds
    every frame of every clip in every direction; the anchor (the ground under the actor) is the same in every cell.
 
 **Clips**: idle, walk, run (moving faster than `RUN_SPEED`), attack, cast, hit, die. **Format**
@@ -185,7 +190,8 @@ is light and runs beside anything. Costs on an RTX 4090 Laptop: a humanoid about
 and rig seconds, sheets about 20 s), a creature about 5.
 
 **Configuration** (`config/genai.json`, local paths): `animation: { python, library, skintokens?: { dir, python,
-device? }, comfyProvider?, scale? }`. `python` needs numpy, scipy and Pillow (ComfyUI's embedded Python has them);
+device? }, comfyProvider?, scale?, pitch? }`. Sheets made for an older camera (`ANIM_VERSION`) are rendered again
+from the kept rigs (`cli/animate.ts --redo=render` does one world at once). `python` needs numpy, scipy and Pillow (ComfyUI's embedded Python has them);
 without `skintokens` only humanoids are animated. Chromium comes with Playwright (`npx playwright-core install
 chromium`).
 
@@ -200,8 +206,8 @@ lawyer should read the Meta licences and the MHR model's terms before release.
 Owners open `#/world/<id>/studio` to see and change everything a world is made of (`worldgen/studio.ts`, client
 `screens/Studio.tsx`):
 
-- **Places**: the painting with its people, creatures and features marked; name, description and hidden lore;
-  how it was painted (layout and style); repaint its people.
+- **Places**: the map with its people, creatures and features marked; name, description and hidden lore;
+  how it was painted (its plan and style); repaint its people.
 - **People**, **Quests**: every text field is editable; "Rewrite with AI" revises one with the owner's
   direction. Renames carry into every text that mentions the old name. A person whose look changes is repainted.
 - **Creatures** and **Art**: every image with its brief and image prompt; the owner can replace either
@@ -213,9 +219,12 @@ Owners open `#/world/<id>/studio` to see and change everything a world is made o
 
 - `src/cli/genlive.ts`: build a world end to end outside the web server.
 - `src/cli/paintworld.ts`: paint (or repaint) a world's character and item art.
-- `src/cli/air.ts`: give a built world's places their mist and measured light (from their saved paintings).
+- `src/cli/air.ts`: give a built world's places their mist and measured light (from their saved maps).
+- `src/cli/resettle.ts`: make a world's places again from their saved steps and settle them (`--paint` paints the
+  places that have no top-down map yet, such as a world from the old isometric pipeline).
+- `src/cli/readpeek.ts`: each made map step by step (guide, map and view check, SAM, Qwen, arbitrated, repaired).
 - `src/cli/animate.ts`: animate a built world's characters and creatures (`--body=<key>:<plan>` to set a body
   plan, `--redo=render|clips|rig|mesh` to redo from a step).
-- `src/cli/placepeek.ts`: a settled place's painting with its walkable ground and everything placed in it marked.
+- `src/cli/placepeek.ts`: a settled place's map with its walkable ground and everything placed in it marked.
 - `src/cli/sheet.ts`: contact sheet of any folder of PNGs on magenta.
 - `src/cli/paintpeek.ts`: paint a few of a world's assets into a scratch folder (the world is not changed) and draw a contact sheet: each painting, its cutout on dark and on a loud colour, and its scores.

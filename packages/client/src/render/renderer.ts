@@ -2,10 +2,10 @@
  * The game view and its mouse input. The place's painting is the ground; everything that moves is drawn over it in
  * depth order (lit like the place, see light.ts), then the place's mist (fog of war and the painting's edge, see
  * mist.ts: what lies past the edge is drawn with the ground), light, weather, and the combat and targeting overlays. Positions are ground metres:
- * the painting is the same isometric projection of that ground (a metre runs ISO_X pixels across and ISO_Y down).
+ * the painting is a top-down map of that ground (a metre runs PX_PER_METRE pixels across and down).
  */
 import {
-  BODY, ISO_X, ISO_Y, NAV_CELL, PX_PER_METRE_UP, SPACING, clipKey, fogSize, rx, skillRange, squeezeCost, walkAmong, walkCost,
+  BODY, NAV_CELL, PX_PER_METRE, SPACING, clipKey, fogSize, rx, skillRange, squeezeCost, walkAmong, walkCost,
   type ActorAnim, type ClipName, type EntityView, type FeatureDef, type FxEvent, type Vec2,
 } from '@gd/shared';
 import type { GameClient, ZoneData } from '../net/game';
@@ -18,9 +18,14 @@ import { FxSystem } from './fx';
 import { HIGHLIGHT, drawOutline } from './highlight';
 import { kindColor } from '../rules';
 
-const HW = ISO_X;
-const HH = ISO_Y;
-const iso = (x: number, y: number) => ({ x: (x - y) * HW, y: (x + y) * HH });
+/** Ground metres to picture pixels (the ground origin at the picture origin). */
+const M = PX_PER_METRE;
+const pic = (x: number, y: number) => ({ x: x * M, y: y * M });
+/**
+ * Figures are drawn from a three-quarter camera over the top-down ground, so what lies flat around their feet (their
+ * contact shadow, the rings under them) is drawn flattened by this, as that camera sees it.
+ */
+const SHADOW_FLAT = 0.6;
 
 /** Objects the game draws over every painting (one look per world), and how tall they stand in metres. */
 const OBJECT_ART: Record<string, { key: string; height: number }> = {
@@ -205,25 +210,25 @@ export class Renderer {
   // ---------------------------------------------------------------------------- coordinates
 
   private worldToScreen(wx: number, wy: number) {
-    const c = iso(this.camX, this.camY);
+    const c = pic(this.camX, this.camY);
     return { x: (wx - c.x) * this.zoom + this.W / 2, y: (wy - c.y) * this.zoom + this.H / 2 };
   }
 
   /** Ground metres (and `z` pixels up) to screen pixels. */
   groundToScreen(x: number, y: number, z = 0) {
-    const p = iso(x, y);
+    const p = pic(x, y);
     return this.worldToScreen(p.x, p.y - z);
   }
 
   screenToGround(sx: number, sy: number): Vec2 {
-    const c = iso(this.camX, this.camY);
+    const c = pic(this.camX, this.camY);
     const wx = (sx - this.W / 2) / this.zoom + c.x;
     const wy = (sy - this.H / 2) / this.zoom + c.y;
-    return { x: (wy / HH + wx / HW) / 2, y: (wy / HH - wx / HW) / 2 };
+    return { x: wx / M, y: wy / M };
   }
 
   private setWorldTransform() {
-    const c = iso(this.camX, this.camY);
+    const c = pic(this.camX, this.camY);
     const k = this.dpr * this.zoom;
     this.ctx.setTransform(k, 0, 0, k, (this.W / 2) * this.dpr - c.x * k, (this.H / 2) * this.dpr - c.y * k);
   }
@@ -303,10 +308,10 @@ export class Renderer {
   /** Where the camera may look to show ground point `g`: kept inside the painting when clamping. */
   private framed(z: ZoneData, g: Vec2): Vec2 {
     if (!this.clampCamera || !z.painting) return g;
-    const c = iso(g.x, g.y), P = z.painting;
+    const c = pic(g.x, g.y), P = z.painting;
     const fit = (v: number, lo: number, hi: number, half: number) => (hi - lo <= half * 2 ? (lo + hi) / 2 : Math.max(lo + half, Math.min(hi - half, v)));
     const cx = fit(c.x, -P.ox, P.width - P.ox, this.W / 2 / this.zoom), cy = fit(c.y, -P.oy, P.height - P.oy, this.H / 2 / this.zoom);
-    return { x: (cy / HH + cx / HW) / 2, y: (cy / HH - cx / HW) / 2 };
+    return { x: cx / M, y: cy / M };
   }
 
   private get minZoom() {
@@ -450,14 +455,9 @@ export class Renderer {
       for (let cx = Math.max(0, x0); cx <= Math.min(nav.cols - 1, x1); cx++) {
         const walk = nav.walkableCell(cx, cy), sight = nav.seeThroughCell(cx, cy);
         if (!walk && sight) continue;
-        const p = iso((cx + 0.5) * NAV_CELL, (cy + 0.5) * NAV_CELL);
+        const p = pic((cx + 0.5) * NAV_CELL, (cy + 0.5) * NAV_CELL);
         ctx.fillStyle = walk ? 'rgba(60,220,90,0.28)' : 'rgba(60,110,255,0.3)';
-        ctx.beginPath();
-        ctx.moveTo(p.x, p.y - HH * NAV_CELL);
-        ctx.lineTo(p.x + HW * NAV_CELL, p.y);
-        ctx.lineTo(p.x, p.y + HH * NAV_CELL);
-        ctx.lineTo(p.x - HW * NAV_CELL, p.y);
-        ctx.fill();
+        ctx.fillRect(p.x - (M * NAV_CELL) / 2, p.y - (M * NAV_CELL) / 2, M * NAV_CELL, M * NAV_CELL);
       }
   }
 
@@ -491,7 +491,7 @@ export class Renderer {
     for (const f of z.features) {
       const fs = st.features.get(f.id);
       if (f.kind === 'trap' && !fs) continue;
-      const p = iso(f.x, f.y);
+      const p = pic(f.x, f.y);
       const hovered = this.hover.featureId === f.id;
       const liveTrap = f.kind === 'trap' && !fs?.disarmed && !fs?.triggered;
       const usable = !liveTrap && USABLE.has(f.kind) && !(f.kind === 'chest' && fs?.opened && fs?.empty) && !(f.kind === 'lore' && fs?.opened);
@@ -499,7 +499,7 @@ export class Renderer {
       const proximity = near < 10 ? 1 - Math.max(0, near - 4) / 6 : 0;
       const pulse = 0.5 + Math.sin(this.t * 3 + f.x * 0.7) * 0.5;
       const art = this.objectArt(f, fs?.opened);
-      const depth = f.x + f.y + (art ? 0.06 : -0.4);
+      const depth = f.y + (art ? 0.03 : -0.2);
       list.push({
         depth,
         draw: () => {
@@ -508,7 +508,7 @@ export class Renderer {
             const l = this.light.at(p.x, p.y);
             ctx.save();
             ctx.translate(p.x, p.y);
-            this.contactShadow(art.width / (2 * Math.SQRT2 * HW), l);
+            this.contactShadow(art.width / (2 * M), l);
             this.drawLit(art.width, art.height, l, (g) => g.drawImage(art, -art.width / 2, 3 - art.height));
             ctx.restore();
             if (usable || hovered) drawOutline(ctx, art, x, y, HIGHLIGHT.use, hovered ? 1 : usable ? proximity * (0.35 + pulse * 0.35) : 0);
@@ -533,17 +533,16 @@ export class Renderer {
     if (!o) return null;
     const key = f.kind === 'chest' && opened && this.client.assetUrl(`${o.key}@open`) ? `${o.key}@open` : o.key;
     const img = loadImage(this.client.assetUrl(key));
-    return img ? sizedSprite(img, key, o.height * PX_PER_METRE_UP) : null;
+    return img ? sizedSprite(img, key, o.height * PX_PER_METRE) : null;
   }
 
   /** The ground mark of a feature: a soft ring (with an arrow for ways through, a dashed red one for a trap). */
   private groundMark(f: FeatureDef, alpha: number, trap: boolean) {
     const ctx = this.ctx;
-    const p = iso(f.x, f.y);
+    const p = pic(f.x, f.y);
     const color = trap ? '255,70,50' : f.kind === 'lore' || f.kind === 'object' ? '255,226,140' : '200,230,255';
     ctx.save();
     ctx.translate(p.x, p.y);
-    ctx.scale(1, 0.5);
     ctx.lineWidth = 2.5;
     ctx.strokeStyle = `rgba(${color},${Math.min(1, alpha)})`;
     ctx.shadowColor = `rgba(${color},0.9)`;
@@ -552,7 +551,7 @@ export class Renderer {
       ctx.setLineDash([6, 5]);
       ctx.lineDashOffset = -this.t * 14;
     }
-    const r = (trap ? 0.7 : 0.55) * HW * Math.SQRT2;
+    const r = (trap ? 0.7 : 0.55) * M;
     ctx.beginPath();
     ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.stroke();
@@ -563,7 +562,7 @@ export class Renderer {
       const into = f.kind === 'door' && !!this.client.state.world?.zones.find((x) => x.id === f.targetZoneId && x.parentZoneId === z.id);
       const dx = into ? -1 : f.x - z.entry.x, dy = into ? -1 : f.y - z.entry.y;
       const len = Math.hypot(dx, dy) || 1;
-      const a = iso(f.x - (dx / len) * 0.25, f.y - (dy / len) * 0.25), b = iso(f.x + (dx / len) * 0.35, f.y + (dy / len) * 0.35);
+      const a = pic(f.x - (dx / len) * 0.25, f.y - (dy / len) * 0.25), b = pic(f.x + (dx / len) * 0.35, f.y + (dy / len) * 0.35);
       const ang = Math.atan2(b.y - a.y, b.x - a.x);
       ctx.save();
       ctx.strokeStyle = `rgba(${color},${Math.min(1, alpha)})`;
@@ -591,8 +590,8 @@ export class Renderer {
     const ctx = this.ctx;
     const spr = lootSprite();
     for (const l of this.client.state.lootPiles) {
-      const p = iso(l.x, l.y);
-      const depth = l.x + l.y + 0.02;
+      const p = pic(l.x, l.y);
+      const depth = l.y + 0.01;
       const hovered = this.hover.lootId === l.id;
       list.push({
         depth,
@@ -699,15 +698,12 @@ export class Renderer {
       const k = gap > 2.5 ? 1 : 1 - Math.exp(-dt * (target.moving ? 18 : 12));
       const nx = a.px + (target.x - a.px) * k, ny = a.py + (target.y - a.py) * k;
       const moved = Math.hypot(nx - a.px, ny - a.py);
-      // Legs keep pace with how far the figure travels on screen: a metre up or down the screen is half the
-      // distance of a metre across it.
-      const screenMoved = Math.hypot((nx - a.px - (ny - a.py)) * HW, (nx - a.px + (ny - a.py)) * HH) / (Math.SQRT2 * HW);
       a.px = nx;
       a.py = ny;
       a.moving = target.moving || moved > 0.004;
       a.amt = Math.max(0, Math.min(1, a.amt + (a.moving ? dt * 7 : -dt * 5)));
       // Stride about 0.9 m per cycle; keep the phase running while easing out so legs settle.
-      if (a.amt > 0) a.walk += (gap > 2.5 ? 0 : screenMoved) * 7 + (a.moving ? 0 : dt * 2);
+      if (a.amt > 0) a.walk += (gap > 2.5 ? 0 : moved) * 7 + (a.moving ? 0 : dt * 2);
       // Turn smoothly toward the direction of travel.
       const dFace = Math.atan2(Math.sin(target.facing - a.face), Math.cos(target.facing - a.face));
       a.face += dFace * Math.min(1, dt * 14);
@@ -715,7 +711,7 @@ export class Renderer {
       a.attack = Math.max(0, a.attack - dt * 2.5);
       if (e.dead) a.death = Math.min(1, a.death + dt * 1.2);
       a.fade = Math.min(1, a.fade + dt * 3);
-      const p = iso(a.px, a.py);
+      const p = pic(a.px, a.py);
       // Screen-space facing from the ground direction.
       const fx = Math.cos(a.face), fy = Math.sin(a.face);
       const sdx = fx - fy, sdy = (fx + fy) / 2;
@@ -725,7 +721,7 @@ export class Renderer {
       if (anim) advance(a.motion, anim, dt, a.moving && gap <= 2.5, gap > 2.5 || !dt ? 0 : moved / dt, !!(e.dead || e.downed));
       const dir = a.dir;
       const back = sdy < -0.25;
-      const depth = a.px + a.py + 0.1;
+      const depth = a.py + 0.05;
       const hovered = this.hover.entityId === e.id;
       const active = combat?.activeId === e.id;
       const isMine = e.ownerUserId === st.userId;
@@ -739,7 +735,7 @@ export class Renderer {
           // Ground rings
           if (active || selected || hovered || (e.hostile && combat && e.inCombat)) {
             ctx.save();
-            ctx.scale(1, 0.5);
+            ctx.scale(1, SHADOW_FLAT);
             ctx.lineWidth = active ? 3 : 2;
             ctx.strokeStyle = active ? `rgba(255,220,120,${0.7 + Math.sin(this.t * 5) * 0.25})` : e.hostile ? 'rgba(255,90,70,0.7)' : selected ? 'rgba(140,220,255,0.8)' : 'rgba(255,255,255,0.6)';
             ctx.beginPath();
@@ -750,7 +746,7 @@ export class Renderer {
           const l = this.light.at(p.x, p.y);
           if (!e.downed) this.contactShadow(BODY * e.scale, l);
           const img = loadImage(this.client.assetUrl(e.sprite));
-          const height = 1.75 * PX_PER_METRE_UP * e.scale;
+          const height = 1.75 * PX_PER_METRE * e.scale;
           if (hovered) {
             ctx.shadowColor = e.hostile ? 'rgba(255,80,60,0.9)' : 'rgba(255,240,200,0.9)';
             ctx.shadowBlur = 12;
@@ -797,13 +793,14 @@ export class Renderer {
 
   /**
    * A soft contact shadow on the ground under a figure (at the current origin, its feet): a body `r` metres across
-   * as an isometric ellipse, a dark core under the feet and a wider penumbra, in the place's own shadow colour.
+   * as an ellipse flattened as the figures' camera sees the ground, a dark core under the feet and a wider
+   * penumbra, in the place's own shadow colour.
    */
   private contactShadow(r: number, l: FigureLight) {
     const ctx = this.ctx;
     ctx.save();
-    ctx.scale(1, HH / HW);
-    const R = r * Math.SQRT2 * HW * 1.25;
+    ctx.scale(1, SHADOW_FLAT);
+    const R = r * M * 1.25;
     const g = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
     g.addColorStop(0, `rgba(${l.shadow},${l.shadowAlpha})`);
     g.addColorStop(0.45, `rgba(${l.shadow},${l.shadowAlpha * 0.7})`);
@@ -932,7 +929,7 @@ export class Renderer {
     const f = this.hover.featureId ? z.features.find((x) => x.id === this.hover.featureId) : undefined;
     const name = f && this.featureLabel(f);
     if (f && name) {
-      const s = this.groundToScreen(f.x, f.y, (OBJECT_ART[f.kind]?.height ?? 1) * PX_PER_METRE_UP + 12);
+      const s = this.groundToScreen(f.x, f.y, (OBJECT_ART[f.kind]?.height ?? 1) * PX_PER_METRE + 12);
       ctx.font = '600 12px Inter, sans-serif';
       ctx.textAlign = 'center';
       ctx.lineWidth = 3;
@@ -994,13 +991,12 @@ export class Renderer {
   private drawSurfaces() {
     const ctx = this.ctx;
     for (const s of this.client.state.surfaces) {
-      const p = iso(s.x, s.y);
+      const p = pic(s.x, s.y);
       const base = { fire: '#ff6a1a', poison: '#6ac02a', water: '#3a80e0', ice: '#cfefff', oil: '#3a2a1a', blessed: '#ffe680' }[s.type] ?? '#a0a0a0';
       const flick = s.type === 'fire' ? 0.45 + Math.sin(this.t * 12 + s.x * 3) * 0.12 : s.type === 'blessed' ? 0.35 + Math.sin(this.t * 2) * 0.08 : 0.42;
       ctx.save();
       ctx.translate(p.x, p.y);
-      ctx.scale(1, 0.5);
-      const r = HW * 0.95;
+      const r = M * 0.7;
       const g = ctx.createRadialGradient(0, 0, 0, 0, 0, r);
       g.addColorStop(0, base + Math.round(flick * 255).toString(16).padStart(2, '0'));
       g.addColorStop(0.6, base + Math.round(flick * 200).toString(16).padStart(2, '0'));
@@ -1013,12 +1009,12 @@ export class Renderer {
     }
   }
 
-  /** An ellipse on the ground around (x, y), `r` metres across. */
+  /** A circle on the ground around (x, y), `r` metres across. */
   private groundCircle(x: number, y: number, r: number) {
     const ctx = this.ctx;
-    const c = iso(x, y);
+    const c = pic(x, y);
     ctx.beginPath();
-    ctx.ellipse(c.x, c.y, r * HW * Math.SQRT2, r * HH * Math.SQRT2, 0, 0, Math.PI * 2);
+    ctx.arc(c.x, c.y, r * M, 0, Math.PI * 2);
   }
 
   /** Others in the fight, as the active fighter's walk sees them (strangers block, allies can be squeezed past). */
@@ -1068,7 +1064,7 @@ export class Renderer {
         ctx.shadowBlur = last ? 6 : 0;
         ctx.beginPath();
         for (let i = 0; i < segs.length; i += 4) {
-          const a = iso(segs[i]!, segs[i + 1]!), c = iso(segs[i + 2]!, segs[i + 3]!);
+          const a = pic(segs[i]!, segs[i + 1]!), c = pic(segs[i + 2]!, segs[i + 3]!);
           ctx.moveTo(a.x, a.y);
           ctx.lineTo(c.x, c.y);
         }
@@ -1085,10 +1081,10 @@ export class Renderer {
           ctx.setLineDash([4, 4]);
           ctx.lineWidth = 2;
           ctx.beginPath();
-          const s0 = iso(active!.x, active!.y);
+          const s0 = pic(active!.x, active!.y);
           ctx.moveTo(s0.x, s0.y);
           for (const t of path) {
-            const s = iso(t.x, t.y);
+            const s = pic(t.x, t.y);
             ctx.lineTo(s.x, s.y);
           }
           ctx.stroke();
@@ -1237,13 +1233,12 @@ export class Renderer {
     ctx.save();
     for (const p of this.fx.particles) {
       if (p.kind === 'text') continue;
-      const s = iso(p.x, p.y);
+      const s = pic(p.x, p.y);
       const k = Math.max(0, p.life / p.max);
       if (p.kind === 'ring') {
-        const r = (1 - k) * (p.r ?? 1) * HW * Math.SQRT2 + 6;
+        const r = (1 - k) * (p.r ?? 1) * M + 6;
         ctx.save();
         ctx.translate(s.x, s.y);
-        ctx.scale(1, 0.5);
         ctx.strokeStyle = p.color;
         ctx.globalAlpha = k;
         ctx.lineWidth = 4 * k + 1;
@@ -1274,7 +1269,7 @@ export class Renderer {
     for (const pr of this.fx.projectiles) {
       const f = Math.min(1, pr.t / pr.dur);
       if (pr.kind === 'beam') {
-        const a = iso(pr.x0, pr.y0), b = iso(pr.x1, pr.y1);
+        const a = pic(pr.x0, pr.y0), b = pic(pr.x1, pr.y1);
         ctx.globalAlpha = 1 - Math.max(0, pr.t - pr.dur) / 0.18;
         ctx.strokeStyle = pr.color;
         ctx.shadowColor = pr.color;
@@ -1295,10 +1290,10 @@ export class Renderer {
       }
       const x = pr.x0 + (pr.x1 - pr.x0) * f, y = pr.y0 + (pr.y1 - pr.y0) * f;
       const z = 1.2 + Math.sin(f * Math.PI) * pr.arc;
-      const s = iso(x, y);
+      const s = pic(x, y);
       ctx.globalAlpha = 1;
       if (pr.kind === 'arrow') {
-        const a = iso(pr.x0, pr.y0), b = iso(pr.x1, pr.y1);
+        const a = pic(pr.x0, pr.y0), b = pic(pr.x1, pr.y1);
         const ang = Math.atan2(b.y - a.y - Math.cos(f * Math.PI) * pr.arc * 32, b.x - a.x);
         ctx.globalCompositeOperation = 'source-over';
         ctx.strokeStyle = '#e8e0d0';
@@ -1328,7 +1323,7 @@ export class Renderer {
     ctx.textAlign = 'center';
     for (const p of this.fx.particles) {
       if (p.kind !== 'text') continue;
-      const s = iso(p.x, p.y);
+      const s = pic(p.x, p.y);
       const k = p.life / p.max;
       ctx.globalAlpha = Math.min(1, k * 2.2);
       ctx.font = p.font ?? '700 15px Inter';
@@ -1376,7 +1371,7 @@ export class Renderer {
     l.globalCompositeOperation = 'destination-out';
     const hole = (x: number, y: number, metres: number, strength = 1, flicker = 0) => {
       const s = this.groundToScreen(x, y, 20);
-      const r = metres * HW * this.zoom * (1 + flicker);
+      const r = metres * M * 0.7 * this.zoom * (1 + flicker);
       const g = l.createRadialGradient(s.x / 2, s.y / 2, 0, s.x / 2, s.y / 2, r / 2);
       g.addColorStop(0, `rgba(0,0,0,${strength})`);
       g.addColorStop(0.55, `rgba(0,0,0,${strength * 0.6})`);
@@ -1413,7 +1408,7 @@ export class Renderer {
     ctx.globalCompositeOperation = 'lighter';
     for (const g of glows) {
       const s = this.groundToScreen(g.x, g.y, 30);
-      const r = g.r * HW * this.zoom;
+      const r = g.r * M * 0.7 * this.zoom;
       const gr = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, r);
       gr.addColorStop(0, g.color + '55');
       gr.addColorStop(1, g.color + '00');
@@ -1476,7 +1471,7 @@ export class Renderer {
       const level = p?.level ?? z.look.ambient * 0.55;
       // The thin mist takes the place's shadow colour, its wisps the place's light, dimmer in darker places.
       const key = hexToRgb(p?.light ?? z.look.lightColor), km = Math.max(1, ...key);
-      const c = iso(this.camX, this.camY);
+      const c = pic(this.camX, this.camY);
       this.mistFrame = {
         W: this.W, H: this.H, camX: c.x, camY: c.y, zoom: this.zoom, t: this.t, fog: this.fogOfWar(z),
         rect: [-z.painting.ox, -z.painting.oy, z.painting.width - z.painting.ox, z.painting.height - z.painting.oy],
@@ -1485,7 +1480,7 @@ export class Renderer {
         tile: z.look.mist ? loadImage(this.client.assetUrl(z.look.mist)) : null,
         party: [...st.entities.values()].filter((e) => e.ownerUserId === st.userId).map((e) => {
           const a = this.anims.get(e.id);
-          return iso(a?.px ?? e.x, a?.py ?? e.y);
+          return pic(a?.px ?? e.x, a?.py ?? e.y);
         }),
       };
     }
@@ -1518,8 +1513,8 @@ export class Renderer {
     const sc = fc.width / this.W;
     const o = this.groundToScreen(0, 0);
     const k = this.zoom * sc;
-    // Square metre (x, y) maps to screen ((x−y)·HW, (x+y)·HH); pixel corners sit half a metre before the centres.
-    f.setTransform(HW * k, HH * k, -HW * k, HH * k, o.x * sc, o.y * sc);
+    // Square metre (x, y) maps to screen (x·M, y·M); pixel corners sit half a metre before the centres.
+    f.setTransform(M * k, 0, 0, M * k, o.x * sc, o.y * sc);
     f.imageSmoothingEnabled = true;
     f.drawImage(canvas, -0.5, -0.5);
     this.setScreenTransform();

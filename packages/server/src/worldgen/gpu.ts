@@ -7,7 +7,7 @@
  * tasks so their calls are not interleaved. Text work (Luna) runs alongside, unlimited by it.
  */
 
-/** Which model a task loads (the reader is SAM 3 and MoGe 2 together: both are small). */
+/** Which model a task mostly loads (a place's reading uses SAM 3 and Qwen's edit; its repairs Krea and Qwen). */
 export type GpuModel = 'krea' | 'reader' | 'seedvr2';
 
 interface Task {

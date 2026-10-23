@@ -438,8 +438,6 @@ const CharSpecSchema = z.object({
   name: z.string().trim().min(1).max(24),
   classId: z.string().max(60),
   kinId: z.string().max(60),
-  presentation: z.enum(['feminine', 'masculine', 'androgynous']).default('androgynous'),
-  pronouns: z.string().trim().min(1).max(24).default('they/them'),
   colors: z.array(z.string()).max(4).optional(),
 });
 

@@ -184,7 +184,7 @@ export async function animateActor(job: ActorJob, opts: AnimateOptions = {}): Pr
     await runStep(cfg, 'retarget', dir, { library: cfg.library, clips: HUMANOID_CLIPS });
   }
   say('Rendering eight directions');
-  const rendered = await renderSheets(dir, { clips: ACTOR_CLIPS, scale: cfg.scale ?? 2 });
+  const rendered = await renderSheets(dir, { clips: ACTOR_CLIPS, scale: cfg.scale ?? 2, pitch: cfg.pitch });
   return { ...rendered, body: job.body };
 }
 

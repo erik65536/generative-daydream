@@ -2,6 +2,7 @@
 import type { QuestDef, QuestProgress, Emotion } from '../rules/quests';
 import type { MonsterArchetype } from '../rules/actors';
 import type { DifficultyId, Modifier } from '../ruleset/types';
+import { Rng } from '../util/rng';
 
 /** A concrete item. Mechanics derive from the ruleset base + level + rarity + affixes (+ upgrade). */
 export interface ItemInstance {
@@ -30,6 +31,23 @@ export interface ActiveStatus {
 }
 
 export type Presentation = 'feminine' | 'masculine' | 'androgynous';
+
+/** The pronouns that go with each presentation. */
+export const PRONOUNS: Record<Presentation, string> = { feminine: 'she/her', masculine: 'he/him', androgynous: 'they/them' };
+
+/**
+ * Each kin of a world is one presentation, picked at random for the world (from its kins' ids, so the game and the
+ * client agree) but balanced: about a quarter androgynous (at least one of three or more kins), the rest split
+ * between feminine and masculine.
+ */
+export function kinPresentation(kins: readonly { id: string }[], kinId: string): Presentation {
+  const rng = new Rng(`kins:${kins.map((k) => k.id).join('|')}`);
+  const n = kins.length, a = n >= 3 ? Math.max(1, Math.round(n / 4)) : 0;
+  const first: Presentation = rng.chance(0.5) ? 'feminine' : 'masculine', second: Presentation = first === 'feminine' ? 'masculine' : 'feminine';
+  const all: Presentation[] = [...Array<Presentation>(a).fill('androgynous'), ...Array.from({ length: n - a }, (_, i) => (i % 2 ? second : first))];
+  rng.shuffle(all);
+  return all[Math.max(0, kins.findIndex((k) => k.id === kinId))] ?? 'androgynous';
+}
 
 export interface CharacterState {
   id: string;

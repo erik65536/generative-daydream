@@ -6,7 +6,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { Nav, Rng, makeNav, type CharacterSpec, type ClassRole, type Vec2, type WorldDefinition, type ZoneDef } from '@gd/shared';
+import { Nav, PX_PER_METRE, Rng, makeNav, type CharacterSpec, type ClassRole, type Vec2, type WorldDefinition, type ZoneDef } from '@gd/shared';
 import { reloadGenAI } from '../src/genai/service';
 import { WorldGenJob, places, runGeneration } from '../src/worldgen/pipeline';
 import { populate, type Painted } from '../src/worldgen/zones';
@@ -139,7 +139,7 @@ function layOut(w: WorldDefinition, z: ZoneDef) {
   const nav = makeNav(S, S, (x, y) => x > 1.4 && y > 1.4 && x < S - 1.4 && y < S - 1.4);
   z.nav = nav;
   z.width = z.height = S;
-  z.painting = { image: `place_${z.id}`, width: S * 64, height: S * 32, ox: S * 32, oy: -S * 16 };
+  z.painting = { image: `place_${z.id}`, width: Math.round(S * PX_PER_METRE), height: Math.round(S * PX_PER_METRE), ox: 0, oy: 0 };
   z.look = { ...z.look, weather: 'none' };
   const ways = z.features.filter((f) => f.kind === 'exit' || f.kind === 'door');
   ways.forEach((f, i) => {

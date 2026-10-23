@@ -1,6 +1,6 @@
 # Generative Daydream
 
-A GenAI-driven 2D isometric RPG engine. Describe a world — high fantasy, a derelict space station, a cozy animal village, an office printer apocalypse — and the engine dreams up its places, people, monsters, items, main story and twists, then lets you walk into it and play: real-time exploration, Divinity-style turn-based combat, free-text conversations with NPCs who remember you and can change your quests.
+A GenAI-driven 2D top-down RPG engine. Describe a world — high fantasy, a derelict space station, a cozy animal village, an office printer apocalypse — and the engine dreams up its places, people, monsters, items, main story and twists, then lets you walk into it and play: real-time exploration, Divinity-style turn-based combat, free-text conversations with NPCs who remember you and can change your quests.
 
 ## Quick start
 
@@ -36,7 +36,7 @@ packages/server   TypeScript (Node) authoritative game server.
                   meanwhile (from the atlas on), then characters, objects and icons.
   game/           Instances: zones, movement, traps, interactions, loot, trade, crafting, quests, NPC dialogue,
                   gossip/memory, combat (turns, AP, armor, statuses, surfaces), tactical AI, saves.
-packages/client   React UI + canvas isometric renderer (each place's painting as the ground, figures in depth
+packages/client   React UI + canvas renderer (each place's top-down map as the ground, figures in depth
                   order, lighting and day/night, fog of war, weather, particles, combat reach rings).
 config/           genai.example.json, ComfyUI workflow templates.
 ```
@@ -86,14 +86,14 @@ Each purpose maps to a provider:
 
 Provider types: `openai-chat` (OpenAI and any OpenAI-compatible server: llama.cpp, LM Studio, vLLM, Ollama, OpenRouter), `llamacpp-decision` (llama.cpp `/v1/systemone` decision models), `openai-responses`, `anthropic` (official SDK, structured outputs, server-side refusal fallbacks enabled — set `"extraBody": {"fallbacks": false}` to disable), `google`, `comfyui` (all images), `procedural`. API keys can be literal or `"env:VAR_NAME"`. `structured` can be `json_schema` (native constrained decoding), `json_object`, or `prompt` (schema in the prompt only) for servers without schema support.
 
-World generation runs text and image work side by side: places are painted (on the local ComfyUI) as soon as they have a name, while the story is still being written. Places need ComfyUI with Krea 2, SAM 3, MoGe 2 and SeedVR2 (`config/comfyui/`); its address is the comfyui provider's `baseUrl` (or `COMFY_URL`). Providers that share a `"gpu"` group never run at the same time: before switching models the engine unloads the resident one (llama.cpp router `/models/unload`, ComfyUI `/free`), and when it takes the GPU it also evicts anything another process left loaded. Characters, creatures, objects and icons are painted with Krea 2 too, cut out with BiRefNet and the known backdrop (`config/comfyui/krea2_cutout.json`, see `docs/world-art.md`).
+World generation runs text and image work side by side: places are painted as top-down maps (on the local ComfyUI) as soon as they have a name, while the story is still being written. Places need ComfyUI with Krea 2 (and its AnyPaint LoRA and nodes), Qwen-Image 2.1 Turbo, SAM 3 and SeedVR2 (`config/comfyui/`, see `docs/places.md`); its address is the comfyui provider's `baseUrl` (or `COMFY_URL`). Providers that share a `"gpu"` group never run at the same time: before switching models the engine unloads the resident one (llama.cpp router `/models/unload`, ComfyUI `/free`), and when it takes the GPU it also evicts anything another process left loaded. Characters, creatures, objects and icons are painted with Krea 2 too, cut out with BiRefNet and the known backdrop (`config/comfyui/krea2_cutout.json`, see `docs/world-art.md`).
 
 ## Local setup (16 GB VRAM)
 
 `config/genai.example.json` matches the tested local setup:
 
 1. **llama.cpp in router mode** (`llama-server --models-dir .\models --port 9931 --parallel 1 --ctx-size 16384 --cache-type-k q8_0 --cache-type-v q8_0`) serving a text/vision LLM (tested: Qwen3.8-27B IQ3_S) and a decision model (tested: vllm-d3-flash). `--parallel 1` matters: the default splits the context into 4 slots of 4k, too small for town generation.
-2. **ComfyUI** on `http://127.0.0.1:8188` with Krea 2 Turbo (`krea2_turbo_fp8_scaled.safetensors`, with its Qwen3-VL text encoder and VAE) and BiRefNet (`background_removal/birefnet.safetensors` from Comfy-Org/BiRefNet, ComfyUI's built-in Remove Background) for all art, plus SAM 3, MoGe 2 and SeedVR2 for reading and finishing places. The asset workflow is API-format JSON with `{{prompt}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{checkpoint}}`, `{{steps}}`, `{{cfg}}`, `{{cutter}}` placeholders.
+2. **ComfyUI** on `http://127.0.0.1:8188` with Krea 2 Turbo (`krea2_turbo_fp8_scaled.safetensors`, with its Qwen3-VL text encoder and VAE) and BiRefNet (`background_removal/birefnet.safetensors` from Comfy-Org/BiRefNet, ComfyUI's built-in Remove Background) for all art, plus Qwen-Image 2.1 Turbo (its edit mode reads walkable ground), SAM 3 and SeedVR2 for reading and finishing places, and the Krea 2 AnyPaint LoRA and nodes for repairs. The asset workflow is API-format JSON with `{{prompt}}`, `{{seed}}`, `{{width}}`, `{{height}}`, `{{checkpoint}}`, `{{steps}}`, `{{cfg}}`, `{{cutter}}` placeholders.
 
 All three share the GPU group `local`, so only one is loaded at a time.
 

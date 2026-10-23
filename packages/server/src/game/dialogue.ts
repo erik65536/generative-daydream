@@ -35,7 +35,6 @@ export interface DialogueHost {
   npcFlee(npcId: string, userId: string): void;
   joinParty(userId: string, npcId: string): string | null;
   leaveParty(userId: string, npcId: string): void;
-  healParty(userId: string): void;
   giveItemsToPlayer(userId: string, items: ItemInstance[]): void;
   takeItemFromPlayer(userId: string, itemId: string): ItemInstance | null;
   revealZone(userId: string, zoneId: string): boolean;
@@ -404,7 +403,6 @@ export class DialogueEngine {
     if (this.teachList(def, p).length) allowed.push('teach_skill');
     if (def.canJoinParty && !rt.partyOf) allowed.push('join_party');
     if (rt.partyOf === userId) allowed.push('leave_party');
-    if (def.role === 'innkeeper' || def.role === 'mystic' || def.role === 'trainer') allowed.push('heal_player');
     if (knownZones.length) allowed.push('reveal_location');
     if (this.h.ctx.r.systems.dynamicQuests) allowed.push('create_quest');
     if (def.role !== 'guard' && this.h.ctx.townOf(rt.zoneId)) allowed.push('call_guards');
@@ -718,10 +716,6 @@ export class DialogueEngine {
             if (z && this.h.revealZone(userId, z.id)) notes.push(`${z.name} is marked on your map.`);
             break;
           }
-          case 'heal_player':
-            this.h.healParty(userId);
-            notes.push(`${def.name} tends to your ${this.h.ctx.r.terminology.party.toLowerCase()}. You feel restored.`);
-            break;
           case 'teach_skill': {
             if (!a.skillId || !this.teachList(def, p).includes(a.skillId)) break;
             const err = this.h.teachSkill(userId, a.skillId, this.teachPrice(p));
@@ -900,13 +894,6 @@ export class DialogueEngine {
       } else if ((def.role === 'merchant' || def.role === 'crafter' || def.role === 'innkeeper') && has('buy', 'sell', 'wares', 'trade', 'shop', 'goods', 'store', 'merchandise')) {
         actions.push({ type: 'open_trade' });
         say.push(pickLine(['Take a look. Everything is priced fairly.', 'See anything you like?', 'Coin first, questions later.'], def.name));
-      } else if (def.role === 'innkeeper' && has('room', 'rest', 'sleep', 'bed', 'night')) {
-        const cost = 10 + Math.max(...p.party.map((c) => c.level)) * 2;
-        if (p.gold >= cost) {
-          p.gold -= cost;
-          actions.push({ type: 'heal_player' });
-          say.push(`That'll be ${cost} ${this.h.ctx.r.terminology.currency}. Rest well — there's a hot meal in the morning.`);
-        } else say.push(`A room is ${cost} ${this.h.ctx.r.terminology.currency}. Come back when you have it.`);
       } else if (this.teachList(def, p).length && has('teach', 'train', 'learn', 'lesson', 'skill')) {
         const want = this.teachList(def, p).find((s) => t.includes(this.h.ctx.skillName(s).toLowerCase()) || t.includes(s.replace(/_/g, ' ')));
         if (want) {

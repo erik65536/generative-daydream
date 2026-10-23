@@ -4,7 +4,7 @@
  * the wild places while the story is still being written:
  *
  *   concept ─┬─ rules ── creatures ──┬─ story ── towns' people ──┬─ assemble ─┬─ balance ── heroes, item icons
- *            └─ atlas ───────────────┴─ wilds' and dungeons' lore ┘            ├─ towns painted, settled ── interiors
+ *            └─ atlas ───────────────┴─ wilds' and dungeons' lore ┘            ├─ towns painted and settled
  *                 └─ wilds and dungeons painted and read ─────────────────────┴─ settled (Luna places everything)
  *                                                                              └─ people, creatures, objects drawn
  *
@@ -33,7 +33,7 @@ import * as P from './prompts';
 import { assembleWorld, missingRoles, townRoles, type Draft } from './assemble';
 import { generateArt, linkAssets } from './art';
 import { GpuQueue } from './gpu';
-import { PARTS, paintAndRead, settlePlace, sketchOf, type Painted, type PlaceContext, type PlaceSketch } from './zones';
+import { paintAndRead, settlePlace, sideToward, sketchOf, type Painted, type PlaceContext, type PlaceSketch } from './zones';
 export { WorldGenJob };
 export type { JobPhase, GenLogEntry } from '../jobs/job';
 
@@ -161,16 +161,11 @@ class Progress {
     }
     this.job.progress = Math.max(this.job.progress, Math.min(0.99, done / Math.max(1, total)));
   }
-  /** Work that will not happen after all (an interior whose building has no entrance). */
-  drop(key: string) {
-    const u = this.units.get(key);
-    if (u) u.weight = 0;
-  }
 }
 
 /** About how long each kind of work takes, in seconds. */
-const COST = { concept: 20, rules: 60, atlas: 30, families: 20, story: 60, content: 15, balance: 60, image: 12, part: 25, read: 45, settle: 40 };
-const placeCost = (kind: ZoneDef['kind']) => PARTS[kind][0] * PARTS[kind][1] * COST.part + COST.read + COST.settle;
+const COST = { concept: 20, rules: 60, atlas: 30, families: 20, story: 60, content: 15, balance: 60, image: 12, map: 600, settle: 40 };
+const placeCost = (_kind: ZoneDef['kind']) => COST.map + COST.settle;
 
 /** How places are painted and furnished (tests swap in plain ground, to build worlds without an image model). */
 export const places = { paint: paintAndRead, settle: settlePlace };
@@ -190,7 +185,10 @@ function slotSketch(sk: WorldSkeleton, atlas: S.AtlasOut, s: ZoneSlot): PlaceSke
     description: info(s.slotId).description,
     lore: info(s.slotId).lore,
     buildings: [],
-    exits: s.links.map((l) => ({ id: `${zid(s.slotId)}_exit_${l}`, to: info(l).name, into: kindOf(l) === 'dungeon' && s.kind !== 'dungeon' })),
+    exits: s.links.map((l) => {
+      const into = kindOf(l) === 'dungeon' && s.kind !== 'dungeon';
+      return { id: `${zid(s.slotId)}_exit_${l}`, to: info(l).name, into, side: into ? undefined : sideToward(s.mapPos, sk.slots.find((x) => x.slotId === l)?.mapPos) };
+    }),
   };
 }
 
@@ -299,7 +297,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
       priority,
       seed: hash(`${seed}:${z.id}`),
       report: (m) => job.push(m),
-      onPart: (done, total) => progress.set(`place:${z.id}`, (done / total) * ((placeCost(z.kind) - COST.read - COST.settle) / placeCost(z.kind))),
+      onPart: (done, total) => progress.set(`place:${z.id}`, (done / total) * (COST.map / placeCost(z.kind))),
     });
     // Painting and settling a place are retried like any step (a model may fail now and then); their saved steps are kept.
     const paint = (sketch: PlaceSketch, ctx: PlaceContext) => attempt(job, `Painting ${sketch.name}`, () => places.paint(look, sketch, ctx));
@@ -396,10 +394,8 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
       saveWorld(world);
     };
     save(true);
-    const interiors = world.zones.filter((z) => z.kind === 'interior');
-    for (const z of interiors) progress.add(`place:${z.id}`, placeCost('interior'));
     job.count('places', placesDone, world.zones.length);
-    job.push(`Assembled ${world.zones.length} places (${interiors.length} interiors), ${world.npcs.length} people, ${world.quests.length} quests (${world.quests.filter((q) => q.main).length} main), ${world.bosses.length} bosses.`);
+    job.push(`Assembled ${world.zones.length} places, ${world.npcs.length} people, ${world.quests.length} quests (${world.quests.filter((q) => q.main).length} main), ${world.bosses.length} bosses.`);
 
     const balance = track(stage('balance', 'Balancing the rules by simulation', () => cp.get('balance', () => balanceWorldRules(job, world, r.intent, genre, r.world, (frac) => progress.set('balance', frac)), resumed('Balance'))).then((b) => {
       bindWorld(world, b.ruleset, b.intent.classes);
@@ -407,23 +403,16 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
       progress.set('balance', 1);
     }));
 
-    // Places: wild places and dungeons as their paintings come in, towns and then their interiors.
+    // Places: wild places and dungeons as their maps come in, then towns.
     const settle = (z: ZoneDef, p: Painted, priority: number) => attempt(job, `Settling ${z.name}`, () => places.settle(world, z, p, placeCtx(z, priority))).then(() => {
       placeDone(z.id, z.name);
       save();
     });
     const paintings = await painted;
-    const settled = world.zones.filter((z) => z.kind !== 'interior').map((z) => track((async () => {
+    const settled = world.zones.map((z) => track((async () => {
       const priority = placePriority(z.id);
       if (z.kind !== 'town') return settle(z, await paintings.get(z.id)!, priority);
       await settle(z, await paint(sketchOf(world, z), placeCtx(z, priority)), priority);
-      // Interiors whose building has no entrance in the painting are gone now.
-      for (const i of interiors) if (i.parentZoneId === z.id && !world.zones.includes(i)) progress.drop(`place:${i.id}`);
-      job.count('places', placesDone, world.zones.length);
-      await Promise.all(world.zones.filter((i) => i.parentZoneId === z.id).map((i, n) => {
-        const p = priority + 0.005 + n / 10000;
-        return track(paint(sketchOf(world, i), placeCtx(i, p)).then((painted) => settle(i, painted, p)));
-      }));
     })()));
 
     // Characters and the objects drawn over paintings, while places are painted; heroes and icons once rules are final.

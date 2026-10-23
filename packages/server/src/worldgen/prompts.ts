@@ -3,7 +3,7 @@ import { LENGTH_PROFILES, MONSTER_ARCHETYPES, ROLE_VISUAL, SIZE_PROFILES, type R
 import type { ConceptOut, AtlasOut } from './schemas';
 import type { WorldSkeleton, ZoneSlot } from './structure';
 
-export const SYSTEM = `You are the lead world designer for "Generative Daydream", an engine for 2D isometric RPGs in the spirit of Baldur's Gate 2 and Diablo 2, with turn-based combat like Divinity: Original Sin 2.
+export const SYSTEM = `You are the lead world designer for "Generative Daydream", an engine for 2D top-down RPGs in the spirit of Baldur's Gate 2 and Diablo 2, with turn-based combat like Divinity: Original Sin 2.
 The world's rules (health, resources, classes, skills, items) are designed in a separate step; your job here is the world itself: places, characters and story that fit the user's setting perfectly — whether that is high fantasy, a space adventure, a cozy animal tale, a surreal wonderland or an office comedy.
 Rules:
 - Honor the user's setting, story ideas and notes above everything else, including any meta instructions they give.

@@ -14,7 +14,7 @@
  * edge, so it breaks into wisps rather than a blur. The tile's brightness is its density (see docs/world-art.md); a
  * world without one gets a generated noise tile.
  */
-import { ISO_X, ISO_Y } from '@gd/shared';
+import { PX_PER_METRE } from '@gd/shared';
 import type { RGB } from './color';
 
 /** Party figures the edge veil clears around. */
@@ -31,13 +31,13 @@ uniform vec3 u_base, u_tint;
 uniform sampler2D u_fog, u_mist;
 /** The party's feet (picture px): the veil along the edge clears around them, so they always read. */
 uniform vec2 u_party[${PARTY}];
-const vec2 ISO = vec2(${ISO_X.toFixed(1)}, ${ISO_Y.toFixed(1)});
+const float PXM = ${PX_PER_METRE.toFixed(3)};
 float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
 /** Coverage m (0 clear .. 1 solid) eroded by the mist's density n: wisps where it thins. */
 float erode(float m, float n) { return smoothstep(0.0, 1.0, (m - 0.5) * 2.0 + 0.5 + (n - 0.5) * 1.0); }
 void main() {
   vec2 w = (v * u_view - u_view * 0.5) / u_zoom + u_cam;
-  vec2 g = vec2(w.y / ISO.y + w.x / ISO.x, w.y / ISO.y - w.x / ISO.x) * 0.5;
+  vec2 g = w / PXM;
   // Two layers of drifting mist; the nearer, larger one moves a little faster with the camera.
   vec3 m1 = texture2D(u_mist, w / u_tile + u_t * vec2(0.007, 0.003)).rgb;
   vec3 m2 = texture2D(u_mist, (w + u_cam * 0.18) / (u_tile * 1.7) + u_t * vec2(-0.004, 0.0035) + 0.37).rgb;
@@ -51,9 +51,9 @@ void main() {
     unseen = f.r;
     dim = f.a;
   }
-  // Distance inside the painting's edge (px across; up and down the picture counts double).
+  // Distance inside the painting's edge (px).
   vec2 d2 = min(w - u_rect.xy, u_rect.zw - w);
-  float d = min(d2.x, d2.y * 2.0);
+  float d = min(d2.x, d2.y);
   // The passes overlap by a few screen pixels at the edge: the ground solid to just inside it, the air fading in
   // over it, so nothing shows through between them.
   float px = min(d2.x, d2.y) * u_zoom, seam = smoothstep(-4.0, 4.0, px);
@@ -181,7 +181,7 @@ export class Mist {
     gl.uniform1f(L.u_zoom!, f.zoom);
     gl.uniform1f(L.u_t!, f.t);
     // The veil inside the edge spans about two metres; a tile spans 16 m.
-    gl.uniform1f(L.u_feather!, 5 * ISO_X);
+    gl.uniform1f(L.u_feather!, 4 * PX_PER_METRE);
     gl.uniform1f(L.u_tile!, f.tile ? 1024 : 640);
     gl.uniform4f(L.u_rect!, ...f.rect);
     const party = new Float32Array(PARTY * 2).fill(-1e6);

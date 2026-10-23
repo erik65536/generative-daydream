@@ -5,7 +5,7 @@
  * cell is the same size, and the ground point under the actor sits at the same anchor in every cell. Sheets are
  * drawn at `scale` sheet pixels per game picture pixel (2: crisp when the view zooms in).
  */
-import { ISO_X, ISO_Y } from './nav';
+import { PX_PER_METRE } from './nav';
 
 /** Screen directions, clockwise from straight down the screen (toward the viewer). */
 export const ANIM_DIRS = ['S', 'SW', 'W', 'NW', 'N', 'NE', 'E', 'SE'] as const;
@@ -46,7 +46,8 @@ export interface ActorAnim {
   clips: Partial<Record<ClipName, AnimClip>>;
 }
 
-export const ANIM_VERSION = 1;
+/** Bumped when sheets must be rendered again (2: the camera of the top-down maps). */
+export const ANIM_VERSION = 2;
 /** Moving faster than this (metres per second) plays the run instead of the walk. */
 export const RUN_SPEED = 2.6;
 
@@ -54,11 +55,10 @@ export const RUN_SPEED = 2.6;
 export const clipKey = (spriteKey: string, clip: ClipName) => `${spriteKey}@anim-${clip}`;
 
 /**
- * The sheet row for a ground direction (metres: x and y as in the game). The angle is taken on screen, so "down the
- * screen" is S whichever ground axes that mixes.
+ * The sheet row for a ground direction (metres: x and y as in the game, y down the screen): "down the screen" is S.
  */
 export function dirRow(dx: number, dy: number): number {
-  const sx = (dx - dy) * ISO_X, sy = (dx + dy) * ISO_Y;
+  const sx = dx * PX_PER_METRE, sy = dy * PX_PER_METRE;
   if (!sx && !sy) return 0;
   const deg = (Math.atan2(sy, sx) * 180) / Math.PI; // 90 = straight down the screen
   return (((Math.round((deg - 90) / 45) % 8) + 8) % 8);

@@ -1,6 +1,6 @@
 /**
- * ComfyUI calls for painting and reading places: Krea 2 (paint, continue), SAM 3 (find things), MoGe 2 (normals,
- * depth) and SeedVR2 (upscale). Everything goes over ComfyUI's HTTP API, so ComfyUI can run on another machine:
+ * ComfyUI calls for painting and reading places: Krea 2 (paint, repaint from a guide, continue), Qwen-Image 2.1 (edit:
+ * a map redrawn as a walk plan), SAM 3 (find things) and SeedVR2 (upscale). Everything goes over ComfyUI's HTTP API, so ComfyUI can run on another machine:
  * its address is the configured comfyui provider's baseUrl (COMFY_URL overrides it). Calls take turns on the GPU
  * with every other model through genai's GPU scheduler, which unloads one model before the next needs the memory.
  */
@@ -13,7 +13,7 @@ import { genai } from '../genai/service';
 
 const KREA = 'krea2_turbo_fp8_scaled.safetensors';
 const SAM = 'sam3.1_multiplex_fp16.safetensors';
-const MOGE = 'moge_2_vitl_normal_fp16.safetensors';
+const QWEN = 'qwen_image_2.1_turbo_int8_convrot.safetensors';
 const SEEDVR2 = 'seedvr2_7b_int8_convrot.safetensors';
 /** AnyPaint sees the whole window as a reference this many pixels across (its default 384 loses small objects). */
 const ANYPAINT_REFERENCE = 768;
@@ -27,7 +27,7 @@ function base(): string {
   return (provider()?.[1].baseUrl ?? 'http://127.0.0.1:8188').replace(/\/+$/, '');
 }
 
-/** Run on the GPU when it is free and `model` is loaded (SAM 3 and MoGe 2 fit together, as "reader"). */
+/** Run on the GPU when it is free and `model` is loaded (SAM 3 runs as "reader"). */
 function onGpu<T>(model: string, fn: () => Promise<T>): Promise<T> {
   const p = provider();
   return p?.[1].gpu ? genai().gpu.group(p[1].gpu).run(p[0], model, p[1], fn) : fn();
@@ -113,12 +113,32 @@ export async function kreaPaint(prompt: string, width: number, height: number, s
   return one(await run(KREA, workflow('krea2_turbo_t2i.json', { prompt, width, height, seed, steps: 8, cfg: 1, checkpoint: KREA })), 'Krea');
 }
 
+/** Krea 2 Turbo, image to image: repaint `init` (resized to the output) at `denoise`; its layout survives, its content is new. */
+export async function kreaRepaint(init: Buffer, prompt: string, width: number, height: number, seed: number, denoise: number): Promise<Buffer> {
+  const png = await sharp(init).resize(width, height, { fit: 'fill' }).removeAlpha().png().toBuffer();
+  return one(await run(KREA, workflow('krea2_img2img.json', { init: await upload(png), prompt, seed, steps: 8, denoise, checkpoint: KREA })), 'Krea');
+}
+
+/**
+ * Qwen-Image 2.1 Turbo, edit: the model sees `ref` and paints what `prompt` asks of it at the reference's size (a
+ * multiple of 16). Deterministic for a seed, so cached like the reader's answers.
+ */
+export async function qwenEdit(ref: Buffer, prompt: string, seed: number): Promise<Buffer> {
+  const meta = await sharp(ref).metadata();
+  const width = Math.round(meta.width! / 16) * 16, height = Math.round(meta.height! / 16) * 16;
+  const png = await sharp(ref).resize(width, height, { fit: 'fill' }).removeAlpha().png().toBuffer();
+  const c = cached('qwenedit', png, `${prompt}|${seed}`);
+  const hit = c.get();
+  if (hit) return hit[0]!;
+  return c.put([one(await run(QWEN, workflow('qwen21_edit.json', { ref_1: await upload(png), prompt, width, height, seed, checkpoint: QWEN })), 'Qwen edit')])[0]!;
+}
+
 /** Krea 2 AnyPaint: paint the white part of `mask` to continue `init`, redrawing `redraw` px of its boundary. */
 export async function kreaContinue(init: Buffer, mask: Buffer, prompt: string, seed: number, redraw = 32): Promise<Buffer> {
   return one(await run(KREA, workflow('krea2_anypaint.json', { init: await upload(init), mask: await upload(mask), prompt, seed, redraw, refmax: ANYPAINT_REFERENCE, checkpoint: KREA })), 'AnyPaint');
 }
 
-/** A disk cache keyed by the image and the request (SAM, MoGe and SeedVR2 are deterministic). */
+/** A disk cache keyed by the image and the request (SAM, Qwen edits and SeedVR2 are deterministic). */
 function cached(kind: string, png: Buffer, key: string) {
   const dir = path.join(CACHE, kind, crypto.createHash('sha1').update(png).update(`|${key}`).digest('hex'));
   return {
@@ -144,24 +164,6 @@ export async function segment(png: Buffer, prompt: string, threshold = 0.35): Pr
     if (e instanceof ComfyError && /size|empty|shape|0 elements|cannot/i.test(e.message)) return c.put([]);
     throw e;
   }
-}
-
-/** MoGe 2: per-pixel surface normals (OpenGL: x right, y up, z towards the viewer). */
-export async function normals(png: Buffer): Promise<Buffer> {
-  const c = cached('moge', png, 'normal');
-  const hit = c.get();
-  if (hit) return hit[0]!;
-  const [normal] = await run('reader', workflow('moge_geometry.json', { ref_1: await upload(png), checkpoint: MOGE }));
-  return c.put([one(normal ? [normal] : [], 'MoGe')])[0]!;
-}
-
-/** MoGe 2: disparity (nearer is brighter), normalised over the picture. */
-export async function depth(png: Buffer): Promise<Buffer> {
-  const c = cached('moge', png, 'depth');
-  const hit = c.get();
-  if (hit) return hit[0]!;
-  const [, d] = await run('reader', workflow('moge_geometry.json', { ref_1: await upload(png), checkpoint: MOGE }));
-  return c.put([one(d ? [d] : [], 'MoGe depth')])[0]!;
 }
 
 /**

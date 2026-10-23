@@ -4,7 +4,7 @@
  * over the paintings (a chest, a sign, the waypoint), and item icons. Each image's brief comes from the world; Luna
  * writes the image prompts and picks their backdrops, and checks the results.
  */
-import type { WorldDefinition } from '@gd/shared';
+import { kinPresentation, type Presentation, type WorldDefinition } from '@gd/shared';
 import { BudgetExceeded } from '../genai/spend';
 import { z } from 'zod';
 import { assetBrief, imagePromptSystem, produceAssets, promptEntry, type ImageRecord as AssetRecord } from '../genai/images';
@@ -17,11 +17,17 @@ import { worldAssetDir } from '../storage';
 export const ART_VERSION = 4;
 
 const PRESENTATIONS = ['feminine', 'masculine', 'androgynous'] as const;
-/** Player heroes come in each presentation the player can choose; the class look itself stays gender-neutral. */
+/** Player heroes come in each presentation a kin can have (each kin of a world is one); the class look itself stays gender-neutral. */
 const PRESENTATION_SUBJECT: Record<(typeof PRESENTATIONS)[number], string> = {
   feminine: 'a woman (clearly female if not human)',
   masculine: 'a man (clearly male if not human)',
   androgynous: 'an androgynous person, neither clearly male nor female',
+};
+
+/** The presentations this world's heroes come in: those of its kins (all three before its rules exist). */
+const heroPresentations = (w: WorldDefinition): readonly Presentation[] => {
+  const kins = w.ruleset?.kins ?? [];
+  return kins.length ? PRESENTATIONS.filter((p) => kins.some((k) => kinPresentation(kins, k.id) === p)) : PRESENTATIONS;
 };
 
 /** The presentation must read at a glance from the front, at game size, whatever the class description says. */
@@ -99,8 +105,9 @@ function collectAssets(w: WorldDefinition, level: 'essential' | 'full'): { rec: 
       entry: { key, kind, brief: prompt, defaultBrief: derived, stale },
     });
   };
-  // People are seen from the front; the prompt writer picks a creature's view by its body plan.
-  for (const o of w.origins) for (const pres of PRESENTATIONS) add(`spr_origin_${o.id}_${pres}`, 'sprite', `The player's hero, ${PRESENTATION_SUBJECT[pres]}, a ${o.name}: ${o.appearance}. ${PRESENTATION_LOOK[pres]}`, { view: 'front' });
+  // People are seen from the front; the prompt writer picks a creature's view by its body plan. Heroes are painted
+  // in the presentations this world's kins have (each kin is one), not all three.
+  for (const o of w.origins) for (const pres of heroPresentations(w)) add(`spr_origin_${o.id}_${pres}`, 'sprite', `The player's hero, ${PRESENTATION_SUBJECT[pres]}, a ${o.name}: ${o.appearance}. ${PRESENTATION_LOOK[pres]}`, { view: 'front' });
   for (const n of w.npcs) add(`spr_npc_${n.id}`, 'sprite', `${n.appearance}, ${n.title}`, { view: 'front' });
   for (const f of w.families) for (const m of f.members) add(`spr_mon_${f.id}_${m.archetype}`, 'sprite', `${m.appearance || m.name}, ${m.name}, hostile creature`);
   for (const b of w.bosses) add(`spr_boss_${b.id}`, 'sprite', `${b.appearance}, ${b.name} ${b.title}, imposing boss`);
@@ -127,7 +134,7 @@ export function linkAssets(w: WorldDefinition) {
   const ok = (k: string) => (w.assets[k]?.status === 'ok' ? k : undefined);
   for (const o of w.origins) {
     o.asset = ok(`spr_origin_${o.id}`);
-    o.assets = Object.fromEntries(PRESENTATIONS.map((p) => [p, ok(`spr_origin_${o.id}_${p}`)]).filter(([, v]) => v));
+    o.assets = Object.fromEntries(heroPresentations(w).map((p) => [p, ok(`spr_origin_${o.id}_${p}`)]).filter(([, v]) => v));
   }
   for (const n of w.npcs) n.asset = ok(`spr_npc_${n.id}`);
   for (const f of w.families) for (const m of f.members) m.asset = ok(`spr_mon_${f.id}_${m.archetype}`);

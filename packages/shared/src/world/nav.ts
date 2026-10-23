@@ -1,28 +1,27 @@
 /**
  * Where people can walk and see in a painted place. Game positions are metres on the ground; the painting is a
- * picture of that ground in the isometric projection below. The reader turns the painting into two bit grids of
+ * top-down map of that ground (x across, y down the picture). The reader turns the painting into two bit grids of
  * half-metre cells: walkable (where a character's centre may stand, clearance already included) and see-through.
  */
 import { BitSet } from '../util/encode';
 import { findPath, hasLineOfSight, reachable, type PathOptions, type Vec2 } from '../util/grid';
 
-/** One metre of ground runs ISO_X picture pixels across and ISO_Y down (a 2:1 isometric projection). */
-export const ISO_X = 32;
-export const ISO_Y = 16;
-/** Picture pixels per metre of height (a 1.75 m person is about 82 px tall). */
-export const PX_PER_METRE_UP = 82 / 1.75;
+/**
+ * Picture pixels per metre: the one scale of the game. Ground runs this many pixels per metre both ways (the places
+ * are top-down maps), and figures stand this many pixels per metre tall (a 1.75 m person is 82 px).
+ */
+export const PX_PER_METRE = 82 / 1.75;
 /** Navigation cell size in metres. */
 export const NAV_CELL = 0.5;
 
 /** Ground metres to picture pixels, given the picture position of the ground origin. */
 export function groundToPicture(x: number, y: number, ox: number, oy: number): Vec2 {
-  return { x: (x - y) * ISO_X + ox, y: (x + y) * ISO_Y + oy };
+  return { x: x * PX_PER_METRE + ox, y: y * PX_PER_METRE + oy };
 }
 
 /** Picture pixels to ground metres. */
 export function pictureToGround(px: number, py: number, ox: number, oy: number): Vec2 {
-  const a = (px - ox) / ISO_X, b = (py - oy) / ISO_Y;
-  return { x: (a + b) / 2, y: (b - a) / 2 };
+  return { x: (px - ox) / PX_PER_METRE, y: (py - oy) / PX_PER_METRE };
 }
 
 export interface NavDef {

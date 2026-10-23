@@ -170,7 +170,7 @@ export class GameInstance implements CombatHost {
       party.push(ch);
       addToInventory(this.r, inventory, inv);
     }
-    if (!party.length) party.push(createCharacter(this.r, w, { name, classId: this.r.classes[0]!.id, kinId: this.r.kins[0]!.id, presentation: 'androgynous', pronouns: 'they/them' }, prng).ch);
+    if (!party.length) party.push(createCharacter(this.r, w, { name, classId: this.r.classes[0]!.id, kinId: this.r.kins[0]!.id }, prng).ch);
     for (const ch of party) restoreFully(this.r, ch, party.length <= 1);
     const start = this.ctx.zones.get(w.startZoneId)!;
     const p: PlayerState = {
@@ -2528,7 +2528,6 @@ export class GameInstance implements CombatHost {
       },
       joinParty: (u: string, id: string) => this.joinParty(u, id),
       leaveParty: (u: string, id: string) => this.leaveParty(u, id),
-      healParty: (u: string) => this.healParty(u),
       giveItemsToPlayer: (u: string, items: ItemInstance[]) => {
         const p = this.state.players[u];
         if (!p) return;

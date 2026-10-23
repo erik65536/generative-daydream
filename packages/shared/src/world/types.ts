@@ -150,8 +150,10 @@ export interface ZoneDef {
   links: string[];
   /** Arrival point when entering without a specific exit (ground metres). */
   entry: { x: number; y: number };
-  /** Town building interiors list their purpose. */
+  /** Town building interiors list their purpose (worlds from before buildings were only painted). */
   buildingPurpose?: string;
+  /** A town's buildings: painted on its map, not entered; the people who work in one stand outside its entrance. */
+  buildings?: { id: string; name: string; purpose: string; npcId: string }[];
   /** Hidden flavor used in NPC/LLM context. */
   lore?: string;
   /** Local monster families. */

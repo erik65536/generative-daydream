@@ -1,15 +1,17 @@
 // Load a rig (animator's rig.json + tex.png) into a three.js SkinnedMesh with toon shading and an ink outline,
-// and set up the game's isometric camera.
+// and set up the game's camera for figures.
 import * as THREE from 'three';
 
-/** Game projection: a ground metre along x is 32 px across and 16 down; a metre of height is 82/1.75 px. */
-export const PX_PER_M = 32 * Math.SQRT2; // 45.25 px per ground metre (orthographic, 30° elevation)
-/** Figures stand taller than a true orthographic view (82 px for 1.75 m): stretch heights, not the ground. */
-export const UP_STRETCH = 82 / 1.75 / (PX_PER_M * Math.cos(Math.PI / 6));
+/** The game's scale: a metre is 82/1.75 px across the screen (the top-down map) and a 1.75 m figure 82 px tall. */
+export const PX_PER_M = 82 / 1.75;
+/** The figures' camera looks down at this many degrees (the maps are straight down; figures are drawn three-quarter). */
+export const DEFAULT_PITCH = 35;
+/** Figures stand as tall as the game draws them (82 px for 1.75 m) whatever the pitch: heights are stretched, not the ground. */
+export const upStretch = (pitchDeg) => 1 / Math.cos((pitchDeg * Math.PI) / 180);
 
 /** Screen directions, as yaw of the model (+Z forward) about +Y. S faces the viewer (down the screen). */
 export const DIRS = ['S', 'SW', 'W', 'NW', 'N', 'NE', 'E', 'SE'];
-export const dirYaw = (i) => Math.PI / 4 - (i * Math.PI) / 4;
+export const dirYaw = (i) => -(i * Math.PI) / 4;
 
 export async function loadRig(base, opts = {}) {
   const data = await (await fetch(`${base}/rig.json`)).json();
@@ -91,19 +93,19 @@ export function resetPose(rig) {
 }
 
 /**
- * The game's camera and light: orthographic at 30° elevation looking toward -x -y (ground x runs to the lower right),
- * `ppm` pixels per ground metre, with the ground origin at pixel (ax, ay) of a w × h frame. Key light from the
+ * The figures' camera and light: orthographic, looking down the screen (-z) at `pitchDeg` below the horizontal, so
+ * ground x runs right and +z toward the viewer is down the screen; `ppm` pixels per metre, with the ground origin at pixel (ax, ay) of a w × h frame. Key light from the
  * upper left of the screen.
  */
-export function isoScene(w, h, ax, ay, ppm) {
+export function figureScene(w, h, ax, ay, ppm, pitchDeg = DEFAULT_PITCH) {
   const scene = new THREE.Scene();
   scene.add(new THREE.HemisphereLight(0xdfe6ee, 0x3a3630, 1.6));
   const sun = new THREE.DirectionalLight(0xfff1dc, 2.2);
   sun.position.set(-4, 7, 1.5);
   scene.add(sun);
   const cam = new THREE.OrthographicCamera(-ax / ppm, (w - ax) / ppm, ay / ppm, -(h - ay) / ppm, 0.1, 100);
-  const el = Math.PI / 6;
-  cam.position.set(Math.cos(el) * Math.SQRT1_2 * 20, Math.sin(el) * 20, Math.cos(el) * Math.SQRT1_2 * 20);
+  const el = (pitchDeg * Math.PI) / 180;
+  cam.position.set(0, Math.sin(el) * 20, Math.cos(el) * 20);
   cam.lookAt(0, 0, 0);
   return { scene, cam };
 }

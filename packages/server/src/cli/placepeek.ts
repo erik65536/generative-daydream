@@ -1,12 +1,12 @@
 /**
- * See a settled place as the game has it: its painting, where people can walk (green), and everything placed in it
+ * See a settled place as the game has it: its map, where people can walk (green), and everything placed in it
  * (ways out, people, things, monsters). Usage: tsx src/cli/placepeek.ts <worldId> [zoneId ...] [--out <dir>] [--mark x,y]
  * (--mark: a ground position to show, such as a player's)
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { NAV_CELL, Nav, groundToPicture } from '@gd/shared';
+import { NAV_CELL, Nav, PX_PER_METRE, groundToPicture } from '@gd/shared';
 import { loadWorld, worldAssetDir } from '../storage';
 
 const args = process.argv.slice(2);
@@ -27,12 +27,12 @@ for (const z of w.zones) {
   const nav = new Nav(z.nav);
   const at = (x: number, y: number) => groundToPicture(x, y, ox, oy);
   const cells: string[] = [];
-  const hw = 32 * NAV_CELL, hh = 16 * NAV_CELL;
+  const half = (PX_PER_METRE * NAV_CELL) / 2;
   for (let cy = 0; cy < nav.rows; cy++)
     for (let cx = 0; cx < nav.cols; cx++) {
       if (!nav.walkableCell(cx, cy)) continue;
       const c = at((cx + 0.5) * NAV_CELL, (cy + 0.5) * NAV_CELL);
-      cells.push(`M${c.x},${c.y - hh}L${c.x + hw},${c.y}L${c.x},${c.y + hh}L${c.x - hw},${c.y}Z`);
+      cells.push(`M${c.x - half},${c.y - half}h${2 * half}v${2 * half}h${-2 * half}Z`);
     }
   const mark = (x: number, y: number, color: string, r = 9, label = '') => {
     const p = at(x, y);

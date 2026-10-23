@@ -254,8 +254,9 @@ export interface CharacterSpec {
   name: string;
   classId: string;
   kinId: string;
-  presentation: Presentation;
-  pronouns: string;
+  /** Set only for people who are not players (a companion keeps their own); a player's follows their kin. */
+  presentation?: Presentation;
+  pronouns?: string;
   sprite?: string;
   colors?: string[];
 }

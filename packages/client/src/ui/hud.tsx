@@ -1,6 +1,6 @@
 import { readable } from './theme';
 import { useEffect, useRef, useState } from 'react';
-import { ISO_X, fogSize, rx, skillAp, skillRank, xpForLevel, type EntityView } from '@gd/shared';
+import { PX_PER_METRE, fogSize, rx, skillAp, skillRank, xpForLevel, type EntityView } from '@gd/shared';
 import { client, tryClient, useGame } from '../net/game';
 import { QuestTracker } from './tracker';
 import { Glyph } from './pad';
@@ -102,10 +102,10 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
       const lp = leader ? c.entityPos(leader) : { x: z.width / 2, y: z.height / 2 };
       // The painting itself, small, showing only the ground the party has seen.
       const scale = 3.2;
-      const k = scale / ISO_X;
+      const k = scale / PX_PER_METRE;
       const cx = S / 2, cy = S / 2;
-      const isoP = (x: number, y: number) => ({ x: cx + (x - y - (lp.x - lp.y)) * scale, y: cy + (x + y - (lp.x + lp.y)) * scale * 0.5 });
-      const o = isoP(0, 0);
+      const mapP = (x: number, y: number) => ({ x: cx + (x - lp.x) * scale, y: cy + (y - lp.y) * scale });
+      const o = mapP(0, 0);
       ctx.globalAlpha = 0.85;
       const px = o.x - z.painting.ox * k, py = o.y - z.painting.oy * k, pw = z.painting.width * k, ph = z.painting.height * k;
       ctx.drawImage(img, px, py, pw, ph);
@@ -116,7 +116,7 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
       const F = 3 * scale;
       for (const [x0, y0, x1, y1, rx, ry, rw, rh] of [
         [px, 0, px + F, 0, px, py, F, ph], [px + pw, 0, px + pw - F, 0, px + pw - F, py, F, ph],
-        [0, py, 0, py + F / 2, px, py, pw, F / 2], [0, py + ph, 0, py + ph - F / 2, px, py + ph - F / 2, pw, F / 2],
+        [0, py, 0, py + F, px, py, pw, F], [0, py + ph, 0, py + ph - F, px, py + ph - F, pw, F],
       ] as const) {
         const g = ctx.createLinearGradient(x0, y0, x1, y1);
         g.addColorStop(0, 'rgba(0,0,0,1)');
@@ -134,15 +134,15 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
       mask.getContext('2d')!.putImageData(md, 0, 0);
       ctx.save();
       ctx.globalCompositeOperation = 'destination-in';
-      // Square metre (x, y) sits at isoP(x, y): the mask's pixels are metres, drawn in the same projection.
-      ctx.setTransform(2 * scale, scale, -2 * scale, scale, 2 * o.x, 2 * o.y);
+      // Square metre (x, y) sits at mapP(x, y): the mask's pixels are metres.
+      ctx.setTransform(2 * scale, 0, 0, 2 * scale, 2 * o.x, 2 * o.y);
       ctx.imageSmoothingEnabled = true;
       ctx.drawImage(mask, -0.5, -0.5);
       ctx.restore();
       for (const f of z.features) {
         if (!c.seen(f.x, f.y)) continue;
         if (f.kind !== 'exit' && f.kind !== 'door' && f.kind !== 'waypoint') continue;
-        const p = isoP(f.x, f.y);
+        const p = mapP(f.x, f.y);
         ctx.fillStyle = f.kind === 'waypoint' ? '#8fd8ff' : '#ffe08a';
         ctx.beginPath();
         ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2);
@@ -152,7 +152,7 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
         if (e.dead) continue;
         const ep = c.entityPos(e);
         if (!c.seen(ep.x, ep.y)) continue;
-        const p = isoP(ep.x, ep.y);
+        const p = mapP(ep.x, ep.y);
         ctx.fillStyle = e.ownerUserId === c.state.userId ? '#7fd0ff' : e.hostile ? '#ff5a4a' : e.kind === 'character' ? '#9fe0a0' : c.state.player?.npcMarkers[e.id] ? '#ffd24a' : '#e0d0b0';
         ctx.beginPath();
         ctx.arc(p.x, p.y, e.ownerUserId === c.state.userId ? 3 : 2.2, 0, Math.PI * 2);

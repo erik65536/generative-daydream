@@ -1,45 +1,45 @@
 /**
- * A place, from design to game data: Luna plans it, Krea paints it, the reader finds where people can walk, Luna
- * checks that and decides where everything goes, and the painting is resampled to game scale and turned into ground
- * metres (the navigation grid, every door, exit, person, chest, trap and monster pack).
+ * A place, from design to game data: Luna plans it, Krea paints it as a top-down map from a frame guide, two readers
+ * and Luna find where people can walk, the map is checked and repaired (ways out, joined ground), Luna decides where
+ * everything goes, and the map is resampled to game scale and turned into ground metres (the navigation grid, every
+ * door, exit, person, chest, trap and monster pack). See docs/places.md.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import {
-  BitSet, NAV_CELL, Nav, PX_PER_METRE_UP, Rng, groundToPicture, pictureToGround,
+  BitSet, NAV_CELL, Nav, PX_PER_METRE, Rng, pictureToGround,
   type AssetRecord, type FeatureDef, type NavDef, type Vec2, type WorldDefinition, type ZoneDef, type ZoneKind,
 } from '@gd/shared';
 import { buildPack } from '../rules/encounters';
 import { worldAssetDir, worldDir, writeJsonAtomic } from '../storage';
-import { genai } from '../genai/service';
 import { upscale } from './comfy';
 import type { GpuQueue } from './gpu';
-import { paintPlace, planPlace, type PaintPlan, type PlaceBrief } from './outpaint';
+import { checkView, frameGuide, mapPixels, mapPrompt, paintMap, planMap, type MapBrief, type MapPlan, type ViewCheck } from './mapdraw';
+import { CELL, walkOf, type Grid, type Side } from './mapgrid';
+import { arbitrate, checkNames, classView, detectAll, entrances, landmarks, nameThings, qwenCells, samCells, type MapRead } from './mapread';
+import { repairMap } from './maprepair';
+import { candidates, place, pxPerMetre, type Candidate, type MapReading, type PlaceNeeds } from './placement';
 import { MIST_SIZE, measureLight, paintMist, type MistBrief } from './atmosphere';
 import { normColor } from './schemas';
-import { analyse, applyCheck, candidates, checkChanges, checkReading, colouring, place, readPainting, type Candidate, type PlaceNeeds, type Reading } from './reading';
 
-/** Parts (columns × rows of painting windows) per kind of place. */
-export const PARTS: Record<ZoneKind, [number, number]> = { town: [3, 2], wilderness: [4, 2], dungeon: [3, 2], interior: [1, 1] };
-/** Repaint (new seed) a place whose painting cannot work, at most this many times. */
+/** Paint a place again (new seed) when its map is not top-down or has too little ground, at most this many times. */
 const PAINT_TRIES = 3;
-/**
- * Walkable ground (m²) a painting must have to work: built-up towns have less open floor than wilds, and a dungeon
- * or a room is painted much closer (so one painting holds far less ground; rooms read 14–34 m², dungeons 46–80).
- */
-export const MIN_AREA: Record<ZoneKind, number> = { town: 350, wilderness: 600, dungeon: 30, interior: 10 };
+/** Walkable ground (m²) a map must have to work (towns 44×36 m, wilds 52×40, dungeons 28×22, rooms 14×11). */
+export const MIN_AREA: Record<ZoneKind, number> = { town: 350, wilderness: 600, dungeon: 120, interior: 25 };
 /** Monster packs keep their distance so fighting one never drags in the next (aggro reaches about 6.5 m). */
 const PACK_SPACING = 13;
 
 const THING_KINDS = new Set(['chest', 'sign', 'lore', 'waypoint', 'craft_station', 'bed', 'object']);
 
 /** A place as far as painting and reading it go: what it is, its buildings and its ways out (ids are the world's). */
-export interface PlaceSketch extends Pick<PlaceNeeds, 'name' | 'description' | 'buildings' | 'exits'> {
+export interface PlaceSketch extends Pick<PlaceNeeds, 'name' | 'description' | 'buildings'> {
   id: string;
   kind: ZoneKind;
   indoor: boolean;
   lore?: string;
+  /** Ways out. Those across the edge (not `into`) leave on a side of the map, toward where they lead on the world map. */
+  exits: { id: string; to: string; into?: boolean; side?: Side }[];
 }
 
 /** The world as every place's design sees it. */
@@ -52,6 +52,13 @@ export interface WorldLook {
 
 export const worldLook = (w: WorldDefinition): WorldLook => ({ id: w.id, story: `${w.concept.title}. ${w.concept.pitch}`, artStyle: w.concept.artStyle });
 
+/** The side of a map facing another place on the world map (y runs down the map, as on the screen). */
+export function sideToward(from: { x: number; y: number }, to: { x: number; y: number } | undefined): Side {
+  if (!to) return 'bottom';
+  const dx = to.x - from.x, dy = to.y - from.y;
+  return Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy < 0 ? 'top' : 'bottom';
+}
+
 export function sketchOf(w: WorldDefinition, z: ZoneDef): PlaceSketch {
   const target = (f: FeatureDef) => w.zones.find((x) => x.id === f.targetZoneId);
   const inside = (f: FeatureDef) => f.kind === 'door' && target(f)?.parentZoneId === z.id;
@@ -62,8 +69,13 @@ export function sketchOf(w: WorldDefinition, z: ZoneDef): PlaceSketch {
     indoor: !!z.indoor,
     description: z.description,
     lore: z.lore,
-    buildings: z.features.filter(inside).map((f) => ({ id: f.id, name: f.name ?? 'a building', purpose: target(f)?.buildingPurpose ?? 'house' })),
-    exits: z.features.filter((f) => f.kind === 'exit' || (f.kind === 'door' && !inside(f))).map((f) => ({ id: f.id, to: target(f)?.name ?? 'elsewhere', into: z.kind === 'interior' || (target(f)?.kind === 'dungeon' && z.kind !== 'dungeon') })),
+    buildings: (z.buildings ?? []).map((b) => ({ id: b.id, name: b.name, purpose: b.purpose })),
+    exits: z.features.filter((f) => f.kind === 'exit' || (f.kind === 'door' && !inside(f))).map((f) => {
+      const into = z.kind !== 'interior' && target(f)?.kind === 'dungeon' && z.kind !== 'dungeon';
+      // A room's door out is at the bottom of its map; other ways out face where they lead.
+      const side = into ? undefined : z.kind === 'interior' ? 'bottom' : sideToward(z.mapPos, target(f)?.mapPos);
+      return { id: f.id, to: target(f)?.name ?? 'elsewhere', into, side };
+    }),
   };
 }
 
@@ -71,7 +83,7 @@ export function sketchOf(w: WorldDefinition, z: ZoneDef): PlaceSketch {
 export function placeNeeds(w: WorldDefinition, z: ZoneDef): PlaceNeeds {
   return {
     ...sketchOf(w, z),
-    people: w.npcs.filter((n) => n.zoneId === z.id).map((n) => ({ id: n.id, name: n.name, title: n.title, role: n.role })),
+    people: w.npcs.filter((n) => n.zoneId === z.id).map((n) => ({ id: n.id, name: n.name, title: n.title, role: n.role, works: z.buildings?.find((b) => b.npcId === n.id)?.name })),
     things: z.features.filter((f) => THING_KINDS.has(f.kind)).map((f) => ({ id: f.id, what: thingText(f) })),
   };
 }
@@ -88,25 +100,26 @@ function thingText(f: FeatureDef): string {
   }
 }
 
-function placeBrief(w: WorldLook, s: PlaceSketch): PlaceBrief {
-  const [cols, rows] = PARTS[s.kind];
+/** The ways out across the edge, as sides of the map. */
+export const edgeSides = (s: PlaceSketch): Side[] => s.exits.filter((e) => !e.into).map((e) => e.side ?? 'bottom');
+
+function mapBrief(w: WorldLook, s: PlaceSketch): MapBrief {
   return {
     world: w.story,
     artStyle: w.artStyle,
     name: s.name,
-    kind: s.kind === 'wilderness' ? 'wilds' : s.kind,
+    kind: s.kind,
     indoor: s.indoor,
     description: s.description,
     lore: s.lore,
     buildings: s.buildings.map((b) => ({ name: b.name, purpose: b.purpose })),
-    exits: s.exits.map((e) => `${s.kind === 'interior' ? 'the door out' : e.into ? 'a way down or in' : 'a way'} to ${e.to}`),
-    cols,
-    rows,
+    sides: edgeSides(s),
+    inner: s.exits.filter((e) => e.into).map((e) => `a way down or in to ${e.to}`),
   };
 }
 
-/** Saved steps of one place's painting, so a resumed build picks up where it stopped. */
-class PlaceDraft {
+/** Saved steps of one place's making, so a resumed build picks up where it stopped. */
+export class PlaceDraft {
   readonly dir: string;
   constructor(worldId: string, zoneId: string) {
     this.dir = path.join(worldDir(worldId), 'draft', 'places', zoneId);
@@ -118,13 +131,29 @@ class PlaceDraft {
   saveJson(name: string, v: unknown) {
     writeJsonAtomic(path.join(this.dir, `${name}.json`), v);
   }
-  png(name: string): Buffer | undefined {
-    const f = path.join(this.dir, `${name}.png`);
+  file(name: string): Buffer | undefined {
+    const f = path.join(this.dir, name);
     return fs.existsSync(f) ? fs.readFileSync(f) : undefined;
   }
-  savePng(name: string, b: Buffer) {
+  saveFile(name: string, b: Buffer) {
     fs.mkdirSync(this.dir, { recursive: true });
-    fs.writeFileSync(path.join(this.dir, `${name}.png`), b);
+    fs.writeFileSync(path.join(this.dir, name), b);
+  }
+  png(name: string): Buffer | undefined {
+    return this.file(`${name}.png`);
+  }
+  savePng(name: string, b: Buffer) {
+    this.saveFile(`${name}.png`, b);
+  }
+  /** A per-cell mask, saved as a grey PNG one pixel per cell. */
+  async cells(name: string, g: Grid): Promise<Uint8Array | undefined> {
+    const f = this.png(name);
+    if (!f) return undefined;
+    const raw = await sharp(f).greyscale().resize(g.cols, g.rows, { kernel: 'nearest' }).raw().toBuffer();
+    return Uint8Array.from(raw, (v) => (v > 127 ? 1 : 0));
+  }
+  async saveCells(name: string, m: Uint8Array, g: Grid) {
+    this.savePng(name, await sharp(Buffer.from(m.map((v) => (v ? 255 : 0))), { raw: { width: g.cols, height: g.rows, channels: 1 } }).png().toBuffer());
   }
 }
 
@@ -134,81 +163,143 @@ export interface PlaceContext {
   priority: number;
   seed: number;
   report: (msg: string) => void;
-  /** Painting parts done / total, for progress. */
+  /** Steps done / total, for progress. */
   onPart?: (done: number, total: number) => void;
 }
 
 /** A place painted and read, before anything is put in it. */
 export interface Painted {
-  plan: PaintPlan;
-  /** Which of the place's paintings (its seed): what is placed in it is saved per painting. */
+  plan: MapPlan;
+  /** Which of the place's maps (its seed): what is placed in it is saved per map. */
   seed: number;
+  /** The finished (repaired) map. */
   canvas: Buffer;
-  reading: Reading;
+  reading: MapReading;
 }
 
-/** Why a read painting cannot work as the place (in words a model can act on), or null when it can. */
-export function shortfall(read: Reading['read'], reading: Reading, outward: number, minArea: number): string | null {
-  const why: string[] = [];
-  if (!read.usable) why.push(`the picture does not work as this place (${read.problems.join('; ') || 'no reason given'})`);
-  if (reading.area < minArea) why.push(`only ${Math.round(reading.area)} m² is green walkable ground, it needs at least ${minArea}`);
-  if (reading.edges.length < outward) why.push(`the green ground reaches the picture's edge in ${reading.edges.length} places, it needs ${outward} ways out`);
-  return why.length ? why.join('; ') : null;
-}
+/** How well a made map works as the place: higher is better (top-down 2, passed its check 1, ground up to 1). */
+const mapScore = (view: ViewCheck, passed: boolean, area: number, minArea: number) => (view.pass ? 2 : 0) + (passed ? 1 : 0) + Math.min(1, area / minArea);
 
-/** How well a read painting works as the place: higher is better, 5 is everything it needs. */
-export const readScore = (read: Reading['read'], reading: Reading, outward: number, minArea: number) =>
-  (read.usable ? 2 : 0) + Math.min(1, reading.edges.length / Math.max(1, outward)) * 2 + Math.min(1, reading.area / minArea);
+/** Steps of making one map, for progress. */
+const STEPS = 4;
 
-/** Design, paint and read a place: all it needs is what the place is, so it can start before the world is assembled. */
+/**
+ * Design, paint, read and repair a place's map: all it needs is what the place is, so it can start before the world
+ * is assembled. A map that is not top-down, or has too little ground, is made again with a new seed; the best try is
+ * kept. Ways out that stay imperfect are accepted (the best edge spot stands in).
+ */
 export async function paintAndRead(w: WorldLook, s: PlaceSketch, ctx: PlaceContext): Promise<Painted> {
   const draft = new PlaceDraft(w.id, s.id);
-  const plan = draft.json<PaintPlan>('plan') ?? (await planPlace(placeBrief(w, s)));
+  const brief = mapBrief(w, s);
+  // (A plan saved by the old isometric pipeline has no floor or barrier: the map is planned afresh.)
+  const saved = draft.json<MapPlan>('plan');
+  const plan = saved?.plan && saved.barrier ? saved : await planMap(brief);
   draft.saveJson('plan', plan);
-  const outward = s.exits.filter((e) => !e.into).length;
-
-  // Paint and read; a painting that cannot work as the place (no usable ground, too few ways out) is painted again.
-  let best: { seed: number; canvas: Buffer; reading: Reading; score: number } | undefined;
+  const prompt = mapPrompt(brief, plan);
+  const guide = draft.png('guide') ?? (await frameGuide(plan, brief.sides, s.kind));
+  draft.savePng('guide', guide);
+  const minArea = MIN_AREA[s.kind];
+  let best: (Painted & { score: number }) | undefined;
   for (let attempt = 0; attempt < PAINT_TRIES; attempt++) {
     const seed = ctx.seed + attempt * 1000;
-    const canvas = draft.png(`canvas_${seed}`) ?? (await ctx.gpu.run('krea', ctx.priority, () => paintPlace(plan, seed, ctx.onPart)));
-    draft.savePng(`canvas_${seed}`, canvas);
-    let read = draft.json<Reading['read']>(`read_${seed}`) ?? (await readPainting(canvas, s));
-    let reading = await ctx.gpu.run('reader', ctx.priority, () => analyse(canvas, read, s.kind));
-    const minArea = MIN_AREA[s.kind];
-    if (!draft.json(`read_${seed}`)) {
-      const check = await checkReading(canvas, await colouring(canvas, reading), read);
-      if (!check.correct && checkChanges(check)) {
-        ctx.report(`${s.name}: ${check.mistakes.join('; ').slice(0, 300)}`);
-        read = applyCheck(read, check);
-        reading = await ctx.gpu.run('reader', ctx.priority, () => analyse(canvas, read, s.kind));
-      }
-      // Still short after Luna's check: a stronger model checks once more, told what falls short, before the
-      // place is repainted (a repaint costs minutes of GPU; the check a few cents). Kept only if it reads better.
-      const failure = shortfall(read, reading, outward, minArea);
-      const strong = failure && read.usable ? genai().strongModel('world.design') : undefined;
-      if (strong) {
-        const second = await checkReading(canvas, await colouring(canvas, reading), read, { model: strong, failure: failure! }).catch((e) => {
-          ctx.report(`${s.name}: ${strong} check failed (${(e as Error).message.slice(0, 120)})`);
-          return undefined;
-        });
-        if (second && !second.correct && checkChanges(second)) {
-          const read2 = applyCheck(read, second);
-          const reading2 = await ctx.gpu.run('reader', ctx.priority, () => analyse(canvas, read2, s.kind));
-          const better = readScore(read2, reading2, outward, minArea) > readScore(read, reading, outward, minArea);
-          ctx.report(`${s.name}: ${strong}: ${second.mistakes.join('; ').slice(0, 300)} — ${Math.round(reading2.area)} m², ${reading2.edges.length} ways out${better ? '' : ' (no better, kept the earlier read)'}`);
-          if (better) [read, reading] = [read2, reading2];
-        }
-      }
-      draft.saveJson(`read_${seed}`, read);
+    const step = (k: number) => ctx.onPart?.(attempt * STEPS + k, PAINT_TRIES * STEPS);
+    // 1. Paint, and check the view.
+    const map = draft.png(`map_${seed}`) ?? (await ctx.gpu.run('krea', ctx.priority, () => paintMap(guide, prompt, s.kind, seed)));
+    draft.savePng(`map_${seed}`, map);
+    const view = draft.json<ViewCheck>(`view_${seed}`) ?? (await checkView(map));
+    draft.saveJson(`view_${seed}`, view);
+    step(1);
+    if (!view.pass) {
+      ctx.report(`${s.name}: map ${attempt + 1} is not a top-down map (${view.angle}${view.detailed ? '' : ', not detailed'}), painting it again`);
+      if (!best || mapScore(view, false, 0, minArea) > best.score) best = { plan, seed, canvas: map, reading: emptyReading(map, s.kind), score: mapScore(view, false, 0, minArea) };
+      continue;
     }
-    const ok = !shortfall(read, reading, outward, minArea);
-    const score = readScore(read, reading, outward, minArea);
-    if (!best || score > best.score) best = { seed, canvas, reading, score };
-    ctx.report(`${s.name}: ${Math.round(reading.area)} m² to walk, ${reading.edges.length} ways out at the edges, ${reading.doors.length} entrances${ok ? '' : ` — not enough, painting it again (${read.problems.join('; ').slice(0, 160)})`}`);
-    if (ok) break;
+    // 2. Read it.
+    const read = await readMap(draft, map, s, seed, ctx);
+    step(2);
+    // 3. Check and repair it.
+    const { X, Y } = mapPixels(s.kind);
+    const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
+    const fixed = await ctx.gpu.run('krea', ctx.priority, () => repairMap(map, read.open, {
+      g, sides: brief.sides, style: plan.style, floor: plan.floor, barrier: plan.barrier, indoor: s.indoor || s.kind === 'interior', seed, minArea,
+      report: (m) => ctx.report(`${s.name}: ${m}`),
+      saved: (round) => {
+        const png = draft.png(`map_${seed}_r${round}`), open = draft.file(`open_${seed}_r${round}.bin`);
+        return png && open ? { png, open: new Uint8Array(open) } : undefined;
+      },
+      save: (round, png, open) => {
+        draft.savePng(`map_${seed}_r${round}`, png);
+        draft.saveFile(`open_${seed}_r${round}.bin`, Buffer.from(open));
+      },
+    }));
+    step(3);
+    // 4. The reading the game uses.
+    const { width: W, height: H } = (await sharp(fixed.png).metadata()) as { width: number; height: number };
+    const walk = fixed.walk.walk.map((v, i) => (v && fixed.walk.label[i] === fixed.walk.main ? 1 : 0));
+    const area = walk.reduce((a, v) => a + v, 0) * CELL * CELL;
+    const reading: MapReading = {
+      width: W, height: H, X, Y, grid: g, walk, sight: read.sight,
+      doors: entrances(read.detected, walk, g, W, H),
+      edges: fixed.exits,
+      landmarks: landmarks(read.detected, walk, g, W, H),
+      area,
+    };
+    draft.saveJson(`made_${seed}`, { passed: fixed.passed, rounds: fixed.rounds, area: Math.round(area), exits: fixed.exits.map((e) => e.label), doors: reading.doors.length, landmarks: reading.landmarks.length, agree: read.agree });
+    step(4);
+    const score = mapScore(view, fixed.passed, area, minArea);
+    ctx.report(`${s.name}: ${Math.round(area)} m² to walk, ways out ${fixed.exits.map((e) => e.label).join(', ') || 'none'}, ${reading.doors.length} entrances${fixed.passed ? '' : ' (its check did not pass in full)'}${area < minArea ? ' — too little ground, painting it again' : ''}`);
+    if (!best || score > best.score) best = { plan, seed, canvas: fixed.png, reading, score };
+    if (area >= minArea) break;
   }
   return { plan, seed: best!.seed, canvas: best!.canvas, reading: best!.reading };
+}
+
+/** A reading with no ground (a map that never became usable): settling still gives the place its ways out. */
+function emptyReading(map: Buffer, kind: ZoneKind): MapReading {
+  const { W, H, X, Y } = mapPixels(kind);
+  const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
+  void map;
+  const open = new Uint8Array(g.cols * g.rows);
+  for (let r = 4; r < g.rows - 4; r++) for (let c = 4; c < g.cols - 4; c++) open[r * g.cols + c] = 1;
+  const walk = walkOf(open, g).walk;
+  return { width: W, height: H, X, Y, grid: g, walk, sight: new Uint8Array(g.cols * g.rows).fill(1), doors: [], edges: [], landmarks: [], area: walk.reduce((a, v) => a + v, 0) * CELL * CELL };
+}
+
+/** Read a map: SAM's names (checked once by Luna), Qwen's plan, and Luna where they disagree. Saved per map. */
+async function readMap(draft: PlaceDraft, map: Buffer, s: PlaceSketch, seed: number, ctx: PlaceContext) {
+  const { X, Y } = mapPixels(s.kind);
+  const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
+  const { width: W } = (await sharp(map).metadata()) as { width: number };
+  const pxm = W / X;
+  let read = draft.json<MapRead>(`names_${seed}`);
+  let detected;
+  if (read) detected = await ctx.gpu.run('reader', ctx.priority, () => detectAll(map, read!, g, pxm));
+  else {
+    read = await nameThings(map, s.name, s.description);
+    detected = await ctx.gpu.run('reader', ctx.priority, () => detectAll(map, read!, g, pxm));
+    const fix = await checkNames(await classView(map, detected, g), s.name, read);
+    if (fix) {
+      ctx.report(`${s.name}: ${fix.mistakes.join('; ').slice(0, 300)}`);
+      read = fix.read;
+      detected = await ctx.gpu.run('reader', ctx.priority, () => detectAll(map, read!, g, pxm));
+    }
+    draft.saveJson(`names_${seed}`, read);
+  }
+  draft.saveFile(`classes_${seed}.jpg`, await classView(map, detected, g));
+  const { open: samOpen, sight } = samCells(detected);
+  const qwen = (await draft.cells(`qwen_${seed}`, g)) ?? (await ctx.gpu.run('reader', ctx.priority, () => qwenCells(map, g)));
+  await draft.saveCells(`qwen_${seed}`, qwen, g);
+  let open = await draft.cells(`open_${seed}`, g);
+  let agree = draft.json<number>(`agree_${seed}`) ?? 0;
+  if (!open) {
+    const arb = await arbitrate(map, samOpen, qwen, g);
+    open = arb.open;
+    agree = +arb.agree.toFixed(3);
+    ctx.report(`${s.name}: readers agree on ${Math.round(arb.agree * 100)}% of the map; Luna settled ${arb.patches} patches (${arb.calls} looks)`);
+    await draft.saveCells(`open_${seed}`, open, g);
+    draft.saveJson(`agree_${seed}`, agree);
+  }
+  return { detected, open, sight, agree };
 }
 
 /** Design, paint and read a place, and turn it into game data. */
@@ -217,16 +308,16 @@ export async function buildPlace(w: WorldDefinition, z: ZoneDef, ctx: PlaceConte
 }
 
 /**
- * Put everything in a painted place (Luna decides where), bring the painting to game scale and turn it into game
- * data: mutates the zone, the world's NPCs (and drops interiors whose building has no entrance) and its assets.
+ * Put everything in a made place (Luna decides where), bring the map to game scale and turn it into game data:
+ * mutates the zone, the world's NPCs (and drops interiors whose building has no entrance) and its assets.
  */
 export async function settlePlace(w: WorldDefinition, z: ZoneDef, { plan, seed, canvas, reading }: Painted, ctx: PlaceContext): Promise<void> {
   const draft = new PlaceDraft(w.id, z.id);
   const needs = placeNeeds(w, z);
-  z.design = { style: plan.style, layout: plan.layout };
+  z.design = { style: plan.style, layout: plan.plan };
   z.look = { ambient: plan.look.ambient, lightColor: normColor(plan.look.lightColor) ?? '#ffe8c0', fogColor: normColor(plan.look.fogColor) ?? '#101418', outdoor: plan.look.outdoor && !z.indoor, weather: z.indoor ? 'none' : plan.look.weather };
   const cands = candidates(reading);
-  // Spots are picture positions, so a saved placement belongs to one painting (a resumed build may pick another).
+  // Spots are picture positions, so a saved placement belongs to one map (a resumed build may pick another).
   const placed = draft.json<[string, Candidate][]>(`placement_${seed}`);
   // The place's mist is designed and painted while Luna places everything (both on this place's turn).
   const [spots, mist] = await Promise.all([
@@ -235,12 +326,12 @@ export async function settlePlace(w: WorldDefinition, z: ZoneDef, { plan, seed, 
   ]);
   draft.saveJson(`placement_${seed}`, [...spots.entries()]);
 
-  // SeedVR2 adds the detail an enlarged painting needs (painted at 2×, then resampled down to the exact size).
+  // SeedVR2 adds the detail an enlarged map needs (painted at 2×, then resampled down to the exact size).
   const k = gameScale(reading);
   const FW = Math.round(reading.width * k), FH = Math.round(reading.height * k);
   const source = k > 1.02 ? await ctx.gpu.run('seedvr2', ctx.priority, () => upscale(canvas, 2, ctx.seed)) : canvas;
   const image = await sharp(source).resize(FW, FH, { kernel: 'lanczos3' }).webp({ quality: 90 }).toBuffer();
-  const key = saveAsset(w, `place_${z.id}`, image, { kind: 'painting', prompt: `painting of ${z.name}`, width: FW, height: FH });
+  const key = saveAsset(w, `place_${z.id}`, image, { kind: 'painting', prompt: `map of ${z.name}`, width: FW, height: FH });
   await setAir(w, z, image, mist);
 
   furnish(w, z, reading, spots, { k, width: FW, height: FH, image: key });
@@ -262,13 +353,13 @@ export const mistBrief = (z: ZoneDef): MistBrief => ({
   weather: z.look.weather, fogColor: z.look.fogColor, lightColor: z.look.lightColor,
 });
 
-/** A place's air and light: its mist tile saved with its assets, and the light measured from its painting. */
+/** A place's air and light: its mist tile saved with its assets, and the light measured from its map. */
 export async function setAir(w: WorldDefinition, z: ZoneDef, painting: Buffer, mist: Buffer): Promise<void> {
   z.look.mist = saveAsset(w, `mist_${z.id}`, mist, { kind: 'texture', prompt: `mist of ${z.name}`, width: MIST_SIZE, height: MIST_SIZE });
   z.look.painted = await measureLight(painting);
 }
 
-/** Paint and set a place's air afterwards (a world built before places had it), from its saved painting. */
+/** Paint and set a place's air afterwards (a world built before places had it), from its saved map. */
 export async function addAir(w: WorldDefinition, z: ZoneDef, ctx: Pick<PlaceContext, 'gpu' | 'priority' | 'seed'>): Promise<void> {
   const file = z.painting && w.assets[z.painting.image]?.file;
   if (!file) return;
@@ -276,46 +367,39 @@ export async function addAir(w: WorldDefinition, z: ZoneDef, ctx: Pick<PlaceCont
   await setAir(w, z, fs.readFileSync(path.join(worldAssetDir(w.id), file)), mist);
 }
 
-/**
- * Game scale: people are drawn PX_PER_METRE_UP pixels per metre of height, so the painting is resized by this. Rooms
- * are painted closest (about 120 px/m), so they shrink to about 0.4.
- */
-export const gameScale = (r: Reading) => Math.max(0.25, Math.min(2.5, PX_PER_METRE_UP / r.pxPerMetre));
+/** Game scale: the map is resized by this so a metre is PX_PER_METRE pixels, the scale figures are drawn at. */
+export const gameScale = (r: MapReading) => Math.max(0.25, Math.min(3, PX_PER_METRE / pxPerMetre(r)));
 
-/** The painting laid on the ground at game scale `k`: where its origin sits and its navigation grid. */
-export function groundOf(r: Reading, k: number): { width: number; height: number; ox: number; oy: number; nav: NavDef } {
+/** The map laid on the ground at game scale `k`: its size, where the ground origin sits (its top left) and its navigation grid. */
+export function groundOf(r: MapReading, k: number): { width: number; height: number; ox: number; oy: number; nav: NavDef } {
   const width = Math.round(r.width * k), height = Math.round(r.height * k);
-  // The ground origin sits above the picture's top centre, so all of the picture has positive ground coordinates.
-  const ox = width / 2, oy = -width / 4;
-  const cols = Math.ceil((width / (2 * 32) + height / (2 * 16)) / NAV_CELL), rows = cols;
+  const cols = Math.ceil(r.X / NAV_CELL), rows = Math.ceil(r.Y / NAV_CELL);
   const walk = new BitSet(cols * rows), sight = new BitSet(cols * rows);
-  const raw = (x: number, y: number) => {
-    const p = groundToPicture(x, y, ox, oy);
-    if (p.x < 0 || p.y < 0 || p.x >= width || p.y >= height) return -1;
-    return Math.min(r.ah - 1, Math.floor((p.y / k) * (r.ah / r.height))) * r.aw + Math.min(r.aw - 1, Math.floor((p.x / k) * (r.aw / r.width)));
+  const cell = (x: number, y: number) => {
+    const c = Math.floor(x / CELL), rr = Math.floor(y / CELL);
+    return c < 0 || rr < 0 || c >= r.grid.cols || rr >= r.grid.rows ? -1 : rr * r.grid.cols + c;
   };
-  // A cell is walkable when any part of it is (its centre and eight points 0.2 m out): the walk mask already keeps a
-  // character's centre 0.35 m from obstacles, more than the 0.28 m this adds at most, and the pathfinder never cuts
-  // corners, so a passage running up the picture (diagonal on the grid) sampled at cell centres alone would break
-  // into corner-touching cells.
+  // A cell is walkable when any part of it is (its centre and eight points 0.2 m out): the plan already keeps a
+  // character's centre 0.35 m from obstacles, and the pathfinder never cuts corners, so a diagonal passage sampled at
+  // cell centres alone would break into corner-touching cells.
   const Q = NAV_CELL / 2.5, AROUND = [-Q, 0, Q].flatMap((dx) => [-Q, 0, Q].map((dy) => [dx, dy] as const));
   for (let cy = 0; cy < rows; cy++)
     for (let cx = 0; cx < cols; cx++) {
-      const x = (cx + 0.5) * NAV_CELL, y = (cy + 0.5) * NAV_CELL, i = raw(x, y);
+      const x = (cx + 0.5) * NAV_CELL, y = (cy + 0.5) * NAV_CELL, i = cell(x, y);
       if (i >= 0 && r.sight[i]) sight.set(cy * cols + cx);
       if (AROUND.some(([dx, dy]) => {
-        const j = raw(x + dx, y + dy);
+        const j = cell(x + dx, y + dy);
         return j >= 0 && r.walk[j];
       })) walk.set(cy * cols + cx);
     }
-  return { width, height, ox, oy, nav: { cols, rows, walk: walk.encode(), sight: sight.encode() } };
+  return { width, height, ox: 0, oy: 0, nav: { cols, rows, walk: walk.encode(), sight: sight.encode() } };
 }
 
 /**
- * Lay the painting on the ground: the navigation grid, and positions in ground metres for everything placed. What
- * Luna could not place is set down by rule (people and things at open spots, monster packs and traps by depth).
+ * Lay the map on the ground: the navigation grid, and positions in ground metres for everything placed. What Luna
+ * could not place is set down by rule (people and things at open spots, monster packs and traps by depth).
  */
-function furnish(w: WorldDefinition, z: ZoneDef, r: Reading, spots: Map<string, Candidate>, pic: { k: number; width: number; height: number; image: string }) {
+function furnish(w: WorldDefinition, z: ZoneDef, r: MapReading, spots: Map<string, Candidate>, pic: { k: number; width: number; height: number; image: string }) {
   const rng = new Rng(`${w.seed}:${z.id}:furnish`);
   const { ox, oy, nav: grid } = groundOf(r, pic.k);
   z.painting = { image: pic.image, width: pic.width, height: pic.height, ox, oy };
@@ -341,7 +425,14 @@ function furnish(w: WorldDefinition, z: ZoneDef, r: Reading, spots: Map<string, 
   const allOpen = candidates(r).filter((c) => c.id[0] === 'P' || c.id[0] === 'L');
   const fallbackSpot = () => at(rng.pick(allOpen.length ? allOpen : openSpots.length ? openSpots : candidates(r)));
 
-  // Doors and ways out stand exactly where the painting has them (on the walkable ground at the door's foot).
+  // Doors and ways out stand where the map has them (on the walkable ground at the door's foot). A way out at the
+  // map's edge stands 1.5 m in from it, so people arriving by it stand on ground the mist at the edge leaves clear.
+  const IN = 1.5;
+  const inward = (c: Candidate) => {
+    const p = at(c);
+    if (c.id[0] !== 'E') return p;
+    return { x: p.x < IN ? p.x + IN : p.x > r.X - IN ? p.x - IN : p.x, y: p.y < IN ? p.y + IN : p.y > r.Y - IN ? p.y - IN : p.y };
+  };
   const unplacedDoors: FeatureDef[] = [];
   for (const f of z.features) {
     if (f.kind !== 'door' && f.kind !== 'exit') continue;
@@ -351,12 +442,12 @@ function furnish(w: WorldDefinition, z: ZoneDef, r: Reading, spots: Map<string, 
       continue;
     }
     // (A spot the reading left off the walkable ground still gets the nearest point people can reach.)
-    const p = nav.nearestWalkable(at(c), 6) ?? nav.nearestWalkable(at(c), 400) ?? at(c);
+    const p = nav.nearestWalkable(inward(c), 6) ?? nav.nearestWalkable(at(c), 400) ?? at(c);
     f.x = p.x;
     f.y = p.y;
     taken.push(p);
   }
-  // A building the painting has no entrance for is left out: its people move outdoors, its interior goes.
+  // A building the map has no entrance for is left out: its people move outdoors, its interior goes.
   for (const f of unplacedDoors) {
     const inner = w.zones.find((x) => x.id === f.targetZoneId);
     if (inner?.parentZoneId === z.id) {
@@ -370,8 +461,10 @@ function furnish(w: WorldDefinition, z: ZoneDef, r: Reading, spots: Map<string, 
       f.y = p.y;
     }
   }
+  // People who work in a building stand outside its entrance; everyone else where Luna put them.
   for (const n of w.npcs.filter((x) => x.zoneId === z.id)) {
-    const c = spots.get(n.id);
+    const work = z.buildings?.find((b) => b.npcId === n.id);
+    const c = (work && spots.get(work.id)) || spots.get(n.id);
     const p = settle(c ? at(c) : fallbackSpot());
     n.x = p.x;
     n.y = p.y;

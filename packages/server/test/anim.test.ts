@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
-import { ACTOR_CLIPS, ANIM_DIRS, clipFrame, clipKey, dirRow, type AnimClip, type AssetRecord, type WorldDefinition } from '@gd/shared';
+import { ACTOR_CLIPS, ANIM_DIRS, ANIM_VERSION, clipFrame, clipKey, dirRow, type AnimClip, type AssetRecord, type WorldDefinition } from '@gd/shared';
 import { actorSprites, bodyPlan, needsAnimation } from '../src/anim/actors';
 import { saveAnimation } from '../src/anim/animator';
 import { worldAssetDir } from '../src/storage';
@@ -12,16 +12,15 @@ const sprite = (key: string, prompt = '', extra: Partial<AssetRecord> = {}): Ass
 
 describe('sheet rows and frames', () => {
   it('picks the row from the direction on screen', () => {
-    // Ground (1, 1) runs straight down the screen; (1, -1) straight right.
-    expect(ANIM_DIRS[dirRow(1, 1)]).toBe('S');
-    expect(ANIM_DIRS[dirRow(-1, -1)]).toBe('N');
-    expect(ANIM_DIRS[dirRow(1, -1)]).toBe('E');
-    expect(ANIM_DIRS[dirRow(-1, 1)]).toBe('W');
-    // One ground axis alone is a diagonal on screen.
-    expect(ANIM_DIRS[dirRow(1, 0)]).toBe('SE');
-    expect(ANIM_DIRS[dirRow(0, 1)]).toBe('SW');
-    expect(ANIM_DIRS[dirRow(-1, 0)]).toBe('NW');
-    expect(ANIM_DIRS[dirRow(0, -1)]).toBe('NE');
+    // The maps are top-down: ground y runs down the screen, x to the right.
+    expect(ANIM_DIRS[dirRow(0, 1)]).toBe('S');
+    expect(ANIM_DIRS[dirRow(0, -1)]).toBe('N');
+    expect(ANIM_DIRS[dirRow(1, 0)]).toBe('E');
+    expect(ANIM_DIRS[dirRow(-1, 0)]).toBe('W');
+    expect(ANIM_DIRS[dirRow(1, 1)]).toBe('SE');
+    expect(ANIM_DIRS[dirRow(-1, 1)]).toBe('SW');
+    expect(ANIM_DIRS[dirRow(-1, -1)]).toBe('NW');
+    expect(ANIM_DIRS[dirRow(1, -1)]).toBe('NE');
     expect(dirRow(0, 0)).toBe(0);
   });
 
@@ -73,7 +72,7 @@ describe('actors', () => {
     expect(actorSprites(w).map((a) => a.key)).toEqual(['spr_npc_a']);
     const rec = w.assets.spr_npc_a!;
     expect(needsAnimation(rec)).toBe(true);
-    rec.anim = { v: 1, body: 'humanoid', scale: 2, cell: [10, 10], anchor: [5, 8], height: 1.75, from: 'spr_npc_a.png', clips: {} };
+    rec.anim = { v: ANIM_VERSION, body: 'humanoid', scale: 2, cell: [10, 10], anchor: [5, 8], height: 1.75, from: 'spr_npc_a.png', clips: {} };
     expect(needsAnimation(rec)).toBe(false);
     rec.file = 'spr_npc_a_v2.png';
     expect(needsAnimation(rec)).toBe(true);
