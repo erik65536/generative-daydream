@@ -37,7 +37,11 @@ class Comfy:
         t0 = time.time()
         while time.time() - t0 < timeout:
             time.sleep(1.0)
-            h = json.loads(self._get('/history/' + pid)).get(pid)
+            # ComfyUI can stop answering for a while under heavy load (a big model loading); the job is still queued.
+            try:
+                h = json.loads(self._get('/history/' + pid)).get(pid)
+            except OSError:
+                continue
             if not h:
                 continue
             st = h.get('status', {})
