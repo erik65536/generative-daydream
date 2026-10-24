@@ -40,6 +40,71 @@ export interface UserRow extends Me {
 
 export interface SpendingSummary { today: number; dailyTotalUsd: number | null; dailyPerUserUsd: number | null; adminsUnlimited: boolean; systemWeek: number }
 
+/** The admin GPU page: everything that uses the GPU, across the server, the worker and CLI runs. */
+export interface GpuJob {
+  id: string;
+  kind: 'world' | 'rules' | 'art' | 'studio' | 'animate';
+  worldId: string;
+  world: string;
+  owner: string;
+  status: 'queued' | 'running' | 'waiting' | 'done' | 'failed' | 'cancelled';
+  priority: number;
+  step: string;
+  progress: number;
+  error?: string;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  attempts: number;
+  cancelRequested: boolean;
+  position?: number;
+  worker?: string;
+}
+export interface GpuTag { jobId?: string; worldId?: string; kind?: string }
+export interface GpuCallView { group: string; provider: string; model: string; rank: number; running: boolean; since: number; tag?: GpuTag }
+export interface GpuProcess {
+  holder: string;
+  role: 'server' | 'worker' | 'cli';
+  label: string;
+  pid: number;
+  host: string;
+  startedAt: number;
+  seen: number;
+  stale: boolean;
+  isThis: boolean;
+  state: {
+    calls: GpuCallView[];
+    builds: { tag?: GpuTag; running?: { model: string; priority: number; since: number }; pending: { model: string; priority: number }[] }[];
+    tasks: { tag: GpuTag; step: string; progress: number; since: number }[];
+  };
+}
+export interface ComfyPromptView {
+  id: string;
+  number: number;
+  workflow: string;
+  origin: { kind: 'server' | 'worker' | 'cli' | 'animator' | 'untagged' | 'external'; label: string; holder?: string; jobId?: string; worldId?: string; jobKind?: string };
+}
+export interface GpuView {
+  now: number;
+  thisProcess: string;
+  control: { paused: { by: string; at: number } | null; animationPaused: { by: string; at: number } | null };
+  device: { name: string; vramUsedMb: number; vramTotalMb: number; utilization?: number; source: string } | null;
+  groups: {
+    group: string;
+    holder: { id: string; label: string; role: string } | null;
+    lastModel: string | null;
+    routerLoaded: string[];
+    running: (GpuCallView & { holder: string; process: string; role: string })[];
+    waiting: { holder: string; rank: number; since: number; label: string; role: string }[];
+  }[];
+  processes: GpuProcess[];
+  jobs: { running: GpuJob[]; queued: GpuJob[]; recent: GpuJob[] };
+  comfy: { url: string; up: boolean; error?: string; running: ComfyPromptView[]; pending: ComfyPromptView[]; failures: { id: string; at: number; message: string; origin: ComfyPromptView['origin']; workflow: string }[] };
+  animation: { worldId: string; title: string; waiting: number; failed: { key: string; error?: string }[] }[];
+  throughput: { comfyPromptsLastHour: number | null; imagesLastHour: number | null; actorsPerHour: number; jobsDone24h: number; jobsFailed24h: number; jobsCancelled24h: number };
+  audit: { at: number; adminId: string; adminName: string; action: string; target: string; detail: string }[];
+}
+
 export interface WorldSummary {
   id: string;
   title: string;
@@ -143,6 +208,13 @@ export const api = {
   setUserAdmin: (id: string, isAdmin: boolean) => call<UserRow>('PATCH', `/api/admin/users/${id}`, { isAdmin }),
   setUserBudget: (id: string, dailyLimitUsd: number | null) => call<UserRow>('PATCH', `/api/admin/users/${id}`, { dailyLimitUsd }),
   spending: () => call<SpendingSummary>('GET', '/api/admin/spending'),
+  gpu: (fresh = false) => call<GpuView>('GET', `/api/admin/gpu${fresh ? '?fresh=1' : ''}`),
+  gpuPause: (scope: 'all' | 'animation', on: boolean) => call<GpuView['control']>('POST', '/api/admin/gpu/pause', { scope, on }),
+  gpuPriority: (id: string, change: { priority: number } | { move: 'up' | 'down' }) => call<{ ok: true }>('POST', `/api/admin/gpu/jobs/${id}/priority`, change),
+  gpuCancel: (id: string) => call<{ ok: true; stopped: boolean; promptsCleared: number }>('POST', `/api/admin/gpu/jobs/${id}/cancel`, { confirm: true }),
+  gpuClearPrompt: (id: string) => call<{ ok: true; outcome: string }>('POST', `/api/admin/gpu/comfy/${id}/clear`, { confirm: true }),
+  gpuUnload: () => call<{ ok: true; groups: string[] }>('POST', '/api/admin/gpu/unload', { confirm: true }),
+  gpuRetryActor: (worldId: string, key: string) => call<{ ok: true }>('POST', '/api/admin/gpu/actors/retry', { worldId, key }),
   logout: () => call<{ ok: true }>('POST', '/api/auth/logout', {}),
   worlds: () => call<WorldSummary[]>('GET', '/api/worlds'),
   world: (id: string) => call<WorldSummary>('GET', `/api/worlds/${id}`),

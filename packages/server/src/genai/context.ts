@@ -14,6 +14,10 @@ export interface CallContext {
   onWait?: (why: string | null) => void;
   /** Whose budget pays for it (unset: the server's own). */
   userId?: string;
+  /** Which job it is for: shown on the admin GPU page and carried in ComfyUI prompts. */
+  tag?: { jobId?: string; worldId?: string; kind?: string };
+  /** The job was asked to stop: long waits (a ComfyUI prompt, an animator step) give up. */
+  cancelled?: () => boolean;
 }
 
 const store = new AsyncLocalStorage<CallContext>();

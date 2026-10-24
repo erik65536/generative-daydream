@@ -7,6 +7,9 @@ import Anthropic from '@anthropic-ai/sdk';
 import { GenAIError, type DecisionAnswer, type DecisionProvider, type DecisionRequest, type ImageProvider, type ImageRequest, type ProviderConfig, type StructuredRequest, type TextProvider, type TextRequest } from './types';
 import { ROOT_DIR } from '../paths';
 import { strictSchema } from './json';
+import { callContext } from './context';
+import { promptBody } from '../gpu/presence';
+import { dropPrompt } from '../gpu/comfyqueue';
 
 export function resolveSecret(v?: string): string | undefined {
   if (!v) return undefined;
@@ -362,14 +365,19 @@ export class ComfyUIProvider implements ImageProvider {
     const queued = await httpJson(`${base}/prompt`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt: workflow, client_id: 'generative-daydream' }),
+      body: promptBody(workflow, 'image'),
       timeoutMs: 30_000,
     });
     const id = queued.prompt_id as string;
     if (!id) throw new GenAIError(`ComfyUI did not queue the prompt: ${JSON.stringify(queued).slice(0, 300)}`);
     const deadline = Date.now() + (this.cfg.timeoutMs ?? 300_000);
+    const cancelled = callContext()?.cancelled;
     while (Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 750));
+      if (cancelled?.()) {
+        await dropPrompt(base, id).catch(() => undefined);
+        throw new GenAIError('cancelled', false);
+      }
       const hist = await httpJson(`${base}/history/${id}`, { method: 'GET', timeoutMs: 15_000 });
       const entry = hist[id];
       if (!entry) continue;

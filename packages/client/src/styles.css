@@ -765,3 +765,22 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
 .dev-zone.on { color: var(--gold-2); }
 .dev-zone.sub { padding-left: 18px; }
 .game.hud-hidden .hud > :not(.dev-panel) { display: none; }
+
+/* Admin GPU page */
+.page-inner.gpu-page { max-width: 1320px; }
+.gpu-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.gpu-panel.wide { grid-column: 1 / -1; }
+.gpu-panel { min-width: 0; }
+.gpu-panel .panel-body { overflow-x: auto; }
+.gpu-group .row, .gpu-running .row { min-width: 0; }
+.gpu-panel .table td .budget-bar { margin-top: 5px; }
+.gpu-group + .gpu-group { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--hair, rgba(255,255,255,.06)); }
+.gpu-running, .gpu-build { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--hair, rgba(255,255,255,.08)); border-radius: 6px; background: rgba(255,255,255,.02); }
+.gpu-build .badge { margin: 2px 3px 2px 0; }
+.gpu-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.gpu-stat-value { font-size: 22px; font-weight: 600; color: var(--gold-2); font-variant-numeric: tabular-nums; }
+.gpu-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 420px; min-width: 0; }
+@media (max-width: 900px) {
+  .gpu-grid { grid-template-columns: 1fr; }
+  .gpu-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

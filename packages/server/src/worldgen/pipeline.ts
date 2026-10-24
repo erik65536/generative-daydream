@@ -219,7 +219,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
   const companions = input.combatMode === 'party_npc';
   const progress = new Progress(job);
   let failed = false;
-  const gpu = new GpuQueue(() => failed || job.cancelled || workerState.yieldRequested);
+  const gpu = new GpuQueue(() => failed || job.cancelled || workerState.yieldRequested, { jobId: job.id, worldId: job.worldId, kind: 'world' });
   /** Every piece of work runs under this: a failure stops the GPU queue and the build. */
   const track = <T>(p: Promise<T>): Promise<T> => {
     p.catch(() => (failed = true));

@@ -90,6 +90,8 @@ export async function runAnimateJob(job: WorldGenJob, worldId: string): Promise<
     job.push(`Animated ${rec.key}: ${Object.keys(r.clips).length} clips`, 'step');
   } catch (e) {
     const msg = (e as Error).message;
+    // Stopped (by its owner or an administrator): not a failure; the actor waits for the next run.
+    if (job.cancelled || msg === 'cancelled') throw e;
     fs.mkdirSync(jobDir(worldId, rec.key), { recursive: true });
     fs.writeFileSync(failFile(worldId, rec.key), JSON.stringify({ file: rec.file, error: msg.slice(0, 2000) }));
     fs.rmSync(redoFile(worldId, rec.key), { force: true });
@@ -112,4 +114,21 @@ export function animationState(w: WorldDefinition, rec: AssetRecord): { state: '
     }
   }
   return { state: 'waiting' };
+}
+
+/** Actors whose animation failed for their current picture, with the error. */
+export function failedActors(w: WorldDefinition): { key: string; error?: string }[] {
+  if (!animationConfig()) return [];
+  return actorSprites(w)
+    .filter((a) => needsAnimation(a) && failedFor(w.id, a) && !redoOf(w.id, a.key))
+    .map((a) => ({ key: a.key, error: animationState(w, a).error }));
+}
+
+/** Try a failed actor again: its failure is forgotten and the world's animation job queued (its other steps are kept). */
+export function retryActor(w: WorldDefinition, key: string): boolean {
+  const rec = w.assets[key];
+  if (!rec || !failedFor(w.id, rec)) return false;
+  fs.rmSync(failFile(w.id, key), { force: true });
+  queueAnimation(w, { id: w.ownerId, name: w.ownerName });
+  return true;
 }

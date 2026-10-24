@@ -5,6 +5,7 @@
  */
 import type { WorldInput } from '@gd/shared';
 import { appendLog, cancelRequested, saveJobState, type JobPhase, type JobPreview, type JobRecord, type LogEntry } from './queue';
+import { report, touch as touchPresence } from '../gpu/presence';
 
 export type { JobPhase, LogEntry as GenLogEntry };
 
@@ -31,6 +32,10 @@ export class Job {
   private flushTimer: ReturnType<typeof setTimeout> | null = null;
   private cancelCheckedAt = 0;
   private cancelFlag = false;
+  private readonly startedAt = Date.now();
+  /** What this job is for, as the admin GPU page shows it (a CLI run's job has no id or kind). */
+  readonly tag: { jobId?: string; worldId: string; kind: string };
+  private unreport: (() => void) | null;
 
   constructor(public readonly worldId: string, public readonly input: WorldInput, public readonly owner: { id: string; name: string }, record?: JobRecord) {
     if (record) {
@@ -41,6 +46,14 @@ export class Job {
       this.step = record.step;
       this.cancelFlag = record.cancelRequested;
     }
+    this.tag = { jobId: record?.id, worldId, kind: record?.kind ?? 'cli' };
+    this.unreport = report(() => (this.status === 'running' || this.status === 'waiting' ? { tasks: [{ tag: this.tag, step: this.step, progress: this.progress, since: this.startedAt }] } : {}));
+  }
+
+  /** No longer running in this process: stop reporting it. */
+  close() {
+    this.unreport?.();
+    this.unreport = null;
   }
 
   get progress() {
@@ -180,9 +193,11 @@ export class Job {
       this.step = 'Ready';
     }
     this.flush(true);
+    this.close();
   }
 
   private touch() {
+    touchPresence();
     if (!this.id || this.flushTimer) return;
     this.flushTimer = setTimeout(() => this.flush(), 400);
   }

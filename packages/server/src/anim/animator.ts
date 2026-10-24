@@ -18,6 +18,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { ACTOR_CLIPS, ANIM_VERSION, clipKey, type ActorAnim, type BodyPlan, type ClipName, type WorldDefinition } from '@gd/shared';
 import { genai } from '../genai/service';
+import { callContext } from '../genai/context';
+import { promptTag } from '../gpu/presence';
 import type { AnimationConfig, ProviderConfig } from '../genai/types';
 import { worldAssetDir, worldDir } from '../storage';
 import { renderSheets, type Rendered } from './render';
@@ -67,13 +69,25 @@ export const jobDir = (worldId: string, key: string) => path.join(worldDir(world
 /** Run one animator step; resolves with its JSON result. */
 export function runStep(cfg: AnimationConfig, step: string, job: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
-    const p = spawn(cfg.python, [ANIMATOR, step, job, JSON.stringify(args)], { env: { ...process.env, PYTHONIOENCODING: 'utf8' } });
+    // Its ComfyUI prompts carry the job's tag; a stopped job ends the step.
+    const p = spawn(cfg.python, [ANIMATOR, step, job, JSON.stringify(args)], { env: { ...process.env, PYTHONIOENCODING: 'utf8', GD_PROMPT_TAG: JSON.stringify(promptTag(`animator ${step}`)) } });
+    const cancelled = callContext()?.cancelled;
+    let stopped = false;
+    const watch = cancelled
+      ? setInterval(() => {
+          if (!cancelled()) return;
+          stopped = true;
+          p.kill();
+        }, 1000)
+      : undefined;
     let out = '';
     let err = '';
     p.stdout.on('data', (d) => (out += d));
     p.stderr.on('data', (d) => (err += d));
     p.on('error', reject);
     p.on('close', (code) => {
+      clearInterval(watch);
+      if (stopped) return reject(new Error('cancelled'));
       const line = out.trim().split('\n').filter((l) => l.startsWith('{')).pop();
       let res: Record<string, unknown> | undefined;
       try {

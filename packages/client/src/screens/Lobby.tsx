@@ -12,6 +12,7 @@ export function TopBar({ me, onLogout }: { me: Me; onLogout?: () => void }) {
       </div>
       <div className="spacer" />
       <button className="btn ghost sm" onClick={() => navigate('#/settings')}>AI models</button>
+      {me.isAdmin && <button className="btn ghost sm" onClick={() => navigate('#/gpu')}>GPU</button>}
       {me.isAdmin && <button className="btn ghost sm" onClick={() => navigate('#/users')}>Users</button>}
       <button className="btn ghost sm" title="Your account" onClick={() => navigate('#/account')}>{me.username}</button>
       {onLogout && (

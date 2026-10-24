@@ -10,6 +10,9 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { ROOT_DIR } from '../paths';
 import { genai } from '../genai/service';
+import { callContext } from '../genai/context';
+import { promptBody } from '../gpu/presence';
+import { dropPrompt } from '../gpu/comfyqueue';
 
 const KREA = 'krea2_turbo_fp8_scaled.safetensors';
 const SAM = 'sam3.1_multiplex_fp16.safetensors';
@@ -22,7 +25,7 @@ const CACHE = path.join(ROOT_DIR, 'data', 'cache');
 
 const provider = () => Object.entries(genai().config.providers).find(([, p]) => p.type === 'comfyui');
 
-function base(): string {
+export function comfyBase(): string {
   if (process.env.COMFY_URL) return process.env.COMFY_URL.replace(/\/+$/, '');
   return (provider()?.[1].baseUrl ?? 'http://127.0.0.1:8188').replace(/\/+$/, '');
 }
@@ -55,7 +58,7 @@ async function upload(png: Buffer): Promise<string> {
   form.append('image', new Blob([new Uint8Array(png)], { type: 'image/png' }), name);
   form.append('subfolder', 'gd_refs');
   form.append('overwrite', 'true');
-  const res = await fetch(`${base()}/upload/image`, { method: 'POST', body: form });
+  const res = await fetch(`${comfyBase()}/upload/image`, { method: 'POST', body: form });
   if (!res.ok) throw new Error(`ComfyUI upload failed: ${res.status}`);
   const out = (await res.json()) as { name: string; subfolder?: string };
   return out.subfolder ? `${out.subfolder}/${out.name}` : out.name;
@@ -63,17 +66,23 @@ async function upload(png: Buffer): Promise<string> {
 
 /** Queue a workflow and return every image it saved (empty when it saved none). */
 function run(model: string, wf: unknown, timeoutMs = 900_000): Promise<Buffer[]> {
-  return onGpu(model, () => execute(wf, timeoutMs));
+  return onGpu(model, () => execute(wf, timeoutMs, model));
 }
 
-async function execute(wf: unknown, timeoutMs: number): Promise<Buffer[]> {
-  const b = base();
-  const queued = (await (await fetch(`${b}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ prompt: wf, client_id: 'generative-daydream' }) })).json()) as { prompt_id?: string };
+async function execute(wf: unknown, timeoutMs: number, model: string): Promise<Buffer[]> {
+  const b = comfyBase();
+  const queued = (await (await fetch(`${b}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: promptBody(wf, model) })).json()) as { prompt_id?: string };
   if (!queued.prompt_id) throw new Error(`ComfyUI did not queue: ${JSON.stringify(queued).slice(0, 400)}`);
   const id = queued.prompt_id;
   const deadline = Date.now() + timeoutMs;
+  const cancelled = callContext()?.cancelled;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 600));
+    // The job was stopped: take its prompt off ComfyUI rather than wait for it.
+    if (cancelled?.()) {
+      await dropPrompt(b, id).catch(() => undefined);
+      throw new Error('cancelled');
+    }
     const entry = ((await (await fetch(`${b}/history/${id}`)).json()) as Record<string, any>)[id];
     if (!entry) continue;
     if (entry.status?.status_str === 'error') {
@@ -97,7 +106,7 @@ export class ComfyError extends Error {}
 /** Whether ComfyUI answers. */
 export async function comfyAlive(): Promise<boolean> {
   try {
-    return (await fetch(`${base()}/system_stats`, { signal: AbortSignal.timeout(4000) })).ok;
+    return (await fetch(`${comfyBase()}/system_stats`, { signal: AbortSignal.timeout(4000) })).ok;
   } catch {
     return false;
   }

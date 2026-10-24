@@ -16,12 +16,12 @@ fairly. This keeps the server responsive and lets development continue while wor
 - A server without accounts creates `admin` with a one-time password printed to the console.
 - Repeated failed sign-ins lock that user id and address out for a while.
 
-Code: `storage.ts` (users, sessions), `index.ts` (routes), `cli/users.ts`, client `screens/Auth.tsx` and
+Code: `storage.ts` (users, sessions), `auth.ts` (sign-in and admin middleware), `index.ts` (routes), `cli/users.ts`, client `screens/Auth.tsx` and
 `screens/Account.tsx`.
 
 ## Jobs
 
-A job is a row in the shared SQLite database (`jobs/queue.ts`): kind (`world`, `rules`, `art`, `studio`), its
+A job is a row in the shared SQLite database (`jobs/queue.ts`): kind (`world`, `rules`, `art`, `studio`, `animate`), its
 world, owner, parameters, status, progress, the stage checklist, a log (`job_log`) and a **lease**.
 
 ```
@@ -38,7 +38,9 @@ queued → running ⇄ waiting → done | failed | cancelled
   approved, so a resumed paint job continues with what is left. Studio tasks resume after their first stage.
 - **Safe points**: asked to restart, a worker sets `yieldRequested`; jobs stop at the next stage boundary,
   zone, or painting round (images already painted are scored and kept), are re-queued, and the worker exits.
-- **Cancel** marks the job; it stops at its next check.
+- **Cancel** marks the job; it stops at its next check. A job's model calls carry its cancel check (call
+  context `cancelled`): a ComfyUI prompt it is waiting on is removed or interrupted, an animator step is killed,
+  and a call still waiting for the GPU gives up its turn. What it finished stays for a later resume.
 
 ### Processes
 
@@ -71,6 +73,46 @@ painting).
   `waiting` with the reason, then carries on.
 - Non-transient errors (bad requests, unparseable output after retries) are tried again a few times; then
   the build stops, to be resumed once the model works.
+
+## The admin GPU page
+
+`#/gpu` (`client/src/screens/Gpu.tsx`, API `server/src/gpu/admin.ts` under `/api/admin/gpu`, administrators
+only) shows and controls everything that uses the GPU. GPU work passes through several layers, and the page is
+one view over them rather than another queue:
+
+| layer | where | what the page shows | what it controls |
+| --- | --- | --- | --- |
+| job queue | `jobs` table | running and waiting jobs (owner, world, priority, step, elapsed, which worker), recent outcomes | cancel / stop, priority, move up or down |
+| build GPU queue | in memory, per build (`worldgen/gpu.ts`) | each build's running and pending GPU tasks | — |
+| GPU scheduler | in memory per process, lease in `gpu_lease` (`genai/gpu.ts`) | who holds each GPU group, the call running (model, job, elapsed), who waits | pause (all, or animation alone) |
+| ComfyUI | its HTTP API | running and pending prompts by origin, recent failures, prompts and images per hour | remove / interrupt a prompt, unload models |
+| GPU | `nvidia-smi`, else ComfyUI `/system_stats` | VRAM in use, utilisation | — |
+| animator | the `animate` job, per-actor files | actors waiting and failed (with the error) per world | retry a failed actor |
+
+The schedulers live in memory, and in development the worker and CLI runs are separate processes, so the web
+server cannot see them directly. Each process therefore publishes its **presence** (`gpu/presence.ts`): a
+`gpu_procs` row with its role (`server`, `worker`, `cli` + script and arguments), the GPU calls queued and
+running in its scheduler, its builds' GPU queues and the jobs it runs, written within a second of a change and
+every 5–15 s as a heartbeat (silent for 20 s: shown as gone). Every ComfyUI prompt carries a tag in
+`extra_data.gd` (process, role, job id, world, kind, workflow; the animator's Python steps get it through
+`GD_PROMPT_TAG`), so prompts from CLI runs are labelled too. Processes on older code send no tag: their prompts
+show as *untagged* (client `generative-daydream`) and their lease holder as *unregistered*, most likely a CLI run.
+
+Controls act through the same shared layers, so they reach the separate worker:
+
+- **Pause** (`gpu_control`): workers claim no new job (or no `animate` job), and each process's GPU scheduler
+  holds calls of paused work before their next turn while players' calls (rank 0) go past them; a held call
+  does not keep the GPU lease from other processes. The call in progress finishes.
+- **Stop** a running job: its cancel flag, plus removing or interrupting every ComfyUI prompt tagged with its id.
+- **Priority / move**: a queued job's priority, or a swap of priority and queued-at time with its neighbour.
+- **ComfyUI prompts** of any origin (CLI runs included) can be removed (pending) or interrupted (running, only
+  if it is still the one running); **unload** frees ComfyUI's models and every loaded LLM router model.
+- CLI runs are outside the job queue: only their ComfyUI prompts can be controlled; they are stopped in their
+  terminal.
+
+Destructive actions need `confirm: true` (the page asks first) and every action is written to `gpu_audit` with
+the administrator's name, shown as the page's admin log. The page polls every 2 s; reading every actor's
+animation files is cached for 15 s.
 
 ## Models and providers
 

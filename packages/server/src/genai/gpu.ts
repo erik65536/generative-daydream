@@ -10,6 +10,8 @@
  */
 import { globalDb, tx } from '../storage';
 import { HOLDER } from '../jobs/queue';
+import { pausedFor, report, touch, type GpuCall } from '../gpu/presence';
+import { callContext } from './context';
 import type { ProviderConfig } from './types';
 
 interface Resident {
@@ -68,6 +70,9 @@ async function evictOthers(members: Map<string, ProviderConfig>, keepProvider: s
   }
 }
 
+/** Unload everything on a GPU group's servers (an admin freeing VRAM). */
+export const evictAll = (members: Map<string, ProviderConfig>) => evictOthers(members, '', '');
+
 // ------------------------------------------------------------------------------------ cross-process lease
 
 const LEASE_MS = 45_000;
@@ -90,12 +95,35 @@ const q = {
   unwait: db.prepare('DELETE FROM gpu_wait WHERE grp = ? AND holder = ?'),
   better: db.prepare('SELECT COUNT(*) AS n FROM gpu_wait WHERE grp = ? AND holder != ? AND seen > ? AND (rank < ? OR (rank = ? AND since < ?))'),
   others: db.prepare('SELECT MIN(rank) AS r FROM gpu_wait WHERE grp = ? AND holder != ? AND seen > ?'),
+  leases: db.prepare('SELECT grp, holder, model, until FROM gpu_lease ORDER BY grp'),
+  waiters: db.prepare('SELECT grp, holder, rank, since FROM gpu_wait WHERE seen > ? ORDER BY rank, since'),
 };
+
+/** Who holds each GPU group across every process (the last model it ran), and who is waiting for it. */
+export function gpuLeases() {
+  const now = Date.now();
+  const waiters = q.waiters.all(now - WAITER_STALE_MS) as { grp: string; holder: string; rank: number; since: number }[];
+  return (q.leases.all() as { grp: string; holder: string; model: string; until: number }[]).map((l) => ({
+    group: l.grp,
+    holder: l.holder,
+    model: l.model,
+    held: l.until >= now,
+    waiting: waiters.filter((w) => w.grp === l.grp).map(({ holder, rank, since }) => ({ holder, rank, since })),
+  }));
+}
 
 interface Item {
   rank: number;
   seq: number;
   run: () => Promise<void>;
+  /** For the admin page (unset: an unload). */
+  call?: GpuCall;
+  onWait?: (why: string | null) => void;
+  /** The job it is for was asked to stop. */
+  cancelled?: () => boolean;
+  reject?: (e: Error) => void;
+  /** Why an administrator's pause holds it (null: it may go). */
+  paused?: string | null;
 }
 
 /** Groups this process holds, freed if it exits (so others need not wait for the lease to run out). */
@@ -114,18 +142,37 @@ class GpuGroup {
   private waitingSince = 0;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   readonly switches: { at: number; from?: string; to: string }[] = [];
-  constructor(public readonly name: string, private idleMs: () => number) {}
+  private current: GpuCall | null = null;
+  constructor(public readonly name: string, private idleMs: () => number) {
+    report(() => ({ calls: [...(this.current ? [this.current] : []), ...this.queue.flatMap((i) => (i.call ? [i.call] : []))] }));
+  }
 
   /** Run a call on the GPU: rank 0 is most urgent. `onWait` hears when the GPU is busy elsewhere. */
   run<T>(provider: string, model: string, cfg: ProviderConfig, fn: () => Promise<T>, rank = 2, onWait?: (why: string | null) => void): Promise<T> {
     this.members.set(provider, cfg);
+    const ctx = callContext();
+    const call: GpuCall = { group: this.name, provider, model, rank, running: false, since: Date.now(), tag: ctx?.tag };
     return new Promise<T>((resolve, reject) => {
       this.queue.push({
         rank,
         seq: this.seq++,
+        call,
+        onWait,
+        cancelled: ctx?.cancelled,
+        reject,
         run: async () => {
           if (this.idleTimer) clearTimeout(this.idleTimer);
-          await this.acquire(rank, onWait);
+          this.current = call;
+          try {
+            await this.acquire(rank, onWait, ctx?.cancelled);
+          } catch (e) {
+            this.current = null;
+            touch();
+            return reject(e);
+          }
+          call.running = true;
+          call.since = Date.now();
+          touch();
           if (this.resident && (this.resident.model !== model || this.resident.provider !== provider)) {
             console.log(`[gpu:${this.name}] ${this.resident.model} → ${model}`);
             await unloadModel(this.resident.cfg, this.resident.model);
@@ -146,6 +193,8 @@ class GpuGroup {
             result = { ok: false, e };
           } finally {
             clearInterval(renew);
+            this.current = null;
+            touch();
             this.scheduleIdle();
           }
           // Settle the lease before the caller continues (it may be about to exit).
@@ -155,7 +204,18 @@ class GpuGroup {
         },
       });
       void this.pump();
+      touch();
     });
+  }
+
+  /** Whether an administrator's pause holds this call now (telling its job when that changes). */
+  private held(i: Item): boolean {
+    const why = i.call ? pausedFor(i.rank, i.call.tag?.kind) : null;
+    if (why !== (i.paused ?? null)) {
+      i.paused = why;
+      i.onWait?.(why);
+    }
+    return !!why;
   }
 
   private async pump() {
@@ -164,7 +224,19 @@ class GpuGroup {
     try {
       while (this.queue.length) {
         this.queue.sort((a, b) => a.rank - b.rank || a.seq - b.seq);
-        const item = this.queue.shift()!;
+        // A stopped job's calls leave the queue; paused ones wait while more urgent calls (players') go ahead.
+        for (const i of this.queue.filter((x) => x.cancelled?.())) {
+          this.queue.splice(this.queue.indexOf(i), 1);
+          i.reject?.(new Error('cancelled'));
+          touch();
+        }
+        const item = this.queue.find((i) => !this.held(i));
+        if (!item) {
+          this.handOver();
+          await sleep(500);
+          continue;
+        }
+        this.queue.splice(this.queue.indexOf(item), 1);
         await item.run().catch(() => undefined);
         this.handOver();
       }
@@ -174,10 +246,11 @@ class GpuGroup {
     }
   }
 
-  /** Wait until this process may use the GPU. */
-  private async acquire(rank: number, onWait?: (why: string | null) => void) {
+  /** Wait until this process may use the GPU (a job asked to stop meanwhile gives up its turn). */
+  private async acquire(rank: number, onWait?: (why: string | null) => void, cancelled?: () => boolean) {
     let told = false;
     for (;;) {
+      if (cancelled?.()) throw new Error('cancelled');
       const now = Date.now();
       const got = tx(() => {
         const l = q.lease.get(this.name) as { holder: string; model: string; until: number } | undefined;
@@ -213,7 +286,9 @@ class GpuGroup {
   /** Between calls: keep the GPU for our next call, or give it to someone waiting. */
   private handOver() {
     const now = Date.now();
-    const next = this.queue.length ? Math.min(...this.queue.map((i) => i.rank)) : Infinity;
+    // Calls an administrator's pause holds do not keep the GPU from other processes.
+    const ready = this.queue.filter((i) => !i.paused);
+    const next = ready.length ? Math.min(...ready.map((i) => i.rank)) : Infinity;
     const other = (q.others.get(this.name, HOLDER, now - WAITER_STALE_MS) as { r: number | null }).r;
     const someoneElse = other !== null && other !== undefined;
     const keep = next !== Infinity && (!someoneElse || (other! >= next && now - this.heldSince < MAX_HOLD_MS));

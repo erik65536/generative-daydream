@@ -23,7 +23,12 @@ class Comfy:
 
     def run(self, wf: dict, timeout: float = 3600) -> tuple[dict, float]:
         """Queue a workflow and wait. Returns (outputs, seconds of execution)."""
-        body = json.dumps({'prompt': wf, 'client_id': 'gd-animator'}).encode()
+        # The server's tag (which process and job queued it) for the admin GPU page.
+        try:
+            tag = json.loads(os.environ.get('GD_PROMPT_TAG') or 'null')
+        except ValueError:
+            tag = None
+        body = json.dumps({'prompt': wf, 'client_id': 'gd-animator', 'extra_data': {'gd': tag} if tag else {}}).encode()
         req = urllib.request.Request(self.base + '/prompt', data=body, headers={'Content-Type': 'application/json'})
         q = json.loads(urllib.request.urlopen(req, timeout=60).read())
         if 'prompt_id' not in q:

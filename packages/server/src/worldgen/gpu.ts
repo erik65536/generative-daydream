@@ -7,6 +7,8 @@
  * tasks so their calls are not interleaved. Text work (Luna) runs alongside, unlimited by it.
  */
 
+import { report, touch, type WorkTag } from '../gpu/presence';
+
 /** Which model a task mostly loads (a place's reading uses SAM 3 and Qwen's edit; its repairs Krea and Qwen). */
 export type GpuModel = 'krea' | 'reader' | 'seedvr2';
 
@@ -22,13 +24,18 @@ export class GpuQueue {
   private tasks: Task[] = [];
   private loaded: GpuModel | null = null;
   private busy = false;
+  private running: { model: GpuModel; priority: number; since: number } | undefined;
+  /** Shown on the admin GPU page while the queue has work. */
+  private unreport: (() => void) | null = null;
 
-  constructor(private readonly stopped: () => boolean = () => false) {}
+  constructor(private readonly stopped: () => boolean = () => false, private readonly tag?: WorkTag) {}
 
   /** Run `fn` when its turn comes; resolves with its result. */
   run<T>(model: GpuModel, priority: number, fn: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       this.tasks.push({ model, priority, run: () => fn().then(resolve, reject), cancel: reject });
+      this.unreport ??= report(() => ({ builds: [{ tag: this.tag, running: this.running, pending: this.tasks.map((t) => ({ model: t.model, priority: t.priority })).sort((a, b) => a.priority - b.priority) }] }));
+      touch();
       void this.pump();
     });
   }
@@ -51,10 +58,16 @@ export class GpuQueue {
           continue;
         }
         this.loaded = t.model;
+        this.running = { model: t.model, priority: t.priority, since: Date.now() };
+        touch();
         await t.run();
+        this.running = undefined;
       }
     } finally {
       this.busy = false;
+      this.running = undefined;
+      this.unreport?.();
+      this.unreport = null;
     }
   }
 }

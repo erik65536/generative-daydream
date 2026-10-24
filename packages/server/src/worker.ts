@@ -15,6 +15,7 @@ import { startWorker } from './jobs/worker';
 import { installSpendLedger } from './spending';
 import { HOLDER } from './jobs/queue';
 import { genai } from './genai/service';
+import { setProcessRole } from './gpu/presence';
 
 export const RELOAD_FILE = path.join(DATA_DIR, '.worker-reload');
 const mtime = () => {
@@ -26,6 +27,7 @@ const mtime = () => {
 };
 
 installSpendLedger();
+setProcessRole('worker', 'job worker');
 const worker = startWorker();
 console.log(`[worker ${HOLDER}] ready; running up to ${genai().config.jobConcurrency ?? 1} job(s) at a time`);
 

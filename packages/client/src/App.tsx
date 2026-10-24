@@ -8,6 +8,7 @@ import { WorldPage } from './screens/WorldPage';
 import { Studio } from './screens/Studio';
 import { CharacterCreate } from './screens/CharacterCreate';
 import { Settings } from './screens/Settings';
+import { GpuAdmin } from './screens/Gpu';
 import { GameScreen } from './screens/Game';
 import { TooltipHost } from './ui/common';
 
@@ -97,6 +98,9 @@ export function App() {
       break;
     case 'users':
       screen = <Users me={me} />;
+      break;
+    case 'gpu':
+      screen = <GpuAdmin me={me} />;
       break;
     case 'settings':
       screen = <Settings me={me} />;

@@ -14,6 +14,7 @@ import { runStudioJob, type StudioTask } from '../worldgen/studio';
 import { queueAnimation, runAnimateJob } from '../anim/job';
 import { Job, JobYield, workerState } from './job';
 import { claimNext, HOLDER, purgeOldLogs, renewLease, requeue, type JobRecord } from './queue';
+import { control } from '../gpu/presence';
 
 /** A job that keeps dying (crashes the worker, say) is given up after this many starts. */
 const MAX_ATTEMPTS = 6;
@@ -48,7 +49,7 @@ async function run(rec: JobRecord): Promise<void> {
   try {
     if (rec.attempts > MAX_ATTEMPTS) throw new Error(`stopped unexpectedly ${MAX_ATTEMPTS} times`);
     // The daydream's owner pays for its building, painting and studio work.
-    await withCallContext({ priority: rec.kind === 'studio' ? 'studio' : 'background', onWait: (why) => job.waiting(why), userId: rec.ownerId }, () => execute(rec, job));
+    await withCallContext({ priority: rec.kind === 'studio' ? 'studio' : 'background', onWait: (why) => job.waiting(why), userId: rec.ownerId, tag: job.tag, cancelled: () => job.cancelled }, () => execute(rec, job));
     job.finish(job.cancelled ? 'cancelled' : 'done');
     // New or repainted characters and creatures: their animation follows in the background.
     if (rec.kind !== 'animate' && !job.cancelled) {
@@ -82,6 +83,7 @@ async function run(rec: JobRecord): Promise<void> {
     }
   } finally {
     clearInterval(renew);
+    job.close();
   }
 }
 
@@ -97,8 +99,9 @@ export function startWorker(opts: { concurrency?: number; quiet?: boolean } = {}
   const running = new Set<Promise<void>>();
   let draining = false;
   const tick = () => {
-    while (!draining && !workerState.yieldRequested && running.size < max) {
-      const rec = claimNext();
+    // An administrator's pause: no new jobs (background animation can be paused on its own).
+    while (!draining && !workerState.yieldRequested && running.size < max && !control('paused')) {
+      const rec = claimNext(HOLDER, { noAnimation: !!control('animationPaused') });
       if (!rec) break;
       if (!opts.quiet) console.log(`[worker ${HOLDER}] ${rec.attempts > 1 ? 'resuming' : 'starting'} ${rec.kind} job ${rec.id} for ${rec.worldId}`);
       const p = run(rec).finally(async () => {

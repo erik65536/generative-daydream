@@ -2,12 +2,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
-import express, { type NextFunction, type Request, type Response } from 'express';
+import express, { type Request, type Response } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
 import { COMBAT_MODES, DIFFICULTIES, GAME_LENGTHS, WORLD_SIZES, type ClientMessage, type ServerMessage, type WorldDefinition } from '@gd/shared';
 import { CLIENT_DIST, CONFIG_DIR } from './paths';
 import * as store from './storage';
+import { adminOnly, auth, authPending, cookie, type AuthedRequest } from './auth';
+import { mountGpuAdmin } from './gpu/admin';
+import { setProcessRole } from './gpu/presence';
 import { genai, reloadGenAI } from './genai/service';
 import { imagePromptSystem } from './genai/images';
 import { backdropSentence, cutout, finishCutout } from './genai/cutout';
@@ -27,18 +30,7 @@ const PORT = Number(process.env.GD_PORT ?? 3000);
 const app = express();
 app.use(express.json({ limit: '2mb' }));
 
-// ------------------------------------------------------------------------------ auth
-
-function cookie(req: Request | http.IncomingMessage, name: string): string | undefined {
-  const raw = req.headers.cookie ?? '';
-  for (const part of raw.split(';')) {
-    const [k, ...v] = part.trim().split('=');
-    if (k === name) return decodeURIComponent(v.join('='));
-  }
-  return undefined;
-}
-
-type AuthedRequest = Request & { user: store.User };
+// ------------------------------------------------------------------------------ auth (middleware in auth.ts)
 
 /** Today's AI spending against a user's daily budget (limit null: unlimited). */
 const aiOf = (u: store.User) => {
@@ -47,24 +39,6 @@ const aiOf = (u: store.User) => {
 };
 
 const meOf = (u: store.User) => ({ id: u.id, username: u.username, isAdmin: u.isAdmin, mustChangePassword: u.mustChangePassword, ai: aiOf(u) });
-
-/** Signed-in users only. Until a one-time password is replaced, only the password change is open. */
-function signedIn(allowPending: boolean) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const user = store.sessionUser(cookie(req, 'gd_session'));
-    if (!user) return void res.status(401).json({ error: 'Please sign in.' });
-    if (user.mustChangePassword && !allowPending) return void res.status(403).json({ error: 'Choose a new password first.', code: 'password_change_required' });
-    (req as AuthedRequest).user = user;
-    next();
-  };
-}
-const auth = signedIn(false);
-const authPending = signedIn(true);
-
-function adminOnly(req: Request, res: Response, next: NextFunction) {
-  if (!(req as AuthedRequest).user?.isAdmin) return void res.status(403).json({ error: 'Admins only.' });
-  next();
-}
 
 const setSession = (res: Response, token: string) =>
   res.setHeader('Set-Cookie', `gd_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}`);
@@ -189,6 +163,10 @@ app.patch('/api/admin/users/:id', auth, adminOnly, (req, res) => {
     res.status(400).json({ error: (e as Error).message });
   }
 });
+
+// ------------------------------------------------------------------------------ GPU administration
+
+mountGpuAdmin(app);
 
 // ------------------------------------------------------------------------------ worlds
 
@@ -606,6 +584,7 @@ wss.on('connection', (ws: WebSocket, req) => {
 
 server.listen(PORT, () => {
   const g = genai();
+  setProcessRole('server', `web server :${PORT}${process.env.GD_WORKER !== 'external' ? ' + worker' : ''}`);
   console.log(`Generative Daydream server on http://localhost:${PORT}`);
   // Jobs run here unless a separate worker process runs them (GD_WORKER=external, as `npm run dev` does).
   if (process.env.GD_WORKER !== 'external') {

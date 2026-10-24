@@ -104,7 +104,15 @@ const q = {
   activeForOwner: db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE owner_id = ? AND status IN ('queued', 'running', 'waiting')`),
   // Runnable: queued, or running/waiting under a lease that ran out (its worker stopped).
   claimable: db.prepare(`SELECT * FROM jobs WHERE status = 'queued' OR (status IN ('running', 'waiting') AND (lease_until IS NULL OR lease_until < ?))
-    ORDER BY priority, created_at LIMIT 1`),
+    ORDER BY priority, created_at, rowid LIMIT 1`),
+  // The same while background animation is paused (a paused animation job whose worker stopped waits too).
+  claimableNoAnimation: db.prepare(`SELECT * FROM jobs WHERE kind != 'animate' AND (status = 'queued' OR (status IN ('running', 'waiting') AND (lease_until IS NULL OR lease_until < ?)))
+    ORDER BY priority, created_at, rowid LIMIT 1`),
+  queued: db.prepare(`SELECT * FROM jobs WHERE status = 'queued' ORDER BY priority, created_at, rowid`),
+  running: db.prepare(`SELECT * FROM jobs WHERE status IN ('running', 'waiting') ORDER BY started_at`),
+  finished: db.prepare(`SELECT * FROM jobs WHERE finished_at IS NOT NULL ORDER BY finished_at DESC LIMIT ?`),
+  finishedSince: db.prepare(`SELECT kind, status, COUNT(*) AS n FROM jobs WHERE finished_at >= ? GROUP BY kind, status`),
+  setPriority: db.prepare(`UPDATE jobs SET priority = ?, created_at = ?, updated_at = ? WHERE id = ? AND status = 'queued'`),
   queuedAhead: db.prepare(`SELECT COUNT(*) AS n FROM jobs WHERE status = 'queued' AND (priority < ? OR (priority = ? AND created_at < ?))`),
   claim: db.prepare(`UPDATE jobs SET status = 'running', lease_owner = ?, lease_until = ?, attempts = attempts + 1, started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ?`),
   renew: db.prepare('UPDATE jobs SET lease_until = ? WHERE id = ? AND lease_owner = ?'),
@@ -153,11 +161,11 @@ export const latestJob = (worldId: string) => toJob(q.latestForWorld.get(worldId
 export const activeJob = (worldId: string) => toJob(q.activeForWorld.get(worldId) as unknown as Row | undefined);
 export const queuePosition = (j: JobRecord) => (j.status === 'queued' ? (q.queuedAhead.get(j.priority, j.priority, j.createdAt) as { n: number }).n : 0);
 
-/** Claim the next runnable job for this worker (kinds it can run), under a lease. */
-export function claimNext(holder = HOLDER): JobRecord | undefined {
+/** Claim the next runnable job for this worker, under a lease (no animation job while that is paused). */
+export function claimNext(holder = HOLDER, opts: { noAnimation?: boolean } = {}): JobRecord | undefined {
   return tx(() => {
     const now = Date.now();
-    const r = toJob(q.claimable.get(now) as unknown as Row | undefined);
+    const r = toJob((opts.noAnimation ? q.claimableNoAnimation : q.claimable).get(now) as unknown as Row | undefined);
     if (!r) return undefined;
     q.claim.run(holder, now + LEASE_MS, now, now, r.id);
     return getJobRecord(r.id);
@@ -173,6 +181,40 @@ export function requestCancel(id: string) {
   const now = Date.now();
   q.cancel.run(now, id);
   q.cancelQueued.run(now, now, id);
+}
+
+/** Queued jobs in the order they will run. */
+export const queuedJobs = () => (q.queued.all() as unknown as Row[]).map((r) => toJob(r)!);
+export const runningJobs = () => (q.running.all() as unknown as Row[]).map((r) => toJob(r)!);
+export const finishedJobs = (n = 40) => (q.finished.all(n) as unknown as Row[]).map((r) => toJob(r)!);
+/** Jobs finished since `t`, counted by kind and outcome. */
+export const finishedCounts = (t: number) => q.finishedSince.all(t) as unknown as { kind: JobKind; status: JobStatus; n: number }[];
+
+/** Give a queued job a new priority (lower runs first); false when it is no longer queued. */
+export function setPriority(id: string, priority: number): boolean {
+  const j = getJobRecord(id);
+  if (!j || j.status !== 'queued') return false;
+  return Number(q.setPriority.run(Math.round(priority), j.createdAt, Date.now(), id).changes) > 0;
+}
+
+/**
+ * Move a queued job one place up or down the queue by swapping places with its neighbour: the two trade priority
+ * and queued-at time (the queue orders by priority, then age).
+ */
+export function moveJob(id: string, dir: 'up' | 'down'): boolean {
+  return tx(() => {
+    const list = queuedJobs();
+    const i = list.findIndex((j) => j.id === id);
+    const me = list[i];
+    const other = list[dir === 'up' ? i - 1 : i + 1];
+    if (!me || !other) return false;
+    const now = Date.now();
+    // Queued in the same millisecond at the same priority: a millisecond apart, so the order is not left to chance.
+    const tie = other.priority === me.priority && other.createdAt === me.createdAt;
+    q.setPriority.run(other.priority, other.createdAt + (tie ? (dir === 'up' ? -1 : 1) : 0), now, me.id);
+    if (!tie) q.setPriority.run(me.priority, me.createdAt, now, other.id);
+    return true;
+  });
 }
 
 export function saveJobState(j: Pick<JobRecord, 'id' | 'status' | 'progress' | 'step' | 'error' | 'phases' | 'preview' | 'finishedAt'>) {
