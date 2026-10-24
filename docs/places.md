@@ -1,7 +1,7 @@
 # Places
 
-How a place is made: every place is one top-down 2D map, painted by an image model and read back to find where
-people can walk. The painter designs the geometry; the game controls the view, the place's edge and its ways out,
+How a place is made: every place is one big top-down 2D map, painted by an image model (and, once the new reader
+exists, read back to find where people can walk). The painter designs the geometry; the game controls the view, the place's edge and its ways out,
 and reads the map closely. This records the pipeline and why each choice won. The code: `worldgen/mapdraw.ts`
 (planning and painting), `mapread.ts` (reading), `maprepair.ts` (check and repair), `mapgrid.ts` (the plan's grid),
 `placement.ts` (where everything goes), `zones.ts` (a place from design to game data), `comfy.ts` (ComfyUI calls).
@@ -14,48 +14,63 @@ far better levels.
 
 ## Pipeline
 
-1. **Plan (Luna, `planMap`).** The place described as only a map seen straight from above shows it: its ground
-   plan, roofs, paths, open spaces and where things are, with counts ("four cottages around a square"). Words about
-   height, slopes, views, facades or balconies pull every painter into a three-quarter view (a hillside city came
-   out in perspective on every model until they were gone). Also the style, the main floor and the barrier that
-   closes the place's edges (dense forest, black rock, outer walls), each with a colour, and the place's light.
-2. **Frame guide (`frameGuide`).** A crude picture of the place's frame: a 2.5 m band of the barrier's colour round
-   the edge, floor-coloured gaps 4 m wide where the ways out leave (running 6 m in), flat floor colour inside.
-   Ways out across the edge face where they lead on the world map (a room's door out is at the bottom); two on one
-   side sit at a third and two thirds of it.
-3. **Paint (Krea 2 Turbo, image to image at denoise 0.6).** The prompt opens with a lead that names the picture as
-   a flat 2D top-down map ("every building drawn only as the shape of its roof"; for rooms, "the inside of one
-   building with the roof taken away"), then the plan, the edge and its ways out. The frame's composition survives
-   the denoise (a true top-down view, an edge closed all round, gaps where asked) while everything drawn is new.
-4. **View check (Luna, decision API).** One call: is it seen straight down (the main question asks her to look for
-   building fronts), and is it a finished, detailed painting (a bare guide answers "straight down" too). A map
-   that fails is painted again with a new seed.
-5. **Read** (below): where people can stand, what blocks sight, buildings and their entrances, landmarks.
-6. **Check and repair** (below): the ways out, closed edges, and the walkable ground joined into one place.
-7. A map without enough walkable ground (towns 350 m², wilds 600, dungeons 120, rooms 25) is made again with a new
-   seed, at most three tries; the best try is kept. Imperfect ways out are accepted: where the map has no opening
-   on a side that needs one, the main ground nearest the planned gap stands in.
+Studied in two rounds in October 2026 (reports: side-session notes `tile-outpaint/REPORT.md` and
+`REPORT_ROUND2.md`). `mapdraw.ts` paints the map; `zones.ts` plans it and turns it into game data.
+
+1. **Plan (Luna, `planMap`).** Luna is told the whole method and the goal (a fun level with distinct areas, a strong
+   theme and one connected network). She writes the whole-map layout with one dominant area much larger than the
+   rest (for a dungeon, the great chamber), what each tile of the map holds (a distinct area or set piece, with what
+   crosses into its neighbours and on which side), the ground, the style, the floor, the barrier (its look, its
+   surface material alone, its colour) and what a way out through the barrier looks like. The arrangement suits the
+   place (organic for caves and ruins, rows for a barracks), never uniform repetition. The painter takes words
+   literally: no heights, facades or views (they tilt the view), and a way out is never a tunnel mouth, gate or dark
+   opening (drawn as a black shape that reads as a pit).
+2. **Whole-place painting (Krea 2 Turbo, from noise).** The whole place in one picture at Krea's own size (about
+   1.5 MP), eight seeds. Luna checks the view on each (decision API) and Sol (the purpose's stronger model) whether
+   every area can be reached; the best connected, top-down, on-theme painting is the place's plan. Only 2 of 8 city
+   paintings were connected (walled courtyards), 4 of 8 for the town and the wilds, 6 of 8 for the dungeon.
+3. **Enlarge and detail.** SeedVR2 enlarges the painting to the map's size (a whole factor, then resampled). Krea
+   then repaints it at 0.3 in overlapping 1024 px windows (stride 768, centre outward) with Differential Diffusion:
+   strength 0 over pixels already detailed, ramping up across the overlap, so each window continues the finished
+   work. Each window is told what its part shows, written by Luna from the painting with a grid on it.
+4. **Exits (`placeExits`, `wayOut`).** For each planned side, Sol picks one of seven spots along it (within ±20% of
+   the plan) where a street or path already reaches the edge. Krea paints Luna's exit look as a strip, the strip is
+   laid at the exit, and it is repainted with a soft edge (48 px) so it blends.
+5. **Barrier (`paintBarrier`).** Krea paints the barrier's surface from its flat colour, Luna checks it shows the
+   barrier alone, and it is made seamless (`atmosphere.seamless`: it repeats every 1024 px along the band). It is
+   laid in a 128 px band round the edge (not at the exits) and repainted at 0.75 in windows round the perimeter;
+   the repaint fades out 96 px inside the band (half-cut buildings are finished or removed) and 128 px into the
+   barrier already painted (stretches blend without steps).
+6. **Check and close (`checkAndClose`).** Sol checks each exit on a crop (a longer way out when blocked, twice at
+   most), then reviews the whole map as a level designer and lists unplanned ways off it; each is closed with a
+   soft patch 6 m deep where the ground ends before the barrier, up to three rounds.
+7. **Where people can walk: a stand-in.** Everywhere except the barrier band, which opens at the exits; each exit is
+   a spot just inside its gap. No entrances or landmarks are found yet. The readers below (`readMap`, `repairMap`)
+   are kept but not used: they were made for 1.4 MP maps (Qwen's plan of a whole big map runs out of memory) and a
+   new reader will replace them.
 8. **Settle** (`settlePlace`): Luna places everything on the numbered spots; the map is brought to game scale; the
    navigation grid, people, things, monster packs and traps are laid out (see `world-art.md`).
 
-Every step is saved under `data/worlds/<id>/draft/places/<zone>/` (the plan, the guide, each map with its view
-check, the detector names, SAM's colouring, Qwen's walk plan, the arbitrated plan, each repair round, the reading's
-numbers and the placement), so a resumed build continues where it stopped. `cli/readpeek.ts` shows a world's maps
-step by step from these files, without asking any model.
+Every step is saved under `data/worlds/<id>/draft/places/<zone>/` (the plan, each whole-place painting with its
+checks, the enlarged and detailed map, the notes, exit spots and textures, the map after its exits, its barrier and
+its checks), so a resumed build continues where it stopped. A town takes about 20–25 GPU minutes plus SeedVR2, and
+about $0.06–0.11 of OpenAI (almost all Sol).
 
 ## Settings and why
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Painter | Krea 2 Turbo | The only one of three that takes the guide (Qwen 2.1 Turbo's 8-step schedule returns the guide unchanged). With prompts alone, Krea was top-down on 13 of 18 maps, Qwen Turbo 12, full Qwen 11: Qwen draws town houses as icons with their fronts showing and floats the place as an island in fog |
-| Guide denoise | 0.6 | 0.6 got the asked ways out exactly in 7 of 12 maps, 0.75 in 5, prompts alone in 2. It also fixed the angle where new seeds and rewritten prompts could not: the hillside city 3 of 3, the gingerbread village 2 of 3 (0 of 12 otherwise). At 0.92 Krea ignores the guide |
-| Map size | towns 44×36 m, wilds 52×40, dungeons 28×22, rooms 14×11; about 1.4 MP | The size Krea paints best at; smaller places are painted closer |
-| Plan grid | 0.25 m cells, 0.35 m clearance | A character's centre keeps 0.35 m from anything not open |
-| View check | Luna, decision API, one call | No false accepts on 54 maps (about 1 s, $0.0003). Zoomed quadrants lose context (all said "top"); Sol was too strict (fronts everywhere) at ten times the cost; MoGe's normals caught only strong three-quarter views |
+| Map size | town 3×2 tiles, wilds 4×4, dungeon 4×2 (1024 px each) | Bigger places than one painting allows; the whole-place painting keeps them one design |
+| Scale | 40 painted px per metre (`PAINT_PXM`) | Five sizes of a character in the narrowest passages: the size that walks through comfortably was 32 px/m, the one that looks normal 45, on all four test places. 40 leaves characters a little short but never squeezing through (the user's choice); the game draws 46.9, so maps are shown about 1.2× |
+| Global plan | one whole-place painting, best of eight | Tiles outpainted one by one have no global layout; AnyPaint and per-tile masked repaints ignore a whole-place guide; cross-faded tiles ghost |
+| Detail strength | 0.3 over SeedVR2 | Keeps the plan exactly; 0.5 let rooms drift. SeedVR2 alone is consistent but plainer |
+| Exits | Sol's spot, painted look, soft edge | Gaps left to chance were blocked by houses and walls; flat strips looked pasted; Luna's spot picks were close to chance |
+| Barrier | seamless surface texture, masked repaint 0.75 with fades | AnyPaint continued the place into the band; a texture of "a river" came out with banks and houses; an unseamed texture showed a line every 1024 px |
+| Checks | Sol for connection, exits and the level review; Luna for the view | Luna's "can a person walk out here" contradicted the picture; the view rule needs both "large fronts" and "ground hidden" (either alone misjudged good maps) |
 
-## Reading the map
+## Reading the map (not in use)
 
-`mapread.ts`, two readers that make different mistakes, and Luna where they disagree:
+Kept for the reader that will replace the stand-in. `mapread.ts`, two readers that make different mistakes, and Luna where they disagree:
 
 1. **SAM.** Luna names what the map shows as an object detector would (floors, stairs, walls, buildings, water,
    props, trees, doors). SAM 3 finds each name in overlapping 1024 px tiles (it sees about 1000 px, so a whole map at
@@ -82,7 +97,7 @@ one (she always preferred the cleaner-looking one). Sight is blocked by SAM's wa
 ground nearest the middle of its lower side. Landmarks: the largest props, trees and pools with walkable ground
 within 1.5 m. Ways out: from the repair (below). Open ground: spread evenly over the walkable cells.
 
-## Check and repair
+## Check and repair (not in use)
 
 `maprepair.ts`:
 
@@ -108,16 +123,13 @@ finished map failed: AnyPaint ignored the crude barrier and continued the floor 
 
 ## Known weaknesses
 
-- **Mirrored exits.** Krea mirrors ways out (wanting top and left, it often paints a bottom one too). Extra
-  openings are blocked in the plan only, so a painted path can seem to lead out where nobody can walk. Opposite
-  sides are the easy case.
-- **Subjects that invite a three-quarter view** (candy cottages) can still come out with fronts showing; the view
-  check rejects them and the place is painted again.
-- **Rooms.** New worlds have no building interiors (town buildings are only painted; their people stand outside),
-  so rooms are painted only for older worlds. The frame can turn a room into an outdoor compound; the lead for
-  rooms asks for the inside of one building with the roof removed.
-- **Dense quarters** with streets leaving every side (a city quarter) have no natural closed edge.
-- **Narrow paths** (hedge mazes, about 1 m) are lost to the 0.35 m clearance.
-- Verified in a validation run on nine briefs before these fixes: 4 of 22 runs gave a fully usable map, and the
-  causes were the exits after clearance, the opening choice and no area test, all addressed here. The place
-  pipeline still needs a new validation run.
+- **Dense towns leak.** A city's streets reach a thin barrier in many places; Sol's review rounds close some and find
+  others. Accepted for now (extra ways out are not ideal but do not break a map). Ideas: a wider barrier, or the
+  town's closed edge (a wall, river or cliff) designed into the whole-place painting.
+- **Closing patches show** as straight-edged blocks of barrier; an irregular patch shape should hide them.
+- **Some ground is hidden** behind large trees and tall roofs (the slight angle is welcome, but not that).
+- **Sol varies** between calls (different unplanned openings in each round); acting only on openings found twice would
+  make repairs more targeted.
+- **Walkability is a stand-in** (everywhere but the barrier): buildings, water and walls are walkable until the new
+  reader exists.
+- **Rooms.** New worlds have no building interiors; an older world's room is painted as one tile.

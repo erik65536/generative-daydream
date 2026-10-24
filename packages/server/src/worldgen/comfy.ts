@@ -129,6 +129,16 @@ export async function kreaRepaint(init: Buffer, prompt: string, width: number, h
 }
 
 /**
+ * Krea 2 Turbo, image to image over part of a picture: grey values of `mask` (same size as `init`) are how strongly
+ * each pixel is repainted at `denoise` (Differential Diffusion; white fully, black not at all), so a repaint can fade
+ * into what is already there.
+ */
+export async function kreaMasked(init: Buffer, mask: Buffer, prompt: string, seed: number, denoise: number): Promise<Buffer> {
+  const png = await sharp(init).removeAlpha().png().toBuffer();
+  return one(await run(KREA, workflow('krea2_img2img_mask.json', { init: await upload(png), mask: await upload(mask), prompt, seed, steps: 8, denoise, checkpoint: KREA })), 'Krea');
+}
+
+/**
  * Qwen-Image 2.1 Turbo, edit: the model sees `ref` and paints what `prompt` asks of it at the reference's size (a
  * multiple of 16). Deterministic for a seed, so cached like the reader's answers.
  */

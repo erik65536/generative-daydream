@@ -1,0 +1,22 @@
+{
+  "10": { "class_type": "UNETLoader", "inputs": { "unet_name": "{{checkpoint}}", "weight_dtype": "default" } },
+  "14": { "class_type": "DifferentialDiffusion", "inputs": { "model": ["10", 0], "strength": 1 } },
+  "11": { "class_type": "CLIPLoader", "inputs": { "clip_name": "qwen3vl_4b_fp8_scaled.safetensors", "type": "krea2", "device": "default" } },
+  "12": { "class_type": "VAELoader", "inputs": { "vae_name": "qwen_image_vae.safetensors" } },
+  "6": { "class_type": "CLIPTextEncode", "inputs": { "text": "{{prompt}}", "clip": ["11", 0] } },
+  "13": { "class_type": "ConditioningZeroOut", "inputs": { "conditioning": ["6", 0] } },
+  "20": { "class_type": "LoadImage", "inputs": { "image": "{{init}}" } },
+  "21": { "class_type": "VAEEncode", "inputs": { "pixels": ["20", 0], "vae": ["12", 0] } },
+  "22": { "class_type": "LoadImage", "inputs": { "image": "{{mask}}" } },
+  "23": { "class_type": "ImageToMask", "inputs": { "image": ["22", 0], "channel": "red" } },
+  "24": { "class_type": "SetLatentNoiseMask", "inputs": { "samples": ["21", 0], "mask": ["23", 0] } },
+  "3": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": "{{seed}}", "steps": "{{steps}}", "cfg": 1, "sampler_name": "euler", "scheduler": "simple", "denoise": "{{denoise}}",
+      "model": ["14", 0], "positive": ["6", 0], "negative": ["13", 0], "latent_image": ["24", 0]
+    }
+  },
+  "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["12", 0] } },
+  "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "gd/gd", "images": ["8", 0] } }
+}

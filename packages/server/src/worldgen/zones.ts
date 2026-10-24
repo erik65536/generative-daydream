@@ -1,8 +1,9 @@
 /**
- * A place, from design to game data: Luna plans it, Krea paints it as a top-down map from a frame guide, two readers
- * and Luna find where people can walk, the map is checked and repaired (ways out, joined ground), Luna decides where
- * everything goes, and the map is resampled to game scale and turned into ground metres (the navigation grid, every
- * door, exit, person, chest, trap and monster pack). See docs/places.md.
+ * A place, from design to game data: Luna plans it, it is painted as a big top-down map (mapdraw.ts: the whole place
+ * once, enlarged and detailed, then its exits and barrier), Luna decides where everything goes, and the map is
+ * resampled to game scale and turned into ground metres (the navigation grid, every door, exit, person, chest, trap
+ * and monster pack). Where people can walk is a stand-in for now (everywhere but the barrier, which opens at the
+ * exits) until a new reader replaces readMap and repairMap, which are kept but not used. See docs/places.md.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -15,18 +16,13 @@ import { buildPack } from '../rules/encounters';
 import { worldAssetDir, worldDir, writeJsonAtomic } from '../storage';
 import { upscale } from './comfy';
 import type { GpuQueue } from './gpu';
-import { checkView, frameGuide, mapPixels, mapPrompt, paintMap, planMap, type MapBrief, type MapPlan, type ViewCheck } from './mapdraw';
-import { CELL, walkOf, type Grid, type Side } from './mapgrid';
-import { arbitrate, checkNames, classView, detectAll, entrances, landmarks, nameThings, qwenCells, samCells, type MapRead } from './mapread';
-import { repairMap } from './maprepair';
+import { BARRIER_DEPTH_M, EXIT_GAP_M, MAP_STEPS, PAINT_PXM, makeMap, mapPixels, planMap, type MapBrief, type MapExit, type MapPlan } from './mapdraw';
+import { CELL, type Grid, type Side } from './mapgrid';
+import { arbitrate, checkNames, classView, detectAll, nameThings, qwenCells, samCells, type MapRead, type Spot } from './mapread';
 import { candidates, place, pxPerMetre, type Candidate, type MapReading, type PlaceNeeds } from './placement';
 import { MIST_SIZE, measureLight, paintMist, type MistBrief } from './atmosphere';
 import { normColor } from './schemas';
 
-/** Paint a place again (new seed) when its map is not top-down or has too little ground, at most this many times. */
-const PAINT_TRIES = 3;
-/** Walkable ground (m²) a map must have to work (towns 44×36 m, wilds 52×40, dungeons 28×22, rooms 14×11). */
-export const MIN_AREA: Record<ZoneKind, number> = { town: 350, wilderness: 600, dungeon: 120, interior: 25 };
 /** Monster packs keep their distance so fighting one never drags in the next (aggro reaches about 6.5 m). */
 const PACK_SPACING = 13;
 
@@ -216,96 +212,58 @@ export interface Painted {
   reading: MapReading;
 }
 
-/** How well a made map works as the place: higher is better (top-down 2, passed its check 1, ground up to 1). */
-const mapScore = (view: ViewCheck, passed: boolean, area: number, minArea: number) => (view.pass ? 2 : 0) + (passed ? 1 : 0) + Math.min(1, area / minArea);
-
-/** Steps of making one map, for progress. */
-const STEPS = 4;
-
 /**
- * Design, paint, read and repair a place's map: all it needs is what the place is, so it can start before the world
- * is assembled. A map that is not top-down, or has too little ground, is made again with a new seed; the best try is
- * kept. Ways out that stay imperfect are accepted (the best edge spot stands in).
+ * Design and paint a place's map, and where people can walk on it: all it needs is what the place is, so it can start
+ * before the world is assembled. Every step is saved in the place's draft, so a stopped build resumes.
  */
 export async function paintAndRead(w: WorldLook, s: PlaceSketch, ctx: PlaceContext): Promise<Painted> {
   const draft = new PlaceDraft(w.id, s.id);
   const brief = mapBrief(w, s);
-  // (A plan saved by the old isometric pipeline has no floor or barrier: the map is planned afresh.)
+  // A plan saved by an earlier pipeline (no tiles or exit look) is planned afresh.
   const saved = draft.json<MapPlan>('plan');
-  const plan = saved?.plan && saved.barrier ? saved : await planMap(brief);
+  const plan = saved?.tiles && saved.exitLook ? saved : await planMap(brief);
   draft.saveJson('plan', plan);
-  const prompt = mapPrompt(brief, plan);
-  const guide = draft.png('guide') ?? (await frameGuide(plan, brief.sides, s.kind));
-  draft.savePng('guide', guide);
-  const minArea = MIN_AREA[s.kind];
-  let best: (Painted & { score: number }) | undefined;
-  for (let attempt = 0; attempt < PAINT_TRIES; attempt++) {
-    const seed = ctx.seed + attempt * 1000;
-    const step = (k: number) => ctx.onPart?.(attempt * STEPS + k, PAINT_TRIES * STEPS);
-    // 1. Paint, and check the view.
-    const map = draft.png(`map_${seed}`) ?? (await ctx.gpu.run('krea', ctx.priority, () => paintMap(guide, prompt, s.kind, seed)));
-    draft.savePng(`map_${seed}`, map);
-    const view = draft.json<ViewCheck>(`view_${seed}`) ?? (await checkView(map));
-    draft.saveJson(`view_${seed}`, view);
-    step(1);
-    if (!view.pass) {
-      ctx.report(`${s.name}: map ${attempt + 1} is not a top-down map (${view.angle}${view.detailed ? '' : ', not detailed'}), painting it again`);
-      if (!best || mapScore(view, false, 0, minArea) > best.score) best = { plan, seed, canvas: map, reading: emptyReading(map, s.kind), score: mapScore(view, false, 0, minArea) };
-      continue;
-    }
-    // 2. Read it.
-    const read = await readMap(draft, map, s, seed, ctx);
-    step(2);
-    // 3. Check and repair it.
-    const { X, Y } = mapPixels(s.kind);
-    const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
-    const fixed = await ctx.gpu.run('krea', ctx.priority, () => repairMap(map, read.open, {
-      g, sides: brief.sides, style: plan.style, floor: plan.floor, barrier: plan.barrier, indoor: s.indoor || s.kind === 'interior', seed, minArea,
-      report: (m) => ctx.report(`${s.name}: ${m}`),
-      saved: (round) => {
-        const png = draft.png(`map_${seed}_r${round}`), open = draft.file(`open_${seed}_r${round}.bin`);
-        return png && open ? { png, open: new Uint8Array(open) } : undefined;
-      },
-      save: (round, png, open) => {
-        draft.savePng(`map_${seed}_r${round}`, png);
-        draft.saveFile(`open_${seed}_r${round}.bin`, Buffer.from(open));
-      },
-    }));
-    step(3);
-    // 4. The reading the game uses.
-    const { width: W, height: H } = (await sharp(fixed.png).metadata()) as { width: number; height: number };
-    const walk = fixed.walk.walk.map((v, i) => (v && fixed.walk.label[i] === fixed.walk.main ? 1 : 0));
-    const area = walk.reduce((a, v) => a + v, 0) * CELL * CELL;
-    const reading: MapReading = {
-      width: W, height: H, X, Y, grid: g, walk, sight: read.sight,
-      doors: entrances(read.detected, walk, g, W, H),
-      edges: fixed.exits,
-      landmarks: landmarks(read.detected, walk, g, W, H),
-      area,
-    };
-    draft.saveJson(`made_${seed}`, { passed: fixed.passed, rounds: fixed.rounds, area: Math.round(area), exits: fixed.exits.map((e) => e.label), doors: reading.doors.length, landmarks: reading.landmarks.length, agree: read.agree });
-    step(4);
-    const score = mapScore(view, fixed.passed, area, minArea);
-    ctx.report(`${s.name}: ${Math.round(area)} m² to walk, ways out ${fixed.exits.map((e) => e.label).join(', ') || 'none'}, ${reading.doors.length} entrances${fixed.passed ? '' : ' (its check did not pass in full)'}${area < minArea ? ' — too little ground, painting it again' : ''}`);
-    if (!best || score > best.score) best = { plan, seed, canvas: fixed.png, reading, score };
-    if (area >= minArea) break;
-  }
-  return { plan, seed: best!.seed, canvas: best!.canvas, reading: best!.reading };
+  const made = await makeMap(brief, plan, ctx.seed, {
+    gpu: (model, fn) => ctx.gpu.run(model, ctx.priority, fn),
+    draft,
+    report: ctx.report,
+    step: (k) => ctx.onPart?.(k, MAP_STEPS),
+  });
+  const r = made.review;
+  ctx.report(`${s.name}: map made (Sol: fun ${r.fun}, coherence ${r.coherence}, theme ${r.theme}${r.usable ? ', usable as is' : `; ${r.problems.slice(0, 200)}`})`);
+  return { plan, seed: ctx.seed, canvas: made.png, reading: standInReading(s.kind, made.exits) };
 }
 
-/** A reading with no ground (a map that never became usable): settling still gives the place its ways out. */
-function emptyReading(map: Buffer, kind: ZoneKind): MapReading {
+/**
+ * Where people can walk until the new reader exists: everywhere except the painted barrier band round the edge, which
+ * opens at the ways out; each way out is a spot just inside its gap. No entrances or landmarks are found.
+ */
+export function standInReading(kind: ZoneKind, exits: MapExit[]): MapReading {
   const { W, H, X, Y } = mapPixels(kind);
   const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
-  void map;
-  const open = new Uint8Array(g.cols * g.rows);
-  for (let r = 4; r < g.rows - 4; r++) for (let c = 4; c < g.cols - 4; c++) open[r * g.cols + c] = 1;
-  const walk = walkOf(open, g).walk;
-  return { width: W, height: H, X, Y, grid: g, walk, sight: new Uint8Array(g.cols * g.rows).fill(1), doors: [], edges: [], landmarks: [], area: walk.reduce((a, v) => a + v, 0) * CELL * CELL };
+  const band = Math.ceil(BARRIER_DEPTH_M / CELL), half = EXIT_GAP_M / CELL / 2;
+  const inGap = (r: number, c: number) => exits.some((e) => {
+    const a = e.at * (e.side === 'top' || e.side === 'bottom' ? g.cols : g.rows);
+    return e.side === 'top' ? r < band && Math.abs(c - a) < half : e.side === 'bottom' ? r >= g.rows - band && Math.abs(c - a) < half
+      : e.side === 'left' ? c < band && Math.abs(r - a) < half : c >= g.cols - band && Math.abs(r - a) < half;
+  });
+  const walk = new Uint8Array(g.cols * g.rows);
+  for (let r = 0; r < g.rows; r++)
+    for (let c = 0; c < g.cols; c++) if (Math.min(r, c, g.rows - 1 - r, g.cols - 1 - c) >= band || inGap(r, c)) walk[r * g.cols + c] = 1;
+  const inset = (BARRIER_DEPTH_M + 2) * PAINT_PXM;
+  const edges: Spot[] = exits.map((e) => {
+    const a = e.at * (e.side === 'top' || e.side === 'bottom' ? W : H);
+    return { x: e.side === 'left' ? inset : e.side === 'right' ? W - inset : a, y: e.side === 'top' ? inset : e.side === 'bottom' ? H - inset : a, label: e.side };
+  });
+  return { width: W, height: H, X, Y, grid: g, walk, sight: new Uint8Array(g.cols * g.rows).fill(1), doors: [], edges, landmarks: [], area: walk.reduce((a, v) => a + v, 0) * CELL * CELL };
 }
 
-/** Read a map: SAM's names (checked once by Luna), Qwen's plan, and Luna where they disagree. Saved per map. */
-async function readMap(draft: PlaceDraft, map: Buffer, s: PlaceSketch, seed: number, ctx: PlaceContext) {
+/**
+ * Read a map: SAM's names (checked once by Luna), Qwen's plan, and Luna where they disagree. Saved per map. Not used
+ * while the stand-in reading is (it was made for maps of about 1.4 MP; Qwen's plan of a whole big map runs out of
+ * memory, and SAM's masks grow with the picture).
+ */
+export async function readMap(draft: PlaceDraft, map: Buffer, s: PlaceSketch, seed: number, ctx: PlaceContext) {
   const { X, Y } = mapPixels(s.kind);
   const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
   const { width: W } = (await sharp(map).metadata()) as { width: number };
@@ -365,10 +323,11 @@ export async function settlePlace(w: WorldDefinition, z: ZoneDef, { plan, seed, 
   ]);
   draft.saveJson(`placement_${seed}`, [...spots.entries()]);
 
-  // SeedVR2 adds the detail an enlarged map needs (painted at 2×, then resampled down to the exact size).
+  // SeedVR2 adds the detail a much enlarged map needs (painted at 2×, then resampled down to the exact size); the
+  // painted maps are drawn about 1.2× (PAINT_PXM to PX_PER_METRE), which plain resampling handles.
   const k = gameScale(reading);
   const FW = Math.round(reading.width * k), FH = Math.round(reading.height * k);
-  const source = k > 1.02 ? await ctx.gpu.run('seedvr2', ctx.priority, () => upscale(canvas, 2, ctx.seed)) : canvas;
+  const source = k > 1.5 ? await ctx.gpu.run('seedvr2', ctx.priority, () => upscale(canvas, 2, ctx.seed)) : canvas;
   const image = await sharp(source).resize(FW, FH, { kernel: 'lanczos3' }).webp({ quality: 90 }).toBuffer();
   const key = saveAsset(w, `place_${z.id}`, image, { kind: 'painting', prompt: `map of ${z.name}`, width: FW, height: FH });
   await setAir(w, z, image, mist);
