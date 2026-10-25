@@ -117,15 +117,15 @@ export function grantXp(r: Ruleset, ch: CharacterState, amount: number): number 
   const gained = newLevel - ch.level;
   if (gained > 0) {
     ch.level = newLevel;
+    // Everyone's points wait for the player, companions' too (their party cards show them).
     ch.treePoints += gained * r.progression.treePointsPerLevel;
-    if (ch.npcId) autoSpend(r, ch);
     restoreFully(r, ch);
   }
   return gained;
 }
 
 /**
- * Automatic build policy (companions, the simulator's "typical" builds): favour the class's primary branch,
+ * Automatic build policy (the simulator's "typical" builds): favour the class's primary branch,
  * learn skills when available, rank up skills, take passives, and put spare points into primary attributes.
  * `style` biases branch choice so the simulator can sample different builds.
  */
