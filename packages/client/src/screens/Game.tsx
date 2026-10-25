@@ -63,6 +63,12 @@ function handleClick(r: Renderer, info: HoverInfo, button: number, ev?: MouseEve
     const e = st.entities.get(info.entityId);
     if (!e) return;
     if (e.ownerUserId === st.userId) {
+      // A companion (played by the AI) is someone to talk to; a hero of one's own is selected.
+      const companion = st.player?.party.find((ch) => ch.id === e.id && ch.npcId);
+      if (companion && !st.combat && !st.player?.commandCompanions && e.id !== st.player?.leaderId) {
+        c.send({ t: 'interact', targetId: e.id, charId });
+        return;
+      }
       c.update({ selectedCharId: e.id });
       if (!st.combat) c.send({ t: 'set_leader', charId: e.id });
       return;
