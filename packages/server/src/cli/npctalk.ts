@@ -13,7 +13,7 @@ const [worldId, filter] = process.argv.slice(2);
 const w = worldId ? loadWorld(worldId) : null;
 if (!w) throw new Error('usage: npctalk <worldId> [npc name filter]');
 const state: InstanceState = {
-  id: 'i_npctalk', worldId: w.id, ownerId: 'u1', name: 'npc tuning', createdAt: Date.now(), updatedAt: Date.now(), clock: 9 * 60, open: false,
+  id: 'i_npctalk', worldId: w.id, ownerId: 'u1', name: 'npc tuning', createdAt: Date.now(), updatedAt: Date.now(), clock: 9 * 60,
   players: {}, npcs: {}, zones: {}, dynamicQuests: [], events: [], rumors: [], lastActiveAt: Date.now(), difficulty: 'normal',
 };
 const inst = new GameInstance(state, w);

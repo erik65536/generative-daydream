@@ -348,6 +348,13 @@ app.get('/api/worlds/:id/assets/:file', (req, res) => {
 
 // ------------------------------------------------------------------------------ instances
 
+/*
+ * A reverie is its owner's alone: only they see, play and delete it (anyone may start one in any daydream they can
+ * see). An administrator can play or delete someone else's, but only by asking for it (`admin=1`), so it never
+ * happens by a slip.
+ */
+const asAdmin = (req: Request, u: store.User) => u.isAdmin && req.query.admin === '1';
+
 const CharSpecSchema = z.object({
   name: z.string().trim().min(1).max(24),
   classId: z.string().max(60),
@@ -357,7 +364,7 @@ const CharSpecSchema = z.object({
 app.get('/api/worlds/:id/instances', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
   const w = visibleWorld(req, res);
-  if (w) res.json(instances.list(w.id, u.id));
+  if (w) res.json(instances.list(w.id, u.id, asAdmin(req, u)));
 });
 
 app.post('/api/worlds/:id/instances', auth, (req, res) => {
@@ -371,31 +378,10 @@ app.post('/api/worlds/:id/instances', auth, (req, res) => {
   res.json({ instanceId: inst.state.id });
 });
 
-app.post('/api/instances/:id/join', auth, (req, res) => {
-  const u = (req as AuthedRequest).user;
-  const inst = instances.get(String(req.params.id));
-  if (!inst) return void res.status(404).json({ error: 'Save not found.' });
-  if (inst.hasPlayer(u.id)) return void res.json({ ok: true });
-  if (!inst.state.open && inst.state.ownerId !== u.id) return void res.status(403).json({ error: 'That reverie is not open to other dreamers.' });
-  const body = z.object({ party: z.array(CharSpecSchema).min(1).max(4) }).safeParse(req.body);
-  if (!body.success) return void res.status(400).json({ error: 'Invalid party.' });
-  instances.addPlayer(inst, u.id, u.displayName, body.data.party);
-  res.json({ ok: true });
-});
-
-app.get('/api/instances/:id', auth, (req, res) => {
-  const s = store.loadInstance(String(req.params.id));
-  const u = (req as AuthedRequest).user;
-  // A save is its owner's and its players' (and anyone's to see once opened to other dreamers).
-  if (!s || !(s.ownerId === u.id || s.players[u.id] || s.open || u.isAdmin)) return void res.status(404).json({ error: 'Not found.' });
-  res.json({ ...instances.summary(s), hasCharacter: !!s.players[u.id] });
-});
-
 app.delete('/api/instances/:id', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
   const s = store.loadInstance(String(req.params.id));
-  if (!s) return void res.status(404).json({ error: 'Not found.' });
-  if (s.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your save.' });
+  if (!s || !(s.ownerId === u.id || asAdmin(req, u))) return void res.status(404).json({ error: 'Not found.' });
   if (instances.isLive(s.id)) instances.drop(s.id);
   store.deleteInstance(s.id);
   res.json({ ok: true });
@@ -501,14 +487,20 @@ wss.on('connection', (ws: WebSocket, req) => {
     send({ t: 'error', message: 'Please sign in.' });
     return ws.close();
   }
-  const inst = instances.get(instanceId);
-  if (!inst) {
-    const st = store.loadInstance(instanceId);
-    const why = st ? incompatibility(st, store.loadWorld(st.worldId)) : null;
-    send({ t: 'error', message: why ?? 'Save not found.' });
+  // Only the owner plays a reverie; an administrator may play someone else's when asking for it (admin=1), as its
+  // owner but paying for its AI from their own budget.
+  const st = store.loadInstance(instanceId);
+  const mine = st?.ownerId === user.id;
+  if (!st || !(mine || (user.isAdmin && url.searchParams.get('admin') === '1'))) {
+    send({ t: 'error', message: 'Save not found.' });
     return ws.close();
   }
-  const conn = { userId: user.id, send };
+  const inst = instances.get(instanceId);
+  if (!inst) {
+    send({ t: 'error', message: incompatibility(st, store.loadWorld(st.worldId)) ?? 'Save not found.' });
+    return ws.close();
+  }
+  const conn = { userId: st.ownerId, send };
   inst.join(conn);
   let reload = false;
   ws.on('message', (data) => {
@@ -523,7 +515,7 @@ wss.on('connection', (ws: WebSocket, req) => {
         return ws.close();
       }
     }
-    inst.handle(user.id, msg);
+    inst.handle(st.ownerId, msg, user.id);
   });
   ws.on('close', () => {
     inst.leave(conn);
@@ -550,8 +542,8 @@ server.listen(PORT, HOST, () => {
   setInterval(purge, 12 * 3600_000).unref();
   const first = store.ensureAdmin();
   if (first) console.log(`
-No accounts yet: created an administrator. Open this invite link within 5 days to set it up (a user name, then a
-password, a passkey or both):
+No accounts yet. Open this invite link within 5 days to set up the administrator (a user name, then a password, a
+passkey or both):
   <this site>/#/invite/${first}
 (a new link any time: npm run users -w @gd/server -- list, then reset <its id>)
 `);

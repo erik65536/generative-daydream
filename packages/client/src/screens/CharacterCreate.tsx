@@ -20,7 +20,7 @@ function starterGear(r: Ruleset, classId: string): Record<string, ItemInstance> 
   return out;
 }
 
-export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; worldId: string; joinInstanceId?: string }) {
+export function CharacterCreate({ me, worldId }: { me: Me; worldId: string }) {
   const [setup, setSetup] = useState<WorldSetup | null>(null);
   const [error, setError] = useState('');
   const [party, setParty] = useState<Draft[]>([]);
@@ -70,13 +70,8 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
     setError('');
     const specs: CharSpec[] = party.map(({ name, classId, kinId }) => ({ name: name.trim(), classId, kinId }));
     try {
-      if (joinInstanceId) {
-        await api.joinInstance(joinInstanceId, specs);
-        navigate(`#/play/${joinInstanceId}`);
-      } else {
-        const { instanceId } = await api.createInstance(worldId, saveName, specs, difficulty);
-        navigate(`#/play/${instanceId}`);
-      }
+      const { instanceId } = await api.createInstance(worldId, saveName, specs, difficulty);
+      navigate(`#/play/${instanceId}`);
     } catch (e) {
       setError((e as Error).message);
       setBusy(false);
@@ -195,30 +190,26 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
                 </div>
               </div>
             )}
-            {!joinInstanceId && (
-              <div className="panel ornate">
-                <div className="panel-head"><h3>Difficulty</h3><span className="muted small">changeable later from the menu</span></div>
-                <div className="panel-body col">
-                  <div className="seg">
-                    {DIFFICULTIES.map((x) => (
-                      <button key={x} className={`btn sm ${difficulty === x ? 'primary' : 'ghost'}`} onClick={() => setDifficulty(x)}>{r.difficulty[x].name}</button>
-                    ))}
-                  </div>
-                  <div className="hint">{DIFFICULTY_TEXT[difficulty]}</div>
+            <div className="panel ornate">
+              <div className="panel-head"><h3>Difficulty</h3><span className="muted small">changeable later from the menu</span></div>
+              <div className="panel-body col">
+                <div className="seg">
+                  {DIFFICULTIES.map((x) => (
+                    <button key={x} className={`btn sm ${difficulty === x ? 'primary' : 'ghost'}`} onClick={() => setDifficulty(x)}>{r.difficulty[x].name}</button>
+                  ))}
                 </div>
+                <div className="hint">{DIFFICULTY_TEXT[difficulty]}</div>
               </div>
-            )}
+            </div>
             <div className="panel panel-body row">
-              {!joinInstanceId && (
-                <div className="field grow">
-                  <label>Name this reverie</label>
-                  <input className="input" value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder={party[0]?.name.trim() ? `${party[0].name.trim()}’s reverie` : 'A new reverie'} />
-                </div>
-              )}
+              <div className="field grow">
+                <label>Name this reverie</label>
+                <input className="input" value={saveName} onChange={(e) => setSaveName(e.target.value)} placeholder={party[0]?.name.trim() ? `${party[0].name.trim()}’s reverie` : 'A new reverie'} />
+              </div>
               <div className="spacer" />
               {error && <div className="error-text">{error}</div>}
               <button className="btn ghost" onClick={() => navigate(`#/world/${worldId}`)}>Back</button>
-              <button className="btn primary lg" disabled={busy || party.some((p) => !p.name.trim())} onClick={start}>{joinInstanceId ? 'Join' : 'Enter the daydream'}</button>
+              <button className="btn primary lg" disabled={busy || party.some((p) => !p.name.trim())} onClick={start}>Enter the daydream</button>
             </div>
           </div>
         </div>

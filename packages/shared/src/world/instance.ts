@@ -254,8 +254,6 @@ export interface InstanceState {
   updatedAt: number;
   /** Game minutes since start. */
   clock: number;
-  /** Allow other users to join (experimental multiplayer). */
-  open: boolean;
   /** Snapshot instances are hard saves of another instance. */
   snapshotOf?: string;
   players: Record<string, PlayerState>;
@@ -280,7 +278,6 @@ export interface InstanceSummary {
   updatedAt: number;
   createdAt: number;
   snapshotOf?: string;
-  open: boolean;
   day: number;
   players: { userId: string; name: string; level: number; zone: string }[];
   online?: number;

@@ -969,7 +969,7 @@ export function CraftWindow({ onClose }: { onClose: () => void }) {
 // =================================================================================== menu
 
 export function MenuWindow({ onClose, onHelp, onCodex }: { onClose: () => void; onHelp: () => void; onCodex: () => void }) {
-  const { player, open, isOwner, instanceName, world } = useGame((s) => ({ player: s.player, open: s.open, isOwner: s.isOwner, instanceName: s.instanceName, world: s.world }));
+  const { player, isOwner, instanceName, world } = useGame((s) => ({ player: s.player, isOwner: s.isOwner, instanceName: s.instanceName, world: s.world }));
   const c = client();
   const [name, setName] = useState('');
   const [saved, setSaved] = useState('');
@@ -993,10 +993,6 @@ export function MenuWindow({ onClose, onHelp, onCodex }: { onClose: () => void; 
         </div>
         <div className="hint">{isOwner ? 'Changes your foes from the next fight on. See the codex for details.' : 'Only the owner of this reverie can change it.'}</div>
         <div className="ornament" />
-        <label className="row small" style={{ cursor: isOwner ? 'pointer' : 'default', opacity: isOwner ? 1 : 0.5 }}>
-          <input type="checkbox" disabled={!isOwner} checked={open} onChange={(e) => { c.send({ t: 'set_options', open: e.target.checked }); c.update({ open: e.target.checked }); }} />
-          Let other dreamers join this reverie (experimental)
-        </label>
         {world.input.combatMode === 'party_npc' && (
           <label className="row small" style={{ cursor: 'pointer' }}>
             <input type="checkbox" checked={player.commandCompanions} onChange={(e) => c.send({ t: 'set_options', commandCompanions: e.target.checked })} />

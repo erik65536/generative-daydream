@@ -70,6 +70,15 @@ describe('accounts', () => {
     removePasskey(u.id, pk, false);
   });
 
+  it('an invite is never an administrator; a reset makes one a player again', () => {
+    const u = createUser({ displayName: 'Not yet' });
+    expect(() => setAdmin(u.id, true)).toThrow(/invite cannot/);
+    activeUser(true);
+    const v = activeUser();
+    setAdmin(v.id, true);
+    expect(resetUser(v.id).isAdmin).toBe(false);
+  });
+
   it('keeps at least one active administrator', () => {
     const a = activeUser(true);
     const b = activeUser();

@@ -67,7 +67,7 @@ config/           genai.example.json, broker.example.json, ComfyUI workflow temp
 - Main story in arcs; each arc ends with a revelation. Side quests per town; NPCs can adapt quests in response to what you say and do, and (optionally) create new ones.
 - NPC communication level (set per world): tell someone your birthday is tomorrow and they may remember; at "small-town" level, the town can gather for you on the day.
 - Saves are continuous; hard saves create a separate copy. Leaving pauses the world unless you enable "keep running", in which case elapsed time is applied when you return.
-- Multiplayer is experimental: an instance owner can open it, other users join with their own characters, and combat includes everyone within range, each player controlling their own characters on their turns.
+- A reverie is its owner's alone: only they see, play and delete it, and anyone may start reveries in any daydream they can see. Administrators can play or delete someone else's from a folded-away section of the daydream page, after confirming. The game engine can hold several players in one reverie (each controls their own characters in a shared fight), but there is no way to join someone else's yet; multiplayer daydreams and reveries come later.
 
 ## Configuring AI models
 
@@ -96,5 +96,4 @@ World generation runs text and image work side by side: places are painted as to
 - People walking behind a painted building are drawn over it (no occlusion yet).
 - Combat balance was tuned with automated AI-vs-AI simulations (`packages/server/test/balance.test.ts`); it needs human playtesting, especially for higher levels and long campaigns.
 - The rule-based stand-in for people (when out of budget, or the model is down) handles common intents (work, trade, news, persuasion, gifts, remembering dates); real conversation needs the model.
-- Multiplayer works mechanically but is lightly tested; there is no lobby chat or invite flow beyond "open to others".
 - Accounts are local: a password (scrypt), passkeys or both, with cookie sessions. A forgotten password is an administrator's reset (a new invite link); there is no email or OAuth.

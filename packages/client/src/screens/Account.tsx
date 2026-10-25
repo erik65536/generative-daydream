@@ -200,7 +200,6 @@ export function Users({ me }: { me: Me }) {
   const [error, setError] = useState('');
   const [displayName, setDisplayName] = useState('');
   const [budget, setBudget] = useState('10');
-  const [admin, setAdmin] = useState(false);
   const [open, setOpen] = useState<string | null>(null);
   const [spending, setSpending] = useState<SpendingSummary | null>(null);
   const load = () => Promise.all([api.users().then(setUsers), api.spending().then(setSpending)]).catch((e) => setError(e.message));
@@ -232,11 +231,10 @@ export function Users({ me }: { me: Me }) {
               onSubmit={(e) => {
                 e.preventDefault();
                 act(async () => {
-                  const u = await api.createUser({ displayName, isAdmin: admin, monthlyBudgetUsd: Number(budget) || 0 });
+                  const u = await api.createUser({ displayName, monthlyBudgetUsd: Number(budget) || 0 });
                   setOpen(u.id);
                   setDisplayName('');
                   setBudget('10');
-                  setAdmin(false);
                 });
               }}
             >
@@ -244,13 +242,13 @@ export function Users({ me }: { me: Me }) {
                 <label>Who it is for (they can change it)</label>
                 <input className="input" value={displayName} maxLength={32} onChange={(e) => setDisplayName(e.target.value)} placeholder="a name" />
               </div>
-              <div className="field" style={{ width: 110 }}>
+              <div className="field" style={{ width: 130 }}>
                 <label>Budget / month</label>
-                <input className="input" value={budget} onChange={(e) => setBudget(e.target.value)} />
+                <div className="row" style={{ gap: 4, alignItems: 'center' }}>
+                  <span className="muted">$</span>
+                  <input className="input" style={{ flex: 1, minWidth: 0, width: 'auto' }} inputMode="decimal" value={budget} onChange={(e) => setBudget(e.target.value)} />
+                </div>
               </div>
-              <label className="row small" style={{ gap: 6, paddingBottom: 9 }}>
-                <input type="checkbox" checked={admin} onChange={(e) => setAdmin(e.target.checked)} /> administrator
-              </label>
               <button className="btn primary" disabled={!displayName.trim()}>Create invite</button>
             </form>
             {error && <div className="error-text">{error}</div>}
@@ -275,7 +273,7 @@ export function Users({ me }: { me: Me }) {
                       <td>{self ? <>{u.displayName}<span className="muted"> (you)</span></> : <EditCell value={u.displayName} width={130} onSet={(v) => act(() => api.updateUser(u.id, { displayName: v }))} />}</td>
                       <td className="small">{u.username ?? <span className="muted">not chosen yet</span>}</td>
                       <td>
-                        <select className="input" style={{ padding: '3px 6px' }} disabled={self} value={u.isAdmin ? 'admin' : 'player'} onChange={(e) => act(() => api.updateUser(u.id, { isAdmin: e.target.value === 'admin' }))}>
+                        <select className="input" style={{ padding: '3px 6px' }} disabled={self || u.status === 'invited'} title={u.status === 'invited' ? 'An invite becomes an administrator only after it is set up' : undefined} value={u.isAdmin ? 'admin' : 'player'} onChange={(e) => act(() => api.updateUser(u.id, { isAdmin: e.target.value === 'admin' }))}>
                           <option value="player">player</option>
                           <option value="admin">admin</option>
                         </select>

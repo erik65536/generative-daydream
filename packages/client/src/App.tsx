@@ -88,11 +88,9 @@ export function App() {
     case 'world':
       screen = parts[2] === 'new' ? <CharacterCreate me={me} worldId={parts[1]!} /> : parts[2] === 'studio' ? <Studio me={me} worldId={parts[1]!} /> : <WorldPage me={me} worldId={parts[1]!} />;
       break;
-    case 'join':
-      screen = <CharacterCreate me={me} worldId={parts[1]!} joinInstanceId={parts[2]} />;
-      break;
     case 'play':
-      screen = <GameScreen key={parts[1]} me={me} instanceId={parts[1]!} />;
+      // #/play/<id>/admin: an administrator playing someone else's reverie.
+      screen = <GameScreen key={parts[1]} me={me} instanceId={parts[1]!} asAdmin={parts[2] === 'admin'} />;
       break;
     case 'account':
       screen = <Account me={me} onMe={setMe} />;

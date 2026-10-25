@@ -44,7 +44,6 @@ export interface GameState {
   instanceId?: string;
   instanceName?: string;
   isOwner: boolean;
-  open: boolean;
   zone?: ZoneData;
   entities: Map<string, EntityView>;
   features: Map<string, FeatureState>;
@@ -82,7 +81,7 @@ let toastId = 1;
 
 export class GameClient {
   state: GameState = {
-    status: 'connecting', isOwner: false, open: false, entities: new Map(), features: new Map(), surfaces: [], lootPiles: [], combat: null, dialog: null, trade: null, loot: null,
+    status: 'connecting', isOwner: false, entities: new Map(), features: new Map(), surfaces: [], lootPiles: [], combat: null, dialog: null, trade: null, loot: null,
     toasts: [], log: [], narrations: [], chat: [], panel: null, targeting: null, inputMode: 'mouse', wheel: null, padPrompt: null, version: 0, zoneVersion: 0,
   };
   private ws: WebSocket | null = null;
@@ -95,11 +94,12 @@ export class GameClient {
   private closedByUser = false;
   private retries = 0;
 
-  constructor(public readonly instanceId: string) {}
+  /** `asAdmin`: an administrator playing someone else's reverie. */
+  constructor(public readonly instanceId: string, private readonly asAdmin = false) {}
 
   connect() {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    const ws = new WebSocket(`${proto}://${location.host}/ws?instance=${encodeURIComponent(this.instanceId)}`);
+    const ws = new WebSocket(`${proto}://${location.host}/ws?instance=${encodeURIComponent(this.instanceId)}${this.asAdmin ? '&admin=1' : ''}`);
     this.ws = ws;
     ws.onmessage = (ev) => this.onMessage(JSON.parse(ev.data as string) as ServerMessage);
     ws.onclose = () => {
@@ -183,7 +183,6 @@ export class GameClient {
         s.instanceId = m.instanceId;
         s.instanceName = m.instanceName;
         s.isOwner = m.isOwner;
-        s.open = m.open;
         s.status = 'connected';
         // A (re)connection starts from a clean slate; the server re-sends what is active.
         s.dialog = null;

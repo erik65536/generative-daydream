@@ -335,7 +335,7 @@ export function mountAccounts(app: Express, o: { sameOrigin: (req: http.Incoming
 
   /** Make an account: invited, with a name saying who it is for and a code for its invite link. */
   app.post('/api/admin/users', auth, adminOnly, handle((req, res) => {
-    const body = z.object({ displayName: z.string().max(60), isAdmin: z.boolean().default(false), monthlyBudgetUsd: z.number().min(0).max(10_000).optional() }).parse(req.body);
+    const body = z.object({ displayName: z.string().max(60), monthlyBudgetUsd: z.number().min(0).max(10_000).optional() }).parse(req.body);
     res.json(userRow(store.createUser(body)));
   }));
 

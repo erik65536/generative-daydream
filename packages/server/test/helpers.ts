@@ -11,7 +11,7 @@ import { reloadGenAI } from '../src/genai/service';
 import { WorldGenJob, places, runGeneration } from '../src/worldgen/pipeline';
 import { populate, type Painted } from '../src/worldgen/zones';
 import crypto from 'node:crypto';
-import { activateUser, claimInvite, createUser, getUser, loadWorld, setPassword, type User } from '../src/storage';
+import { activateUser, claimInvite, createUser, getUser, loadWorld, setAdmin, setPassword, type User } from '../src/storage';
 
 type Json = Record<string, unknown>;
 let counter = 0;
@@ -237,9 +237,14 @@ export function hero(w: WorldDefinition, name: string, role: ClassRole = 'tank')
 
 /** An active account set up as a player would from an invite: a fresh user name and a password. */
 export function activeUser(isAdmin = false, password = 'a-chosen-password'): User {
-  const u = createUser({ displayName: 'Tester', isAdmin });
+  const u = createUser({ displayName: 'Tester' });
   claimInvite(u.id, { username: `t_${crypto.randomBytes(5).toString('hex')}` });
   setPassword(u.id, password);
   activateUser(u.id);
+  // The first account set up on an empty server becomes its administrator: hand that to another one.
+  if (getUser(u.id)!.isAdmin !== isAdmin) {
+    if (!isAdmin) activeUser(true);
+    setAdmin(u.id, isAdmin);
+  }
   return getUser(u.id)!;
 }

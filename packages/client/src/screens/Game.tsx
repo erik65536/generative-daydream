@@ -12,10 +12,10 @@ import { PadInput } from '../input/gamepad';
 import { PadPrompt, PadWheel } from '../ui/pad';
 import { DevPanel } from '../ui/dev';
 
-export function GameScreen({ me, instanceId }: { me: Me; instanceId: string }) {
+export function GameScreen({ me, instanceId, asAdmin }: { me: Me; instanceId: string; asAdmin: boolean }) {
   const [gc, setGc] = useState<GameClient | null>(null);
   useEffect(() => {
-    const c = new GameClient(instanceId);
+    const c = new GameClient(instanceId, asAdmin);
     setClient(c);
     (window as unknown as { __gd?: GameClient }).__gd = c; // debugging handle
     c.connect();
@@ -24,7 +24,7 @@ export function GameScreen({ me, instanceId }: { me: Me; instanceId: string }) {
       c.close();
       clearClient(c);
     };
-  }, [instanceId]);
+  }, [instanceId, asAdmin]);
   if (!gc) return null;
   return <GameView key={instanceId} me={me} />;
 }

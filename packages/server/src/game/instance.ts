@@ -229,7 +229,6 @@ export class GameInstance implements CombatHost {
       instanceName: this.state.name,
       userId: conn.userId,
       serverTime: Date.now(),
-      open: this.state.open,
       isOwner: this.state.ownerId === conn.userId,
     });
     if (firstConn) this.spawnParty(p);
@@ -1297,9 +1296,10 @@ export class GameInstance implements CombatHost {
 
   // =================================================================== message handling
 
-  handle(userId: string, msg: ClientMessage) {
-    // Whatever this message sets off (an NPC's reply, a legendary drop) is paid from this player's AI budget.
-    return withCallContext({ priority: 'interactive', userId }, () => this.handle_(userId, msg));
+  handle(userId: string, msg: ClientMessage, payer = userId) {
+    // Whatever this message sets off (an NPC's reply, a legendary drop) is paid from this player's AI budget (an
+    // administrator playing someone else's reverie pays from their own).
+    return withCallContext({ priority: 'interactive', userId: payer }, () => this.handle_(userId, msg));
   }
 
   private handle_(userId: string, msg: ClientMessage) {
@@ -1352,7 +1352,6 @@ export class GameInstance implements CombatHost {
         case 'dev': return this.cmdDev(p, msg);
         case 'hard_save': return this.hardSave?.(p, msg.name);
         case 'set_options': {
-          if (msg.open !== undefined && this.state.ownerId === userId) this.state.open = msg.open;
           if (msg.commandCompanions !== undefined) p.commandCompanions = msg.commandCompanions;
           this.markDirty();
           this.sendClock(true);

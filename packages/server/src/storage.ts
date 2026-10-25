@@ -206,7 +206,7 @@ const uq = {
   activeAdmins: db.prepare("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND status = 'active'"),
   setPassword: db.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?'),
   setStatus: db.prepare('UPDATE users SET status = ? WHERE id = ?'),
-  setInvite: db.prepare("UPDATE users SET status = 'invited', invite_code = ?, invite_expires = ?, password_hash = NULL, salt = NULL WHERE id = ?"),
+  setInvite: db.prepare("UPDATE users SET status = 'invited', invite_code = ?, invite_expires = ?, password_hash = NULL, salt = NULL, is_admin = 0 WHERE id = ?"),
   activate: db.prepare("UPDATE users SET status = 'active', invite_code = NULL, invite_expires = NULL WHERE id = ?"),
   setName: db.prepare('UPDATE users SET display_name = ? WHERE id = ?'),
   setBudget: db.prepare('UPDATE users SET monthly_budget_usd = ? WHERE id = ?'),
@@ -271,17 +271,20 @@ function keepAnAdmin(u: User) {
   if (u.isAdmin && u.status === 'active' && activeAdmins() <= 1) throw new Error('The server needs at least one active administrator.');
 }
 
-/** An administrator makes an account: invited, with a name saying who it is for and a code for its invite link. */
-export function createUser(o: { displayName: string; isAdmin?: boolean; monthlyBudgetUsd?: number }): User {
+/**
+ * An administrator makes an account: invited, with a name saying who it is for and a code for its invite link. An
+ * invite is never an administrator; an account becomes one after it is set up.
+ */
+export function createUser(o: { displayName: string; monthlyBudgetUsd?: number }): User {
   const displayName = validDisplayName(o.displayName);
   const id = `u_${crypto.randomBytes(6).toString('hex')}`;
-  uq.insert.run(id, displayName, Date.now(), o.isAdmin ? 1 : 0, 'invited', inviteCode(), Date.now() + INVITE_DAYS * 86400_000, Math.max(0, o.monthlyBudgetUsd ?? DEFAULT_MONTHLY_BUDGET));
+  uq.insert.run(id, displayName, Date.now(), 0, 'invited', inviteCode(), Date.now() + INVITE_DAYS * 86400_000, Math.max(0, o.monthlyBudgetUsd ?? DEFAULT_MONTHLY_BUDGET));
   return getUser(id)!;
 }
 
 /**
  * Invited again with a new code (an account not set up yet gets a fresh link; an administrator resetting one ends
- * its password and passkeys and signs it out everywhere). Its worlds and saves stay.
+ * its password and passkeys, signs it out everywhere and makes it a player again). Its worlds and saves stay.
  */
 export function resetUser(userId: string): User {
   return tx(() => {
@@ -314,9 +317,15 @@ export function claimInvite(userId: string, o: { username?: string; displayName?
   });
 }
 
-/** The account's first way to sign in is set: it becomes active and the invite code is spent. */
+/**
+ * The account's first way to sign in is set: it becomes active and the invite code is spent. On a server without an
+ * active administrator (a fresh one), the first account set up becomes the administrator.
+ */
 export function activateUser(userId: string) {
-  uq.activate.run(userId);
+  tx(() => {
+    uq.activate.run(userId);
+    if (!activeAdmins()) uq.setAdmin.run(1, userId);
+  });
 }
 
 export function setEnabled(userId: string, enabled: boolean) {
@@ -342,6 +351,7 @@ export function setMonthlyBudget(userId: string, usd: number) {
 export function setAdmin(userId: string, isAdmin: boolean): void {
   tx(() => {
     const u = requireUser(userId);
+    if (isAdmin && u.status === 'invited') throw new Error('An invite cannot be an administrator: make them one after they set up their account.');
     if (!isAdmin) keepAnAdmin(u);
     uq.setAdmin.run(isAdmin ? 1 : 0, userId);
   });
@@ -419,10 +429,10 @@ export function findUser(username: string): User | undefined {
   return toUser(uq.byName.get(username.trim()) as UserRow | undefined);
 }
 
-/** A server without accounts gets an administrator, invited: its invite code is returned once. */
+/** A server without accounts gets an invite for its administrator (the first account set up): its code is returned. */
 export function ensureAdmin(): string | null {
   if ((uq.count.get() as { n: number }).n > 0) return null;
-  return createUser({ displayName: 'Administrator', isAdmin: true }).inviteCode;
+  return createUser({ displayName: 'Administrator' }).inviteCode;
 }
 
 // ------------------------------------------------------------------------------------ spending

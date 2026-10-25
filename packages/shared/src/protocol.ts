@@ -169,7 +169,7 @@ export interface PlayerView extends PlayerState {
 }
 
 export type ServerMessage =
-  | { t: 'welcome'; world: ClientWorld; instanceId: string; instanceName: string; userId: string; serverTime: number; open: boolean; isOwner: boolean }
+  | { t: 'welcome'; world: ClientWorld; instanceId: string; instanceName: string; userId: string; serverTime: number; isOwner: boolean }
   | { t: 'zone'; zone: ZoneView; entities: EntityView[]; features: FeatureState[]; surfaces: Surface[]; loot: LootPile[]; explored: string }
   | { t: 'entities'; upsert: EntityView[]; remove: string[] }
   | { t: 'features'; features: FeatureState[] }
@@ -224,7 +224,7 @@ export type ClientMessage =
   | { t: 'set_leader'; charId: string }
   | { t: 'fast_travel'; zoneId: string }
   | { t: 'hard_save'; name: string }
-  | { t: 'set_options'; open?: boolean; commandCompanions?: boolean }
+  | { t: 'set_options'; commandCompanions?: boolean }
   | { t: 'abandon_quest'; questId: string }
   | { t: 'pin_quest'; questId: string }
   /**

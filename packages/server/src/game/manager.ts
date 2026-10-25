@@ -86,7 +86,6 @@ class InstanceManager {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       clock: 8 * 60,
-      open: false,
       players: {},
       npcs: {},
       zones: {},
@@ -104,12 +103,6 @@ class InstanceManager {
     return inst;
   }
 
-  addPlayer(inst: GameInstance, userId: string, name: string, party: CharacterSpec[]): PlayerState {
-    const p = inst.addPlayer(userId, name, party);
-    inst.save();
-    return p;
-  }
-
   /** Clone an instance into a new hard save. */
   hardSave(inst: GameInstance, name: string, by: PlayerState): InstanceState {
     inst.save();
@@ -119,7 +112,6 @@ class InstanceManager {
     copy.snapshotOf = inst.state.id;
     copy.ownerId = by.userId;
     copy.createdAt = Date.now();
-    copy.open = false;
     saveInstance(copy);
     return copy;
   }
@@ -137,7 +129,6 @@ class InstanceManager {
       updatedAt: state.updatedAt,
       createdAt: state.createdAt,
       snapshotOf: state.snapshotOf,
-      open: state.open,
       day: Math.floor(state.clock / 1440) + 1,
       players: Object.values(state.players).map((p) => ({ userId: p.userId, name: p.name, level: Math.max(...p.party.map((c) => c.level)), zone: p.zoneId })),
       online: live?.onlineUsers().length ?? 0,
@@ -146,9 +137,10 @@ class InstanceManager {
     };
   }
 
-  list(worldId: string, userId: string): InstanceSummary[] {
+  /** A user's own reveries in a daydream, or (`others`, for administrators) everyone else's. */
+  list(worldId: string, userId: string, others = false): InstanceSummary[] {
     return listInstances(worldId)
-      .filter((s) => s.ownerId === userId || s.players[userId] || s.open)
+      .filter((s) => (s.ownerId === userId) !== others)
       .map((s) => this.summary(s));
   }
 

@@ -8,8 +8,8 @@ while worlds are being built.
 ## Accounts
 
 - Invite only: there is no sign-up. An administrator creates an account on the **Users** page (or with
-  `npm run users -w @gd/server -- invite <name> [--admin]`) with a name saying who it is for, a monthly AI budget
-  ($10 by default) and whether it is an administrator. That gives an invite link (`#/invite/<code>`) which works
+  `npm run users -w @gd/server -- invite <name>`) with a name saying who it is for and a monthly AI budget
+  ($10 by default). An invite is never an administrator; an account is made one after it is set up. That gives an invite link (`#/invite/<code>`) which works
   for 5 days; administrators can see it until it is used and make a new one.
 - An account is **invited** until its player opens the link, picks a user name (fixed once chosen) and a name
   others see, and sets a password, a passkey or both. It is then **active**; administrators can disable it.
@@ -21,7 +21,8 @@ while worlds are being built.
 - Administrators edit the name, budget and administrator flag, remove a passkey, disable an account, or reset it:
   invited again with a new link, its password, passkeys and sessions gone, its user name, worlds and saves kept.
   At least one active administrator always remains; administrators change their own account on the account page.
-- A server without accounts creates an invited administrator and prints its invite link on the console. When
+- A server without accounts prints an invite link on the console; the first account set up becomes the
+  administrator. When
   locked out, `npm run users -w @gd/server -- list` and `reset <user name or id>` give a new link.
 - Repeated failed sign-ins (and invite guesses) lock that user name and address out for a while.
 

@@ -69,8 +69,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
 
   if (!w) return <div className="page"><Backdrop /><TopBar me={me} /><div className="page-inner">{error || <div className="spinner" />}</div></div>;
   const generating = w.status === 'generating' || jobActive(job?.status);
-  const mine = saves.filter((s) => s.ownerId === me.id || s.players.some((p) => p.userId === me.id));
-  const joinable = saves.filter((s) => s.open && !s.players.some((p) => p.userId === me.id));
+  const mine = saves;
   return (
     <div className="page">
       <Backdrop palette={w.palette} />
@@ -161,36 +160,22 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
                 {mine.map((s) => (
                   <div key={s.id} className="row" style={{ padding: '10px 12px', border: '1px solid var(--line)', borderRadius: 10 }}>
                     <div className="grow">
-                      <div style={{ fontWeight: 600 }}>{s.name} {s.snapshotOf && <span className="badge gray">memory</span>} {s.open && <span className="badge green">open</span>} <span className="badge gray">{ruleset?.difficulty[s.difficulty]?.name ?? s.difficulty}</span></div>
+                      <div style={{ fontWeight: 600 }}>{s.name} {s.snapshotOf && <span className="badge gray">memory</span>} <span className="badge gray">{ruleset?.difficulty[s.difficulty]?.name ?? s.difficulty}</span></div>
                       <div className="small muted">
                         Day {s.day} · {s.players.map((p) => `${p.name} (lv ${p.level})`).join(', ')} · {new Date(s.updatedAt).toLocaleString()}
                         {s.online ? ` · ${s.online} online` : ''}
                       </div>
                       {s.incompatible && <div className="tiny bad" style={{ marginTop: 3 }}>{s.incompatible}</div>}
                     </div>
-                    <button className="btn primary" disabled={!!s.incompatible} onClick={() => navigate(s.players.some((p) => p.userId === me.id) ? `#/play/${s.id}` : `#/join/${w.id}/${s.id}`)}>Continue</button>
-                    {s.ownerId === me.id && (
-                      <button className="btn ghost sm" title="Delete reverie" onClick={() => confirm(`Delete "${s.name}"? This cannot be undone.`) && api.deleteInstance(s.id).then(() => setSaves((x) => x.filter((y) => y.id !== s.id)))}>✕</button>
-                    )}
+                    <button className="btn primary" disabled={!!s.incompatible} onClick={() => navigate(`#/play/${s.id}`)}>Continue</button>
+                    <button className="btn ghost sm" title="Delete reverie" onClick={() => confirm(`Delete "${s.name}"? This cannot be undone.`) && api.deleteInstance(s.id).then(() => setSaves((x) => x.filter((y) => y.id !== s.id)))}>✕</button>
                   </div>
                 ))}
+                {me.isAdmin && <OthersReveries worldId={w.id} />}
               </div>
             </div>
             <div className="col" style={{ width: 340 }}>
               <RulesPanel w={w} me={me} ruleset={ruleset} canRebalance={canRebalance} hasSaves={saves.length > 0} onView={setView} />
-              {joinable.length > 0 && (
-                <div className="panel">
-                  <div className="panel-head"><h3>Join others</h3></div>
-                  <div className="panel-body col">
-                    {joinable.map((s) => (
-                      <div key={s.id} className="row">
-                        <div className="grow small">{s.name}<div className="muted tiny">{s.players.map((p) => p.name).join(', ')}</div></div>
-                        <button className="btn sm" onClick={() => navigate(`#/join/${w.id}/${s.id}`)}>Join</button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
               {w.ownerId === me.id && (
                 <div className="panel">
                   <div className="panel-head"><h3>Art</h3></div>
@@ -216,6 +201,52 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
   );
 }
 
+
+/**
+ * Administrators only: other dreamers' reveries in this daydream, folded away until asked for. Playing one asks
+ * first; deleting one needs its name typed.
+ */
+function OthersReveries({ worldId }: { worldId: string }) {
+  const [others, setOthers] = useState<InstanceSummary[] | null>(null);
+  const [error, setError] = useState('');
+  const load = () => api.instances(worldId, true).then(setOthers, (e) => setError(e.message));
+  return (
+    <details className="small" style={{ marginTop: 8 }} onToggle={(e) => (e.currentTarget as HTMLDetailsElement).open && !others && load()}>
+      <summary className="muted" style={{ cursor: 'pointer' }}>Other dreamers' reveries (administrator)</summary>
+      <div className="col" style={{ gap: 6, marginTop: 8 }}>
+        {error && <div className="error-text">{error}</div>}
+        {others && !others.length && <div className="muted">None.</div>}
+        {others?.map((s) => (
+          <div key={s.id} className="row" style={{ padding: '6px 10px', border: '1px dashed var(--line)', borderRadius: 8 }}>
+            <div className="grow">
+              <div>{s.name} <span className="muted">· {s.ownerName ?? 'unknown dreamer'}</span></div>
+              <div className="tiny muted">Day {s.day} · {s.players.map((p) => `${p.name} (lv ${p.level})`).join(', ')} · {new Date(s.updatedAt).toLocaleString()}</div>
+            </div>
+            <button
+              className="btn sm ghost"
+              disabled={!!s.incompatible}
+              onClick={() => confirm(`Play ${s.ownerName ?? 'another dreamer'}'s reverie "${s.name}"? You play their party, and your moves are saved into their reverie.`) && navigate(`#/play/${s.id}/admin`)}
+            >
+              Play as administrator
+            </button>
+            <button
+              className="btn sm ghost"
+              onClick={() => {
+                const typed = prompt(`Delete ${s.ownerName ?? 'another dreamer'}'s reverie for good? Type its name to confirm:
+${s.name}`);
+                if (typed === null) return;
+                if (typed.trim() !== s.name) return void alert('The name did not match; nothing was deleted.');
+                api.deleteInstance(s.id, true).then(() => setOthers((x) => x?.filter((y) => y.id !== s.id) ?? null), (e) => alert(e.message));
+              }}
+            >
+              Delete
+            </button>
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+}
 
 function RulesPanel({ w, me, ruleset, canRebalance, hasSaves, onView }: { w: WorldSummary; me: Me; ruleset: Ruleset | null; canRebalance: boolean; hasSaves: boolean; onView: (v: 'codex' | 'balance') => void }) {
   const owner = w.ownerId === me.id || me.isAdmin;
