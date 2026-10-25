@@ -51,8 +51,9 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
   const preview = useMemo(() => {
     if (!r || !d) return null;
     const equipment = starterGear(r, d.classId);
-    return { equipment, stats: characterStats(r, { classId: d.classId, kinId: d.kinId, level: 1, tree: {}, equipment, statuses: [] }, { solo: party.length <= 1 }) };
-  }, [r, d?.classId, d?.kinId, party.length]);
+    // Only a hero alone gets the lone hero's strength (companions travel with the others).
+    return { equipment, stats: characterStats(r, { classId: d.classId, kinId: d.kinId, level: 1, tree: {}, equipment, statuses: [] }, { solo: setup?.combatMode === 'solo' }) };
+  }, [r, d?.classId, d?.kinId, setup?.combatMode]);
 
   if (!setup || !d || !r || !preview) return <div className="page"><Backdrop /><TopBar me={me} /><div className="page-inner">{error ? <div className="error-text">{error}</div> : <div className="spinner" />}</div></div>;
 
