@@ -799,3 +799,17 @@ code { font-family: ui-monospace, Consolas, monospace; font-size: 12px; backgrou
   .brand { font-size: 16px; }
   .page-inner { padding: 20px 16px 60px; }
 }
+
+/* Phones in the game: all ten skill slots fit across, the party and the right-hand column take less of the view. */
+@media (max-width: 640px) {
+  .actionbar { bottom: 8px; max-width: calc(100vw - 16px); }
+  .slots { gap: 3px; }
+  .slot { width: calc((100vw - 16px - 27px) / 10); height: calc((100vw - 16px - 27px) / 10); max-width: 50px; max-height: 50px; }
+  .slot canvas { width: 80%; height: 80%; }
+  .party { left: 8px; top: 8px; gap: 4px; }
+  .party .pcard { width: 150px; padding: 4px 6px 4px 4px; gap: 6px; }
+  .pcard .portrait { width: 36px; height: 36px; }
+  .minimap { width: 110px; height: 110px; }
+  .tracker { width: 150px; }
+  .tracker .tr-title { font-size: 12.5px; }
+}
