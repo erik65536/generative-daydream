@@ -41,7 +41,7 @@ for (const z of w.zones) {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">
 <path d="${cells.join('')}" fill="rgba(40,230,80,0.28)"/>
 ${z.features.map((f) => mark(f.x, f.y, COLOR[f.kind] ?? '#fff', 10, f.kind === 'exit' ? f.name ?? '' : '')).join('')}
-${w.npcs.filter((n) => n.zoneId === z.id).map((n) => mark(n.x, n.y, '#ffffff', 8, n.name)).join('')}
+${w.npcs.filter((n) => n.zoneId === z.id && !n.companion).map((n) => mark(n.x, n.y, '#ffffff', 8, n.name)).join('')}
 ${z.spawns.map((s) => mark(s.x, s.y, s.bossId ? '#ff0000' : '#e06040', s.bossId ? 12 : 6)).join('')}
 ${mark(z.entry.x, z.entry.y, '#00ff00', 14, 'entry')}
 ${here ? mark(here[0]!, here[1]!, '#ff00ff', 14, 'here') : ''}

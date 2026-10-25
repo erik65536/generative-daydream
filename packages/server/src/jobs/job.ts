@@ -127,13 +127,18 @@ export class Job {
     this.touch();
   }
 
-  /** Finish one stage. */
+  /** Finish one stage. A stage still running alongside it becomes what the job is doing now. */
   end(id: string) {
     const p = this.phases.find((x) => x.id === id);
     if (!p || p.status === 'done') return;
     p.status = 'done';
     p.startedAt ??= Date.now();
     p.endedAt = Date.now();
+    const still = this.phases.findLast((x) => x.status === 'active');
+    if (still) {
+      if (this.stepBeforeWait) this.stepBeforeWait = still.label;
+      else this.step = still.label;
+    }
     this.touch();
   }
 

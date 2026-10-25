@@ -86,6 +86,18 @@ describe('durable jobs', () => {
     expect((globalDb().prepare('SELECT status FROM jobs WHERE world_id = ?').get(worldId) as { status: string }).status).toBe('done');
   });
 
+  it('when one of two stages running together ends, the other is what the job shows it is doing', () => {
+    const job = new Job(wid(), input, owner);
+    job.plan([{ id: 'places', label: 'Painting places' }, { id: 'balance', label: 'Balancing' }]);
+    job.begin('places');
+    job.push('Painting places', 'step');
+    job.begin('balance');
+    job.push('Balancing', 'step');
+    expect(job.step).toBe('Balancing');
+    job.end('balance');
+    expect(job.step).toBe('Painting places');
+  });
+
   it('animation runs beside the world jobs, queued once, after them', () => {
     const w = wid();
     enqueueAnimation(w, owner);
