@@ -32,6 +32,7 @@ const OBJECTS: Record<string, string> = {
   obj_chest: 'a treasure chest or the container this world keeps valuables in',
   obj_sign: 'a free-standing signpost, its face left blank: plain panels with no letters, numbers, symbols or logos',
   obj_waypoint: 'the waypoint marker travellers use to journey between places: a free-standing landmark the size of a person',
+  obj_craft_station: "a free-standing crafting station: a sturdy workbench with this world's tools and materials on it",
 };
 
 /**

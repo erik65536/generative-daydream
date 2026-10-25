@@ -315,7 +315,8 @@ export class DialogueEngine {
 
   private persona(p: PlayerState, def: NpcDef, rt: NpcRuntime): string {
     const w = this.h.ctx.world;
-    const zone: ZoneDef | undefined = this.h.ctx.zones.get(rt.zoneId);
+    // A companion is wherever the party is.
+    const zone: ZoneDef | undefined = this.h.ctx.zones.get(def.companion ? p.zoneId : rt.zoneId);
     const disp = this.disposition(rt, p.userId);
     const mems = rt.memories.filter((m) => m.about === p.userId || m.about === 'world').slice(-12);
     const label = disp > 60 ? 'deep trust and affection' : disp > 25 ? 'friendly' : disp > -10 ? 'neutral, still forming an opinion' : disp > -40 ? 'wary and unfriendly' : 'hostile and contemptuous';

@@ -32,6 +32,7 @@ const OBJECT_ART: Record<string, { key: string; height: number }> = {
   chest: { key: 'obj_chest', height: 0.85 },
   sign: { key: 'obj_sign', height: 1.7 },
   waypoint: { key: 'obj_waypoint', height: 2.1 },
+  craft_station: { key: 'obj_craft_station', height: 1.1 },
 };
 /** Features one uses (they glow when near). Doors and ways out light up on hover. */
 const USABLE = new Set(['chest', 'sign', 'lore', 'craft_station', 'waypoint', 'object']);
@@ -527,7 +528,7 @@ export class Renderer {
     }
   }
 
-  /** A world object's art (a chest, open or shut; a sign; the waypoint), scaled to its height. */
+  /** A world object's art (a chest, open or shut; a sign; the waypoint; the crafting station), scaled to its height. */
   private objectArt(f: FeatureDef, opened?: boolean): HTMLCanvasElement | null {
     const o = OBJECT_ART[f.kind];
     if (!o) return null;
