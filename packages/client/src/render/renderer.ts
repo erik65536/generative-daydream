@@ -1533,7 +1533,8 @@ export class Renderer {
   /** The fog of war of each square metre in view: unexplored, or how dim remembered ground is (a veil once out of sight). */
   private visibleFog(w: number, h: number, write: (x: number, y: number, unseen: boolean, dim: number) => void) {
     const st = this.client.state;
-    const party = [...st.entities.values()].filter((e) => e.ownerUserId === st.userId).map((e) => this.client.entityPos(e));
+    // What the party sees from: its own figures and, in a fight, everyone in it (a fight is never in the dark).
+    const party = [...st.entities.values()].filter((e) => e.ownerUserId === st.userId || (st.combat && e.inCombat && !e.dead)).map((e) => this.client.entityPos(e));
     const view = [this.screenToGround(0, 0), this.screenToGround(this.W, 0), this.screenToGround(0, this.H), this.screenToGround(this.W, this.H)];
     const x0 = Math.max(0, Math.floor(Math.min(...view.map((v) => v.x))) - 3), x1 = Math.min(w - 1, Math.ceil(Math.max(...view.map((v) => v.x))) + 3);
     const y0 = Math.max(0, Math.floor(Math.min(...view.map((v) => v.y))) - 3), y1 = Math.min(h - 1, Math.ceil(Math.max(...view.map((v) => v.y))) + 3);
@@ -1545,8 +1546,8 @@ export class Renderer {
         }
         let d = 99;
         for (const p of party) d = Math.min(d, Math.hypot(p.x - x, p.y - y));
-        // Remembered-but-unseen ground dims smoothly with distance from the party.
-        write(x, y, false, d > 13 ? 0.45 : d > 8 ? ((d - 8) / 5) ** 1.5 * 0.45 : 0);
+        // Remembered-but-unseen ground dims smoothly past sight range (11 m, as far as the party uncovers).
+        write(x, y, false, d > 16 ? 0.45 : d > 11 ? ((d - 11) / 5) ** 1.5 * 0.45 : 0);
       }
   }
 

@@ -781,18 +781,15 @@ export class GameInstance implements CombatHost {
   }
 
   /**
-   * The ground a character sees around it is remembered (per square metre): within sight range and not behind a
-   * building (the place's sight plan; the near face of a building is seen, what lies past it is not).
+   * The ground a character sees around it is remembered (per square metre): all of it within sight range, as the
+   * client shows at once. (The sight plan reads trees and bushes as walls; fog by it hid fights a few metres away.
+   * Aiming in a fight still needs a clear line.)
    */
   private explore(p: PlayerState, def: ZoneDef, at: Vec2) {
     const { w, h } = fogSize(def);
     const bs = new BitSet(w * h, p.explored[def.id]);
-    const nav = this.ctx.map(def.id).nav;
     let changed = false;
-    for (const t of tilesInRadius(Math.round(at.x), Math.round(at.y), SIGHT_RADIUS, w, h)) {
-      const i = t.y * w + t.x;
-      if (!bs.get(i) && nav.sees(at, t) && bs.set(i)) changed = true;
-    }
+    for (const t of tilesInRadius(Math.round(at.x), Math.round(at.y), SIGHT_RADIUS, w, h)) if (bs.set(t.y * w + t.x)) changed = true;
     if (changed) p.explored[def.id] = bs.encode();
   }
 

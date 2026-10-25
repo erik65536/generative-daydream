@@ -57,6 +57,9 @@ function scoreSkill(c: Combat, a: Actor, skill: SkillDef, target: Actor | undefi
           const ehp = t.hp + t.barrier;
           score += Math.min(dmg, ehp + unit) / unit;
           if (dmg >= ehp) score += 3;
+          // The player's heroes fight as a party: they finish the most wounded foe first, so their blows land on one
+          // enemy rather than spreading thin. (Creatures keep their own ways, which the rules were balanced against.)
+          if (a instanceof CharActor && !skill.radius) score += (1 - ehp / Math.max(1, ts.maxHp)) * 2.5 + Math.min(1, dmg / Math.max(1, ehp)) * 1.5;
           break;
         }
         case 'heal': {
