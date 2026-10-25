@@ -186,17 +186,20 @@ export class Nav {
   /** Indices of walkable cells within r metres of p. */
   /**
    * Where a party coming in at `at` (a way out at the map's edge, or a door) stands: the nearest open ground by walking,
-   * a step or more away, so it does not arrive lined up single file in a narrow way in. The most open spot within
-   * `within` metres when none is open all round.
+   * a step or more away and never nearer the map's edge (the way out's cleared gap through the barrier is open too),
+   * so it does not arrive lined up single file in a narrow way in. The most open spot within `within` metres when
+   * none is open all round.
    */
   arrival(at: Vec2, within = 8): Vec2 {
     const start = this.walkable(at.x, at.y) ? at : this.nearestWalkable(at);
     if (!start) return at;
+    const W = this.cols * NAV_CELL, H = this.rows * NAV_CELL, edge = (p: Vec2) => Math.min(p.x, p.y, W - p.x, H - p.y);
     const R = 1.5, full = this.cellsWithin(this.centre(Math.floor(this.cols / 2), Math.floor(this.rows / 2)), R, false).length;
     let best: { p: Vec2; open: number } | undefined;
     for (const [i, cost] of [...this.reach(start, within)].sort((a, b) => a[1] - b[1])) {
-      if (cost < 1.5) continue;
-      const p = this.centre(i % this.cols, Math.floor(i / this.cols)), open = this.cellsWithin(p, R).length;
+      const p = this.centre(i % this.cols, Math.floor(i / this.cols));
+      if (cost < 1.5 || edge(p) < edge(start)) continue;
+      const open = this.cellsWithin(p, R).length;
       if (open >= 0.95 * full) return p;
       if (!best || open > best.open) best = { p, open };
     }

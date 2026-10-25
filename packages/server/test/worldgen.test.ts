@@ -29,9 +29,9 @@ describe('world generation', () => {
 
 describe('populating a place', () => {
   it('a party coming in through a narrow way in stands on the open ground past it', () => {
-    // A 2 m path down from the top edge, 10 m long, into a 14 m clearing.
-    const nav = new Nav(makeNav(30, 30, (x, y) => (x > 14 && x < 16 && y < 10) || (x > 8 && x < 22 && y >= 10 && y < 24)));
-    const a = nav.arrival({ x: 15, y: 1 }, 14);
+    // A 4 m gap through the barrier at the top edge, then a 2 m path 7 m long, into a 14 m clearing.
+    const nav = new Nav(makeNav(30, 30, (x, y) => (x > 13 && x < 17 && y < 3) || (x > 14 && x < 16 && y < 10) || (x > 8 && x < 22 && y >= 10 && y < 24)));
+    const a = nav.arrival({ x: 15, y: 4 }, 14);
     expect(a.y).toBeGreaterThan(10);
     expect(nav.walkable(a.x, a.y)).toBe(true);
     // A door on open ground: a step off it.
