@@ -106,7 +106,7 @@ Define the cast first, then reference them by "key":
 - Each arc has 2-4 quests. Each quest has 1-6 objectives in order. Objective types:
   talk (npcKey) — speak to someone; kill_unique (bossKey) — defeat a boss; kill (familyHint, count, optional zoneSlot) — defeat monsters of a family;
   collect (itemKey, optional zoneSlot where it is found) — obtain an item; deliver (itemKey + npcKey) — hand an item to someone;
-  reach (zoneSlot) — travel somewhere; interact (zoneSlot) — activate something there (describe it); persuade (npcKey) — convince someone of something in conversation (describe what).
+  reach (zoneSlot) — travel somewhere; interact (zoneSlot, thing) — activate something there (describe it; "thing" is its short name); persuade (npcKey) — convince someone of something in conversation (describe what).
 - Use the quest giver's key for "giverKey" (it must be a keyNpc). Make quests feel like a story, not a checklist: vary objective types, include at least one persuade objective somewhere, and let later quests pay off earlier ones.
 - "ending": the epilogue narration after the final boss falls.`;
 }
@@ -138,7 +138,7 @@ Nearby places: ${ctx.nearbyZones.join(', ')}. Local threats: ${ctx.families.join
 Create:
 1. "npcs": ${ctx.npcCount} additional residents (do not repeat the story characters). These roles are required, each as its own resident (one person per role): ${ctx.requiredRoles.join(', ')} (these are game functions; give them titles, trades and greetings that fit this world, e.g. a capsule-hotel manager rather than an innkeeper on a space station); fill the rest with commoners, guards, nobles or mystics. Merchants need a merchantKind (general, weapons, armor, alchemy, magic, materials). Give each a real personality, a want, 1-4 things they know ("knowledge", gossip that connects to the world), optional secrets, a speaking "voice", a greeting line and 2-3 short ambient barks. "friends" lists names of other residents they talk to.
 2. "buildings": names for the town's buildings (inn, shops, workshops, homes) with their purpose.
-3. "sideQuests": ${ctx.sideQuests} local side quests given by residents (giverName must be one of your npcs or story characters). Objective types: talk/persuade (target = person's name), kill (target = monster family name, with count), collect (target = item name to find, it will be hidden nearby), deliver (target = person to give the collected item to), reach (target = place name), interact (target = place name; describe the thing). Make them human and specific; some should have a twist or a choice in the final conversation.
+3. "sideQuests": ${ctx.sideQuests} local side quests given by residents (giverName must be one of your npcs or story characters). Objective types: talk/persuade (target = person's name), kill (target = monster family name, with count), collect (target = item name to find, it will be hidden nearby), deliver (target = person to give the collected item to), reach (target = place name), interact (target = place name; describe the thing, and give its short name as "thing"). Make them human and specific; some should have a twist or a choice in the final conversation.
 4. "signText": the text on the sign at the town entrance.`;
 }
 

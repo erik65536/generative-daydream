@@ -34,6 +34,11 @@ export interface Draft {
 const zid = (slot: string) => `z_${slot}`;
 const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
 const capital = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+/** The label of a thing a quest has the player use: its short name, or its description less the verb, cut at a word. */
+const thingName = (o: { thing?: string; description: string }) => {
+  const s = (o.thing || o.description.replace(/^(activate|use|touch|light|open|inspect|examine|search|study|check)\s+/i, '')).trim();
+  return capital(s.length <= 48 ? s : s.slice(0, s.lastIndexOf(' ', 48)).replace(/[\s,;:]+(and|or|the|a|of)?$/i, ''));
+};
 
 /** Best fuzzy match of a free-text reference against named things. */
 export function fuzzy<T>(ref: string | undefined, items: T[], name: (t: T) => string): T | undefined {
@@ -315,7 +320,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
             const slot = o.zoneSlot && slotById.has(o.zoneSlot) ? o.zoneSlot : sk.slots.find((s) => s.regionIndex === regionIndex && s.kind !== 'town')?.slotId;
             if (!slot) break;
             const fid = `fx_${id}_${oi}`;
-            interactFeatures.push({ zoneId: zid(slot), featureId: fid, name: o.description.replace(/^(activate|use|touch|light|open|inspect|examine)\s+(the\s+)?/i, '').slice(0, 48) });
+            interactFeatures.push({ zoneId: zid(slot), featureId: fid, name: thingName(o) });
             objectives.push({ ...base, type: 'interact', featureId: fid, zoneId: zid(slot) });
             break;
           }
@@ -415,7 +420,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
         } else if (o.type === 'interact') {
           const z = fuzzy(o.target ?? o.description, sk.slots, (s) => zoneInfo(s.slotId)?.name ?? '') ?? nearbyHunting[0] ?? t;
           const fid = `fx_${id}_${oi}`;
-          interactFeatures.push({ zoneId: zid(z.slotId), featureId: fid, name: (o.target ?? o.description).slice(0, 48) });
+          interactFeatures.push({ zoneId: zid(z.slotId), featureId: fid, name: thingName(o) });
           objectives.push({ ...base, type: 'interact', featureId: fid, zoneId: zid(z.slotId) });
         } else if (o.type === 'disarm' && systems.traps) objectives.push({ ...base, type: 'disarm', count: o.count ?? 2 });
         else if (o.type === 'craft' && systems.crafting) objectives.push({ ...base, type: 'craft', count: o.count ?? 1 });

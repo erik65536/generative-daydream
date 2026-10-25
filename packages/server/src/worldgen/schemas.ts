@@ -72,6 +72,7 @@ export function storySchema(townSlots: string[], lairSlots: string[], allSlots: 
     bossKey: z.string().optional(),
     itemKey: z.string().optional(),
     zoneSlot: z.enum(allSlots as [string, ...string[]]).optional(),
+    thing: z.string().optional().describe('For interact: the short name of the thing to use, as a label ("the empty Lantern stand").'),
     familyHint: z.string().optional(),
     count: z.coerce.number().int().min(1).max(12).optional(),
   });
@@ -192,6 +193,7 @@ const sideObjective = z.object({
   type: z.enum(OBJECTIVE_TYPES),
   description: str(240),
   target: z.string().optional().describe('Name of the NPC, monster family, item, or place this objective refers to.'),
+  thing: z.string().optional().describe('For interact: the short name of the thing to use, as a label ("the empty Lantern stand").'),
   count: z.coerce.number().int().min(1).max(12).optional(),
 });
 

@@ -160,7 +160,7 @@ export class DialogueEngine {
     const involved = this.involvedQuests(p, def.id);
     const persuade = involved.flatMap((q) => q.objectives.filter((o, i) => i === q.current && o.type === 'persuade' && o.npcId === def.id));
     if (persuade[0]) out.push(`About ${persuade[0].description.toLowerCase().replace(/^persuade\s+\S+\s+(to\s+)?/, '')}...`.slice(0, 80));
-    if (def.role === 'innkeeper') out.push('I need a room for the night.');
+    if (def.role === 'innkeeper') out.push('What do you have to eat and drink?');
     if (this.teachList(def, p).length) out.push('Can you teach me something?');
     out.push(`What's the news around here?`);
     out.push('Farewell.');
