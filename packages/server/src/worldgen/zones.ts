@@ -1,9 +1,9 @@
 /**
  * A place, from design to game data: Luna plans it, it is painted as a big top-down map (mapdraw.ts: the whole place
- * once, enlarged and detailed, then its exits and barrier), Luna decides where everything goes, and the map is
- * resampled to game scale and turned into ground metres (the navigation grid, every door, exit, person, chest, trap
- * and monster pack). Where people can walk is a stand-in for now (everywhere but the barrier, which opens at the
- * exits) until a new reader replaces readMap and repairMap, which are kept but not used. See docs/places.md.
+ * once, enlarged and detailed, then its exits and barrier), it is read (where people can walk, made usable without
+ * repainting: mapread.ts, mapfix.ts), Luna decides where everything goes, and the map is resampled to game scale and
+ * turned into ground metres (the navigation grid, every door, exit, person, chest, trap and monster pack). See
+ * docs/places.md.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,7 +18,8 @@ import { upscale } from './comfy';
 import type { GpuQueue } from './gpu';
 import { BARRIER_DEPTH_M, EXIT_GAP_M, MAP_STEPS, PAINT_PXM, makeMap, mapPixels, planMap, type MapBrief, type MapExit, type MapPlan } from './mapdraw';
 import { CELL, type Grid, type Side } from './mapgrid';
-import { arbitrate, checkNames, classView, detectAll, nameThings, qwenCells, samCells, type MapRead, type Spot } from './mapread';
+import { fixMap } from './mapfix';
+import { BUILDING_PLAN, entrances, judgeArea, judgeWater, landmarks, readPlan, settle, WALK_READINGS, type PlanCells, type Spot } from './mapread';
 import { candidates, place, pxPerMetre, type Candidate, type MapReading, type PlaceNeeds } from './placement';
 import { MIST_SIZE, measureLight, paintMist, type MistBrief } from './atmosphere';
 import { normColor } from './schemas';
@@ -231,72 +232,68 @@ export async function paintAndRead(w: WorldLook, s: PlaceSketch, ctx: PlaceConte
   });
   const r = made.review;
   ctx.report(`${s.name}: map made (Sol: fun ${r.fun}, coherence ${r.coherence}, theme ${r.theme}${r.usable ? ', usable as is' : `; ${r.problems.slice(0, 200)}`})`);
-  return { plan, seed: ctx.seed, canvas: made.png, reading: standInReading(s.kind, made.exits) };
+  const reading = await readPlace(draft, made.png, s, made.exits, ctx);
+  return { plan, seed: ctx.seed, canvas: made.png, reading };
 }
 
 /**
- * Where people can walk until the new reader exists: everywhere except the painted barrier band round the edge, which
- * opens at the ways out; each way out is a spot just inside its gap. No entrances or landmarks are found.
+ * Read a painted map (mapread.ts, then mapfix.ts): Qwen's plans of it, Luna where they split and on its water, the
+ * fixes that make it usable, and its entrances, landmarks and ways out. Every step is saved per map, so a resumed
+ * build picks up where it stopped.
  */
-export function standInReading(kind: ZoneKind, exits: MapExit[]): MapReading {
-  const { W, H, X, Y } = mapPixels(kind);
+export async function readPlace(draft: PlaceDraft, map: Buffer, s: PlaceSketch, exits: MapExit[], ctx: PlaceContext): Promise<MapReading> {
+  const { W, H, X, Y } = mapPixels(s.kind);
   const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
-  const band = Math.ceil(BARRIER_DEPTH_M / CELL), half = EXIT_GAP_M / CELL / 2;
-  const inGap = (r: number, c: number) => exits.some((e) => {
-    const a = e.at * (e.side === 'top' || e.side === 'bottom' ? g.cols : g.rows);
-    return e.side === 'top' ? r < band && Math.abs(c - a) < half : e.side === 'bottom' ? r >= g.rows - band && Math.abs(c - a) < half
-      : e.side === 'left' ? c < band && Math.abs(r - a) < half : c >= g.cols - band && Math.abs(r - a) < half;
-  });
-  const walk = new Uint8Array(g.cols * g.rows);
-  for (let r = 0; r < g.rows; r++)
-    for (let c = 0; c < g.cols; c++) if (Math.min(r, c, g.rows - 1 - r, g.cols - 1 - c) >= band || inGap(r, c)) walk[r * g.cols + c] = 1;
+  const tag = `${ctx.seed}`, place = { name: s.name, description: s.description };
+  const band = Math.ceil(BARRIER_DEPTH_M / CELL), gap = EXIT_GAP_M / CELL;
+  const plans: PlanCells[] = [];
+  for (const [i, plan] of [...WALK_READINGS, BUILDING_PLAN].entries()) {
+    const name = (part: string) => `read${i}_${part}_${tag}`;
+    const saved = await Promise.all(['walk', 'water', 'building'].map((p) => draft.cells(name(p), g)));
+    if (saved.every(Boolean)) {
+      plans.push({ walk: saved[0]!, water: saved[1]!, building: saved[2]! });
+      continue;
+    }
+    const read = await ctx.gpu.run('reader', ctx.priority, () => readPlan(map, g, plan, ctx.seed));
+    for (const p of ['walk', 'water', 'building'] as const) await draft.saveCells(name(p), read[p], g);
+    plans.push(read);
+  }
+  const walkPlans = plans.slice(0, WALK_READINGS.length), building = plans[plans.length - 1]!.building;
+  let open = await draft.cells(`open_${tag}`, g);
+  if (!open) {
+    const st = await settle(map, walkPlans.map((p) => p.walk), g, place);
+    const wet = await judgeWater(map, st.open, walkPlans.map((p) => p.water), g, band, place);
+    ctx.report(`${s.name}: Qwen's readings agree on ${Math.round(st.agree * 100)}% of the map; Luna settled the rest (${st.looks} looks)${wet ? `, and ${wet} water patches people can walk across` : ''}`);
+    open = st.open;
+    await draft.saveCells(`open_${tag}`, open, g);
+  }
+  let walk = await draft.cells(`walk_${tag}`, g);
+  let fixedOpen = await draft.cells(`fixed_${tag}`, g);
+  if (!walk || !fixedOpen) {
+    const keep = async (cells: number[]) => (await judgeArea(map, W, H, cells, g, place, 'reach').catch(() => 1)) > 0.5;
+    const f = await fixMap(open, g, exits, band, gap, keep);
+    ctx.report(`${s.name}: ${f.joined} cut-off areas joined, ${f.left} left out${f.exits ? `, ${f.exits} ways out opened` : ''}`);
+    walk = f.walk;
+    fixedOpen = f.open;
+    await draft.saveCells(`walk_${tag}`, walk, g);
+    await draft.saveCells(`fixed_${tag}`, fixedOpen, g);
+  }
+  const water = Uint8Array.from(fixedOpen, (_, i) => (2 * walkPlans.reduce((a, p) => a + p.water[i]!, 0) > walkPlans.length ? 1 : 0));
   const inset = (BARRIER_DEPTH_M + 2) * PAINT_PXM;
   const edges: Spot[] = exits.map((e) => {
     const a = e.at * (e.side === 'top' || e.side === 'bottom' ? W : H);
     return { x: e.side === 'left' ? inset : e.side === 'right' ? W - inset : a, y: e.side === 'top' ? inset : e.side === 'bottom' ? H - inset : a, label: e.side };
   });
-  return { width: W, height: H, X, Y, grid: g, walk, sight: new Uint8Array(g.cols * g.rows).fill(1), doors: [], edges, landmarks: [], area: walk.reduce((a, v) => a + v, 0) * CELL * CELL };
-}
-
-/**
- * Read a map: SAM's names (checked once by Luna), Qwen's plan, and Luna where they disagree. Saved per map. Not used
- * while the stand-in reading is (it was made for maps of about 1.4 MP; Qwen's plan of a whole big map runs out of
- * memory, and SAM's masks grow with the picture).
- */
-export async function readMap(draft: PlaceDraft, map: Buffer, s: PlaceSketch, seed: number, ctx: PlaceContext) {
-  const { X, Y } = mapPixels(s.kind);
-  const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
-  const { width: W } = (await sharp(map).metadata()) as { width: number };
-  const pxm = W / X;
-  let read = draft.json<MapRead>(`names_${seed}`);
-  let detected;
-  if (read) detected = await ctx.gpu.run('reader', ctx.priority, () => detectAll(map, read!, g, pxm));
-  else {
-    read = await nameThings(map, s.name, s.description);
-    detected = await ctx.gpu.run('reader', ctx.priority, () => detectAll(map, read!, g, pxm));
-    const fix = await checkNames(await classView(map, detected, g), s.name, read);
-    if (fix) {
-      ctx.report(`${s.name}: ${fix.mistakes.join('; ').slice(0, 300)}`);
-      read = fix.read;
-      detected = await ctx.gpu.run('reader', ctx.priority, () => detectAll(map, read!, g, pxm));
-    }
-    draft.saveJson(`names_${seed}`, read);
-  }
-  draft.saveFile(`classes_${seed}.jpg`, await classView(map, detected, g));
-  const { open: samOpen, sight } = samCells(detected);
-  const qwen = (await draft.cells(`qwen_${seed}`, g)) ?? (await ctx.gpu.run('reader', ctx.priority, () => qwenCells(map, g)));
-  await draft.saveCells(`qwen_${seed}`, qwen, g);
-  let open = await draft.cells(`open_${seed}`, g);
-  let agree = draft.json<number>(`agree_${seed}`) ?? 0;
-  if (!open) {
-    const arb = await arbitrate(map, samOpen, qwen, g);
-    open = arb.open;
-    agree = +arb.agree.toFixed(3);
-    ctx.report(`${s.name}: readers agree on ${Math.round(arb.agree * 100)}% of the map; Luna settled ${arb.patches} patches (${arb.calls} looks)`);
-    await draft.saveCells(`open_${seed}`, open, g);
-    draft.saveJson(`agree_${seed}`, agree);
-  }
-  return { detected, open, sight, agree };
+  return {
+    width: W, height: H, X, Y, grid: g, walk,
+    // Buildings block sight; the rest of what blocks walking is mostly low (props, rocks) or seen through (trees' gaps).
+    sight: Uint8Array.from(building, (v) => (v ? 0 : 1)),
+    // Entrances only where the place has buildings (a dungeon's dark stone can come out as "building" in the plan).
+    doors: s.buildings.length ? entrances(building, walk, g, W, H) : [],
+    edges,
+    landmarks: landmarks(fixedOpen, walk, building, water, g, W, H),
+    area: walk.reduce((a, v) => a + v, 0) * CELL * CELL,
+  };
 }
 
 /** Design, paint and read a place, and turn it into game data. */
@@ -378,7 +375,7 @@ export function groundOf(r: MapReading, k: number): { width: number; height: num
     return c < 0 || rr < 0 || c >= r.grid.cols || rr >= r.grid.rows ? -1 : rr * r.grid.cols + c;
   };
   // A cell is walkable when any part of it is (its centre and eight points 0.2 m out): the plan already keeps a
-  // character's centre 0.35 m from obstacles, and the pathfinder never cuts corners, so a diagonal passage sampled at
+  // character's centre CLEARANCE from obstacles, and the pathfinder never cuts corners, so a diagonal passage sampled at
   // cell centres alone would break into corner-touching cells.
   const Q = NAV_CELL / 2.5, AROUND = [-Q, 0, Q].flatMap((dx) => [-Q, 0, Q].map((dy) => [dx, dy] as const));
   for (let cy = 0; cy < rows; cy++)
