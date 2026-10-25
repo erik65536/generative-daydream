@@ -25,14 +25,3 @@ export function kindColor(id: string | undefined, fallback = '#ffffff'): string 
 export function statusName(id: string): string {
   return (current && rx(current).status.get(id)?.name) ?? id;
 }
-
-/** Weapon shape for procedural figures, from the item in the weapon slot. */
-export function weaponVisual(ch: { equipment: Record<string, { baseId: string } | undefined> }): string | undefined {
-  const r = current;
-  if (!r) return undefined;
-  const ix = rx(r);
-  const slot = r.slots.find((s) => s.kind === 'weapon');
-  const it = slot ? ch.equipment[slot.id] : undefined;
-  const icon = it ? ix.item.get(it.baseId)?.icon : undefined;
-  return icon && ['sword', 'axe', 'dagger', 'bow', 'staff', 'wand'].includes(icon) ? icon : undefined;
-}

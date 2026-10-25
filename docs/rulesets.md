@@ -19,7 +19,7 @@ LLM ── RulesetIntent ──► compiler (power budget) ──► Ruleset ─
 | Resolution | Random rolls: damage variance, crit chance, dodge chance (either can be 0 / disabled). No armour-as-health. |
 | Recovery | Health and pools always regenerate out of combat; every fight starts fresh, so encounters are balanced individually. |
 | Decisions | No meta effects: nothing skips a turn, nothing forces a target (no sleep, stun-skip or taunt). Control effects restrict options instead: root, silence, disarm, slow (−AP). Control is followed by immunity. |
-| Party | Solo, up to 4 player-controlled, or 1 player + up to 3 AI companions. |
+| Party | Solo, four player-controlled heroes, or the player plus three AI companions made with the world. |
 | Space | Line of sight for every ranged effect; no attacks of opportunity, flanking or cover (yet). |
 | Inventory | Slot-limited (no weight); stacking materials and potions; purchasable inventory upgrades. One currency. |
 | Out of scope | Durability, ammo, hunger/survival, factions/reputation, stealth (later), summons (later), respec. |
@@ -30,7 +30,7 @@ Health (always), 0–N skill pools, AP (when the turn model uses it), 3–N attr
 types each with a mitigation stat, 0–N subtypes each with a resistance (capped; absorbing a subtype is an explicit
 effect, never overflow), statuses built from primitives (damage/heal over time, stat modifiers, control), optional
 surfaces, 3–N equipment slots, item bases, affixes and rarities, potions, materials, optional crafting / upgrades /
-enchanting, kins (races), classes with an upgrade tree, class-restricted skills with ranks, monster roles, traps,
+enchanting, fast travel, 1-4 kins (each one gender, with its own look), classes with an upgrade tree, class-restricted skills with ranks, monster roles, traps,
 progression (level curve solved from the world's content), economy, inventory, difficulty profiles, terminology.
 
 ### Upgrade trees
@@ -65,8 +65,14 @@ Headless, synchronous combat core (the same code the game runs) on small arenas:
 
 The report (targets vs achieved) is stored with the ruleset and shown on the world page.
 
-## Versioning
+## Words
 
-`ruleset.version` is bumped when the schema changes; older rulesets are migrated forward (features they lack are
-simply off). Until release we don't keep migrations for old versions — a world can **regenerate its rules** (keeping
-lore and art) or **rebalance** (same intent, new engine numbers).
+Players must understand every rule word at first sight. Rules use plain, familiar game words (Health, Experience,
+Gold, Fire, Poison, Strength...) and rename one only when the theme truly calls for it, to a word anyone recognises
+(Credits on a space station, Hull for a ship). The theme shows in skills, items, classes and descriptions.
+
+## Regenerating
+
+There are no migrations: a world made under other rules can **regenerate its rules** (keeping lore and art; its
+heroes are painted again for the new classes and kins, its companions keep their places in a class of the same role)
+or **rebalance** (same intent, new engine numbers). Reveries begun under regenerated rules cannot be continued.

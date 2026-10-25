@@ -10,7 +10,7 @@ There is one GPU (16 GB, on the GPU PC) and more than one installation of the ga
 - development on the GPU PC itself;
 - later, perhaps a second checkout or a CLI run.
 
-Today each installation decides GPU turns with a lease in **its own** SQLite database (`genai/gpu.ts`), so the
+Before the broker, each installation decided GPU turns with a lease in **its own** SQLite database, so the
 installations cannot see each other. Two things go wrong when they overlap:
 - **Both sides switch models freely.** The game unloads ComfyUI (`/free`) between Krea, SAM 3 and SeedVR2,
   because together they do not fit. Production and development, each unaware of the other, interleave their
@@ -186,9 +186,8 @@ slow, a `render` adapter on the GPU PC takes the rig files and returns the sheet
 2. **A rank on every prompt.** `PromptTag` (`gpu/presence.ts`) gains `rank`, taken from the call's priority in
    `callContext()`: interactive 0, studio 1, background 2, animation 3. The Python steps already receive the tag
    through `GD_PROMPT_TAG`.
-3. **No in-game GPU lease for a remote GPU.** Give the `comfy` provider the broker's URL and token, and **no**
-   `gpu` group. The game's `onGpu` then runs the call directly; that code path already exists for providers
-   without a group. `genai/gpu.ts` stays for anyone who runs ComfyUI without the broker.
+3. **No in-game GPU lease.** The `comfy` provider has the broker's URL and token. The game's own lease and
+   unloading (`genai/gpu.ts`) are gone: the broker is the only door to the GPU.
 4. **A build's own GPU order stays.** `worldgen/gpu.ts` (`GpuQueue`) still orders one build's work, so each place
    is painted, read and upscaled before the next starts, and the build's own steps are not interleaved. The broker
    orders between callers, and the build orders within itself.
@@ -218,8 +217,7 @@ slow, a `render` adapter on the GPU PC takes the rig files and returns the sheet
      (`withBrokerHold` in `genai/comfyclient.ts`) until the SkinTokens adapter of stage 3.
    - **To use it in development:**
      - Copy `config/broker.example.json` to `config/broker.json` and start it with `npm run broker`.
-     - In `config/genai.json`, give the `comfy` provider `"baseUrl": "http://127.0.0.1:8190"` and
-       `"broker": true`. Its `gpu` group is then ignored.
+     - In `config/genai.json`, give the `comfy` provider `"baseUrl": "http://127.0.0.1:8190"`.
      - Requests from this PC need no token.
 2. **Production through the broker.** Firewall on 8190, ComfyUI on localhost only. Check it by running a
    production build and a development build at once and watching the broker's queue and VRAM.

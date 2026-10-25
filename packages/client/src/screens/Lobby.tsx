@@ -52,7 +52,7 @@ export function Lobby({ me, onLogout }: { me: Me; onLogout: () => void }) {
             <div className="col" style={{ alignItems: 'center', gap: 6 }}>
               <div className="display gold" style={{ fontSize: 40, lineHeight: 1 }}>+</div>
               <div className="display gold">Dream a new daydream</div>
-              <div className="muted small">Describe a setting; the engine builds the rest.</div>
+              <div className="muted small">Describe a theme; the engine builds the rest.</div>
             </div>
           </div>
           {mine.map((w) => (

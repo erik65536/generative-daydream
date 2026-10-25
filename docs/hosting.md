@@ -49,7 +49,7 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
      `"apiKey": "credential:gpu-broker"`.
    - The broker token is a long random string (`openssl rand -hex 32`). It is stored as the `gpu-broker`
      credential on the box, and under the client `prod` in the GPU PC's `config/broker.json`.
-   - No `animation` block, and no llama.cpp providers.
+   - No `animation` block.
    - Keep the `spending` caps.
 
    Make it readable by `gd` only:

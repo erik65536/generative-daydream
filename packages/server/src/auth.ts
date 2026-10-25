@@ -7,7 +7,12 @@ export function cookie(req: Request | http.IncomingMessage, name: string): strin
   const raw = req.headers.cookie ?? '';
   for (const part of raw.split(';')) {
     const [k, ...v] = part.trim().split('=');
-    if (k === name) return decodeURIComponent(v.join('='));
+    if (k !== name) continue;
+    try {
+      return decodeURIComponent(v.join('='));
+    } catch {
+      return undefined; // a malformed cookie is no session
+    }
   }
   return undefined;
 }

@@ -20,7 +20,7 @@ export function Account({ me, onMe }: { me: Me; onMe: (me: Me) => void }) {
             <div className="panel-head"><h3>AI budget</h3></div>
             <div className="panel-body col" style={{ gap: 8 }}>
               <Budget spent={me.ai.spentToday} limit={me.ai.limit} />
-              <div className="hint">What building daydreams, painting checks and conversations with people have cost today on paid models. It resets at midnight. Local models are free.</div>
+              <div className="hint">What building daydreams, painting checks and conversations with people have cost today on paid models. It resets at midnight.</div>
             </div>
           </div>
         )}

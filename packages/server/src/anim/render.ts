@@ -35,9 +35,15 @@ function serve(): Promise<{ url: string; close: () => void }> {
   if (server) return Promise.resolve(server);
   return new Promise((resolve) => {
     const s = http.createServer((req, res) => {
-      const url = decodeURIComponent((req.url ?? '/').split('?')[0]!);
+      let url = '';
+      try {
+        url = decodeURIComponent((req.url ?? '/').split('?')[0]!);
+      } catch {
+        /* not a path this page asks for */
+      }
       let file: string | undefined;
-      const m = /^\/job\/([\w-]+)\/([\w.-]+)$/.exec(url);
+      // A job's own files only (no dot names, so nothing outside its folder).
+      const m = /^\/job\/([\w-]+)\/(\w[\w.-]*)$/.exec(url);
       if (m && jobs.has(m[1]!)) file = path.join(jobs.get(m[1]!)!, m[2]!);
       else if (url.startsWith('/three/')) file = path.join(THREE_DIR, path.basename(url));
       else if (url.startsWith('/page/')) file = path.join(PAGE_DIR, path.basename(url));

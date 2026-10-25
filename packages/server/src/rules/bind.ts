@@ -136,6 +136,13 @@ export function bindWorld(w: WorldDefinition, r: Ruleset, classes?: ClassesInten
     const prev = w.origins.find((o) => o.id === c.id) ?? w.origins.find((o) => norm(o.name) === norm(c.name));
     return { id: c.id, name: c.name, description: c.description, appearance: looks.get(norm(c.name)) ?? prev?.appearance ?? `${c.name}, ${c.description}`, assets: prev?.id === c.id ? prev.assets : undefined };
   });
+  // Companions keep their place in the party when the rules are made anew: a class of the same role, a kin.
+  w.npcs.forEach((n, i) => {
+    if (!n.companion) return;
+    if (!rx(r).cls.has(n.companion.classId)) n.companion.classId = (r.classes.find((c) => c.aiRole === n.archetype) ?? r.classes[i % r.classes.length]!).id;
+    if (!rx(r).kin.has(n.companion.kinId)) n.companion.kinId = r.kins[i % r.kins.length]!.id;
+    n.archetype = rx(r).cls.get(n.companion.classId)!.aiRole;
+  });
   // Uniques: find level from where they appear (boss / chest), default mid.
   const levelOf = new Map<string, number>();
   for (const b of w.bosses) for (const u of b.drops) levelOf.set(u, b.level);

@@ -19,8 +19,8 @@ separate images drawn over the maps.
    must grow more than 1.5×) and saved as `place_<zoneId>`; the walk and sight plans become the place's navigation grid; and monster
    packs (in open ground), the boss (in the lair placement chose) and traps are spread by walking distance from the
    way in. Town buildings are painted, never
-   entered: each is someone's workplace (`zone.buildings`), and they stand outside its entrance; a workbench
-   stands in the town. (Worlds from before keep their interiors, which still work.)
+   entered: each is someone's workplace (`zone.buildings`), and they stand outside its entrance; with crafting,
+   the crafting station stands at the crafter's workshop, and with fast travel a waypoint stands in the town.
    While Luna places things, the place's air is made (`atmosphere.ts`, below), and the light its map carries is
    measured from its pixels.
 
@@ -80,12 +80,14 @@ like the painting they stand in. The game never paints past the walkable ground;
 Everything is painted with Krea 2, like the places, so the art is one style. Krea has no transparency: each asset
 is painted on a plain chroma-key backdrop and cut out of it.
 
-1. **Plan** (`art.ts`, `planAssets`): heroes in the presentations of the world's kins (each kin is one), people, creatures, bosses, the objects the
-   game draws over every painting (`obj_chest`, `obj_sign`, `obj_waypoint`), and item icons. Every actor is one
+1. **Plan** (`art.ts`, `planAssets`): a hero for every class and kin (`spr_hero_<class>_<kin>`: the kin's look and
+   gender in the class's outfit; each kin is one gender), people (the companions among them), creatures, bosses, the
+   objects the game draws over the paintings (`obj_chest`, `obj_sign`, `obj_craft_station`, `obj_waypoint` when the
+   world has them), and item icons. Every actor is one
    base image in a neutral standing pose, the view the 3D animation step builds the rigged figure from: **front**
    for people and upright figures, **side** (in profile, facing left) for animals and other body plans. The
    plan records it in `asset.view` (people are planned as front; Luna picks a creature's view). Assets are
-   repainted when missing, failed, changed, or made by an older pipeline (`ART_VERSION`).
+   repainted when missing, failed or changed (or re-rolled by the owner).
 2. **Prompts** (`genai/images.ts`): Luna writes one observer-style paragraph per asset (subjects stand alone: no
    scenery, fog, glows or cast shadow, studio-lit) and, in the same answer, picks its **backdrop**: green
    (#00b140), blue (#0047bb) or magenta (#ff00ff), whichever hue the subject uses least along its outline,
@@ -122,7 +124,7 @@ piece of a swarm. Neutral grey or white backdrops make the score blind (silver, 
 backdrop).
 
 In a build, image work runs on the build's GPU queue (`worldgen/gpu.ts`) with the places, on the same Krea model;
-loading and unloading is the GPU scheduler's job (`genai/gpu.ts`). Animation (walk and attack) is not painted:
+loading and unloading is the GPU broker's job. Animation (walk and attack) is not painted:
 it comes from the 3D-rigged sprite sheets built from the base view; until then the game draws the base image.
 
 ## Characters in motion
@@ -192,8 +194,8 @@ is light and runs beside anything. Costs on an RTX 4090 Laptop: a humanoid about
 and rig seconds, sheets about 20 s), a creature about 5.
 
 **Configuration** (`config/genai.json`, local paths): `animation: { python, library, skintokens?: { dir, python,
-device? }, comfyProvider?, scale?, pitch? }`. Sheets made for an older camera (`ANIM_VERSION`) are rendered again
-from the kept rigs (`cli/animate.ts --redo=render` does one world at once). `python` needs numpy, scipy and Pillow (ComfyUI's embedded Python has them);
+device? }, comfyProvider?, scale?, pitch? }`. Sheets for a changed camera are rendered again from the kept rigs
+(`cli/animate.ts --redo=render` does one world at once). `python` needs numpy, scipy and Pillow (ComfyUI's embedded Python has them);
 without `skintokens` only humanoids are animated. Chromium comes with Playwright (`npx playwright-core install
 chromium`).
 
@@ -221,12 +223,11 @@ Owners open `#/world/<id>/studio` to see and change everything a world is made o
 
 - `src/cli/genlive.ts`: build a world end to end outside the web server.
 - `src/cli/paintworld.ts`: paint (or repaint) a world's character and item art.
-- `src/cli/air.ts`: give a built world's places their mist and measured light (from their saved maps).
-- `src/cli/resettle.ts`: make a world's places again from their saved steps and settle them (`--paint` paints the
-  places that have no top-down map yet, such as a world from the old isometric pipeline).
-- `src/cli/readpeek.ts`: each made map step by step (guide, map and view check, SAM, Qwen, arbitrated, repaired).
+- `src/cli/resettle.ts`: make a world's places again from their saved steps and settle them.
 - `src/cli/animate.ts`: animate a built world's characters and creatures (`--body=<key>:<plan>` to set a body
   plan, `--redo=render|clips|rig|mesh` to redo from a step).
 - `src/cli/placepeek.ts`: a settled place's map with its walkable ground and everything placed in it marked.
-- `src/cli/sheet.ts`: contact sheet of any folder of PNGs on magenta.
+- `src/cli/npctalk.ts`: talk to a world's people with the configured model, without saving (for tuning prompts).
+- `src/cli/strictcheck.ts`: send every model-facing schema to OpenAI in strict mode, so a schema it refuses fails at once.
+- `src/cli/users.ts`: accounts from the console (invite, reset, list).
 - `src/cli/paintpeek.ts`: paint a few of a world's assets into a scratch folder (the world is not changed) and draw a contact sheet: each painting, its cutout on dark and on a loud colour, and its scores.

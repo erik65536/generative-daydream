@@ -58,7 +58,7 @@ about $0.06–0.11 of OpenAI (almost all Sol).
 
 | Setting | Value | Why |
 | --- | --- | --- |
-| Map size | town 3×2 tiles, wilds 4×4, dungeon 4×2 (1024 px each) | Bigger places than one painting allows; the whole-place painting keeps them one design |
+| Map size | chosen per place by the world plan within the world's tile budget: town 2×2 to 3×3 tiles, wilds 2×2 to 4×4, dungeon 2×1 to 4×3 (1024 px each) | Bigger places than one painting allows; the whole-place painting keeps them one design; the plan gives the space to the places the story lingers in |
 | Scale | 40 painted px per metre (`PAINT_PXM`) | Five sizes of a character in the narrowest passages: the size that walks through comfortably was 32 px/m, the one that looks normal 45, on all four test places. 40 leaves characters a little short but never squeezing through (the user's choice); the game draws 46.9, so maps are shown about 1.2× |
 | Global plan | one whole-place painting, best of eight | Tiles outpainted one by one have no global layout; AnyPaint and per-tile masked repaints ignore a whole-place guide; cross-faded tiles ghost |
 | Detail strength | 0.3 over SeedVR2 | Keeps the plan exactly; 0.5 let rooms drift. SeedVR2 alone is consistent but plainer |
@@ -165,4 +165,3 @@ This lifted reach from about 77% to 89% at a few points of precision.
   make repairs more targeted.
 - **Reading edges.** Most remaining reading mistakes are where all of Qwen's plans agree and are wrong: street edges
   lost to buildings drawn a little fat, thin dungeon walls and small props blurred into floor.
-- **Rooms.** New worlds have no building interiors; an older world's room is painted as one tile.

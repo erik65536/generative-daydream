@@ -251,8 +251,9 @@ export async function readPlace(draft: PlaceDraft, map: Buffer, s: PlaceSketch, 
     // Entrances only where the place has buildings: Luna's finds, moved onto Qwen's door marks (marks she missed are
     // kept too), onto the walkable ground, then one per building.
     const doors = async () => {
-      const marks = await ctx.gpu.run('reader', ctx.priority, () => readDoorPlan(map, pxm, ctx.seed));
-      const found = fuseDoors(await findEntrances(map, pxm, place), marks, pxm);
+      // Qwen's door plan (GPU) and Luna's search (OpenAI) at once.
+      const [marks, entrances] = await Promise.all([ctx.gpu.run('reader', ctx.priority, () => readDoorPlan(map, pxm, ctx.seed)), findEntrances(map, pxm, place)]);
+      const found = fuseDoors(entrances, marks, pxm);
       const missed = marks.filter((m) => m.building && found.every((f) => Math.hypot(f.x - m.x, f.y - m.y) >= 2 * pxm)).map((m) => ({ x: m.x, y: m.y, label: 'a building' }));
       return dropSameBuilding(map, pxm, place, ontoWalk([...found, ...missed], walk!, g, W, H));
     };

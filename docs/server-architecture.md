@@ -1,8 +1,9 @@
 # Server architecture: accounts, jobs and model access
 
 The game server answers players; long work (building a world, painting it, rebalancing rules, studio edits)
-runs as **jobs** that survive restarts; every model call goes through one **gateway** that shares scarce models
-fairly. This keeps the server responsive and lets development continue while worlds are being built.
+runs as **jobs** that survive restarts; every model call goes through one **gateway**, and every piece of GPU work
+through the **GPU broker** (docs/gpu-broker.md). This keeps the server responsive and lets development continue
+while worlds are being built.
 
 ## Accounts
 
@@ -62,14 +63,13 @@ Every call (`genai/service.ts`) carries a priority from its context (`genai/cont
 (a player waiting on an NPC: `npc.*`, `narration`), **studio** (an owner editing), **background** (building and
 painting).
 
-- **Local GPU groups** (`genai/gpu.ts`): within a process, calls on a group run one at a time, most urgent
-  first. Across processes, a lease in the database decides who uses the GPU: a process keeps it while it has
-  work (so batches stay on one loaded model), hands it over between calls when someone more urgent waits, and
-  after 90 s to anyone waiting. A process that exits frees it; one that dies loses it within 45 s. The process
-  that takes over unloads whatever another left loaded.
+- **The GPU** is the broker's: every ComfyUI prompt carries its urgency (a player waiting, studio, build,
+  animation) and the broker runs one piece at a time across every installation, unloading one model before the
+  next needs the memory. A build's own `GpuQueue` (`worldgen/gpu.ts`) orders that build's work so each place is
+  painted and read before the next. An administrator's pause holds work before it is sent to the broker.
 - **Back-pressure**: when a provider is busy, rate-limited, overloaded or unreachable, the call waits and
-  retries with backoff instead of failing. Player-facing calls give up after ~12 s (the game falls back to
-  procedural behaviour); background work waits up to `waitForModelsMs` (default 30 min) and its job shows
+  retries with backoff instead of failing. Player-facing calls give up after ~12 s (people then answer with
+  simple rule-based replies); background work waits up to `waitForModelsMs` (default 30 min) and its job shows
   `waiting` with the reason, then carries on.
 - Non-transient errors (bad requests, unparseable output after retries) are tried again a few times; then
   the build stops, to be resumed once the model works.
@@ -84,29 +84,29 @@ one view over them rather than another queue:
 | --- | --- | --- | --- |
 | job queue | `jobs` table | running and waiting jobs (owner, world, priority, step, elapsed, which worker), recent outcomes | cancel / stop, priority, move up or down |
 | build GPU queue | in memory, per build (`worldgen/gpu.ts`) | each build's running and pending GPU tasks | — |
-| GPU scheduler | in memory per process, lease in `gpu_lease` (`genai/gpu.ts`) | who holds each GPU group, the call running (model, job, elapsed), who waits | pause (all, or animation alone) |
-| ComfyUI | its HTTP API | running and pending prompts by origin, recent failures, prompts and images per hour | remove / interrupt a prompt, unload models |
+| GPU broker | its `/broker/queue` | every installation's work, running and waiting, the model it has loaded | — |
+| pauses | `gpu_control`, read by every process | — | pause (all, or animation alone): work waits before it is sent |
+| ComfyUI | its HTTP API, through the broker | running and pending prompts by origin, recent failures, prompts and images per hour | remove / interrupt a prompt |
 | GPU | `nvidia-smi`, else ComfyUI `/system_stats` | VRAM in use, utilisation | — |
 | animator | the `animate` job, per-actor files | actors waiting and failed (with the error) per world | retry a failed actor |
 
 The schedulers live in memory, and in development the worker and CLI runs are separate processes, so the web
 server cannot see them directly. Each process therefore publishes its **presence** (`gpu/presence.ts`): a
 `gpu_procs` row with its role (`server`, `worker`, `cli` + script and arguments), the GPU calls queued and
-running in its scheduler, its builds' GPU queues and the jobs it runs, written within a second of a change and
+its builds' GPU queues and the jobs it runs, written within a second of a change and
 every 5–15 s as a heartbeat (silent for 20 s: shown as gone). Every ComfyUI prompt carries a tag in
 `extra_data.gd` (process, role, job id, world, kind, workflow; the animator's Python steps get it through
-`GD_PROMPT_TAG`), so prompts from CLI runs are labelled too. Processes on older code send no tag: their prompts
-show as *untagged* (client `generative-daydream`) and their lease holder as *unregistered*, most likely a CLI run.
+`GD_PROMPT_TAG`), so prompts from CLI runs are labelled too.
 
 Controls act through the same shared layers, so they reach the separate worker:
 
-- **Pause** (`gpu_control`): workers claim no new job (or no `animate` job), and each process's GPU scheduler
-  holds calls of paused work before their next turn while players' calls (rank 0) go past them; a held call
-  does not keep the GPU lease from other processes. The call in progress finishes.
+- **Pause** (`gpu_control`): workers claim no new job (or no `animate` job), and work of a paused kind waits
+  before its next prompt is sent to the broker, while players' work (rank 0) goes past it. A prompt already sent
+  finishes.
 - **Stop** a running job: its cancel flag, plus removing or interrupting every ComfyUI prompt tagged with its id.
 - **Priority / move**: a queued job's priority, or a swap of priority and queued-at time with its neighbour.
 - **ComfyUI prompts** of any origin (CLI runs included) can be removed (pending) or interrupted (running, only
-  if it is still the one running); **unload** frees ComfyUI's models and every loaded LLM router model.
+  if it is still the one running).
 - CLI runs are outside the job queue: only their ComfyUI prompts can be controlled; they are stopped in their
   terminal.
 
@@ -117,11 +117,10 @@ animation files is cached for 15 s.
 ## Models and providers
 
 The server decides which model serves each purpose (`config/genai.json`: `providers` and `purposes`); players
-do not choose and there are no per-user keys. Local models are configured today (llama.cpp router, ComfyUI,
-llama.cpp decision models). Provider adapters for OpenAI-compatible APIs, OpenAI Responses, Anthropic and
-Google (text and images) exist behind the same purpose interface, so moving a purpose to a hosted model is a
-config change: the gateway's priorities, waiting and retries apply to every provider, and `concurrency` per
-provider limits parallel calls.
+do not choose and there are no per-user keys. Every text, decision and speech purpose runs on OpenAI (Luna, with
+Sol as the stronger check where a purpose asks for it); every image on ComfyUI behind the GPU broker. The
+gateway's waiting and retries apply to every provider, `concurrency` per provider limits parallel calls, and paid
+calls are charged to the user they are for within daily budgets (`spending`).
 
 ## Growing further
 

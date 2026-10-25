@@ -2,7 +2,7 @@
   "name": "generative-daydream",
   "private": true,
   "version": "0.1.0",
-  "description": "A GenAI-driven 2D isometric RPG engine",
+  "description": "A GenAI-driven 2D top-down RPG engine",
   "type": "module",
   "workspaces": [
     "packages/shared",

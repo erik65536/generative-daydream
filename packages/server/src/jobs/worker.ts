@@ -13,7 +13,7 @@ import { placeholderWorld, runArtJob, runGeneration, runRulesJob } from '../worl
 import { runStudioJob, type StudioTask } from '../worldgen/studio';
 import { queueAnimation, runAnimateJob } from '../anim/job';
 import { Job, JobYield, workerState } from './job';
-import { claimNext, HOLDER, purgeOldLogs, renewLease, requeue, type JobRecord } from './queue';
+import { claimNext, enqueue, HOLDER, purgeOldLogs, renewLease, requeue, type JobRecord } from './queue';
 import { control } from '../gpu/presence';
 
 /** A job that keeps dying (crashes the worker, say) is given up after this many starts. */
@@ -51,10 +51,13 @@ async function run(rec: JobRecord): Promise<void> {
     // The daydream's owner pays for its building, painting and studio work.
     await withCallContext({ priority: rec.kind === 'studio' ? 'studio' : 'background', onWait: (why) => job.waiting(why), userId: rec.ownerId, tag: job.tag, cancelled: () => job.cancelled }, () => execute(rec, job));
     job.finish(job.cancelled ? 'cancelled' : 'done');
+    const owner = { id: rec.ownerId, name: rec.ownerName };
+    // New rules have new classes and kins: their heroes are painted next (then animated).
+    if (rec.kind === 'rules' && !job.cancelled) enqueue('art', rec.worldId, owner, { level: 'full' }, { priority: 5, step: 'Waiting for a free worker' });
     // New or repainted characters and creatures: their animation follows in the background.
-    if (rec.kind !== 'animate' && !job.cancelled) {
+    else if (rec.kind !== 'animate' && !job.cancelled) {
       const w = loadWorld(rec.worldId);
-      if (w?.status === 'ready') queueAnimation(w, { id: rec.ownerId, name: rec.ownerName });
+      if (w?.status === 'ready') queueAnimation(w, owner);
     }
   } catch (e) {
     if (e instanceof JobYield) {

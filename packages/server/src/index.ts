@@ -27,12 +27,21 @@ import { queueAnimation, requestRedo } from './anim/job';
 import { incompatibility, instances } from './game/manager';
 
 const PORT = Number(process.env.GD_PORT ?? 3000);
+/** Development: the Vite client's address (pages are served there, and it opens game connections from there). */
+const devClient = process.env.GD_DEV_CLIENT;
 /** The address to listen on: 127.0.0.1 behind a reverse proxy on the same machine; every interface when unset. */
 const HOST = process.env.GD_HOST || undefined;
 const app = express();
 // Behind a reverse proxy on this machine (Caddy), the client's address and https come from its X-Forwarded headers:
 // the sign-in lockout is per address, and the session cookie is marked Secure on https.
 app.set('trust proxy', 'loopback');
+app.disable('x-powered-by');
+app.use((_req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+  next();
+});
 app.use(express.json({ limit: '2mb' }));
 
 // ------------------------------------------------------------------------------ auth (middleware in auth.ts)
@@ -54,6 +63,8 @@ const Credentials = z.object({ username: z.string().min(1).max(40), password: z.
 const failures = new Map<string, { n: number; until: number }>();
 const locked = (k: string) => (failures.get(k)?.until ?? 0) > Date.now();
 const fail = (k: string) => {
+  // Forget old entries now and then, so the map stays small.
+  if (failures.size > 5000) for (const [key, f] of failures) if (f.until < Date.now()) failures.delete(key);
   const f = failures.get(k) ?? { n: 0, until: 0 };
   f.n++;
   if (f.n >= 5) {
@@ -210,9 +221,19 @@ function worldSummary(w: WorldDefinition) {
   };
 }
 
+/** Who may see a world: everyone when it is public, else its owner and administrators. */
+const canSee = (w: WorldDefinition, u: store.User) => w.public || w.ownerId === u.id || u.isAdmin;
+
+/** A world the user may see (answers 404 for one they may not, as if it did not exist). */
+function visibleWorld(req: Request, res: Response): WorldDefinition | undefined {
+  const w = store.loadWorld(String(req.params.id));
+  if (!w || !canSee(w, (req as AuthedRequest).user)) return void res.status(404).json({ error: 'Daydream not found.' });
+  return w;
+}
+
 app.get('/api/worlds', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
-  res.json(store.listWorlds().filter((w) => w.public || w.ownerId === u.id).map(worldSummary));
+  res.json(store.listWorlds().filter((w) => canSee(w, u)).map(worldSummary));
 });
 
 const WorldInputSchema = z.object({
@@ -258,15 +279,15 @@ app.post('/api/worlds', auth, (req, res) => {
 });
 
 app.get('/api/worlds/:id', auth, (req, res) => {
-  const w = store.loadWorld(String(req.params.id));
-  if (!w) return void res.status(404).json({ error: 'Daydream not found.' });
-  res.json(worldSummary(w));
+  const w = visibleWorld(req, res);
+  if (w) res.json(worldSummary(w));
 });
 
 app.get('/api/worlds/:id/job', auth, (req, res) => {
-  const id = String(req.params.id);
+  const w = visibleWorld(req, res);
+  if (!w) return;
+  const id = w.id;
   const job = latestJob(id);
-  const w = store.loadWorld(id);
   if (!job) return void res.json({ status: w?.status === 'ready' ? 'done' : w?.status ?? 'unknown', progress: w?.status === 'ready' ? 1 : 0, step: '', log: (w?.generationLog ?? []).map((msg) => ({ t: 0, msg, kind: 'info' })), preview: {} });
   const since = Number(req.query.since ?? 0);
   res.json({ id: job.id, kind: job.kind, status: job.status, progress: job.progress, step: job.step, error: job.error, log: since ? logSince(job.id, since) : logTail(job.id), preview: job.preview, phases: job.phases, queuePosition: queuePosition(job) });
@@ -311,8 +332,8 @@ app.delete('/api/admin/trash/:id', auth, adminOnly, (req, res) => {
 
 /** Regenerate the world's rules (new ruleset intent from the AI) or rebalance (same intent, current engine). Lore and art stay. */
 app.get('/api/worlds/:id/rules', auth, (req, res) => {
-  const w = store.loadWorld(String(req.params.id));
-  if (!w) return void res.status(404).json({ error: 'Not found.' });
+  const w = visibleWorld(req, res);
+  if (!w) return;
   res.json({ ruleset: w.ruleset ?? null, canRebalance: !!w.rulesIntent });
 });
 
@@ -416,9 +437,9 @@ app.post('/api/worlds/:id/studio/task', auth, (req, res) => {
 
 /** Everything character creation needs. */
 app.get('/api/worlds/:id/setup', auth, (req, res) => {
-  const w = store.loadWorld(String(req.params.id));
-  if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'This daydream is not ready yet.' });
-  if (!w.ruleset) return void res.status(409).json({ error: 'This daydream was made before per-daydream rules. Regenerate its rules on its page first.' });
+  const w = visibleWorld(req, res);
+  if (!w) return;
+  if (w.status !== 'ready') return void res.status(404).json({ error: 'This daydream is not ready yet.' });
   res.json({
     id: w.id,
     concept: { title: w.concept.title, pitch: w.concept.pitch, tone: w.concept.tone, playerRole: w.concept.playerRole, palette: w.concept.palette, genre: w.concept.genre },
@@ -448,14 +469,15 @@ const CharSpecSchema = z.object({
 
 app.get('/api/worlds/:id/instances', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
-  res.json(instances.list(String(req.params.id), u.id));
+  const w = visibleWorld(req, res);
+  if (w) res.json(instances.list(w.id, u.id));
 });
 
 app.post('/api/worlds/:id/instances', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
-  const w = store.loadWorld(String(req.params.id));
-  if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'This daydream is not ready yet.' });
-  if (!w.ruleset) return void res.status(409).json({ error: 'Regenerate this daydream\'s rules first.' });
+  const w = visibleWorld(req, res);
+  if (!w) return;
+  if (w.status !== 'ready') return void res.status(404).json({ error: 'This daydream is not ready yet.' });
   const body = z.object({ name: z.string().max(60).default(''), party: z.array(CharSpecSchema).min(1).max(4), difficulty: z.enum(DIFFICULTIES as [string, ...string[]]).optional() }).safeParse(req.body);
   if (!body.success) return void res.status(400).json({ error: body.error.issues[0]?.message ?? 'Invalid party.' });
   const inst = instances.create(w, u.id, u.username, body.data.name, body.data.party, body.data.difficulty as never);
@@ -476,8 +498,9 @@ app.post('/api/instances/:id/join', auth, (req, res) => {
 
 app.get('/api/instances/:id', auth, (req, res) => {
   const s = store.loadInstance(String(req.params.id));
-  if (!s) return void res.status(404).json({ error: 'Not found.' });
   const u = (req as AuthedRequest).user;
+  // A save is its owner's and its players' (and anyone's to see once opened to other dreamers).
+  if (!s || !(s.ownerId === u.id || s.players[u.id] || s.open || u.isAdmin)) return void res.status(404).json({ error: 'Not found.' });
   res.json({ ...instances.summary(s), hasCharacter: !!s.players[u.id] });
 });
 
@@ -544,7 +567,6 @@ app.post('/api/genai/test', auth, adminOnly, async (req, res) => {
 // ------------------------------------------------------------------------------ static client
 
 // In development the live client is Vite's (its API calls come here); a built client in dist/ would be stale.
-const devClient = process.env.GD_DEV_CLIENT;
 if (devClient) app.get(/^\/(?!api|ws).*/, (req, res) => res.redirect(devClient + req.originalUrl));
 else if (fs.existsSync(CLIENT_DIST)) {
   app.use(express.static(CLIENT_DIST));
@@ -556,7 +578,32 @@ else if (fs.existsSync(CLIENT_DIST)) {
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 
+/** A page of another site may not open a game connection with the player's cookie. */
+function sameOrigin(req: http.IncomingMessage): boolean {
+  const origin = req.headers.origin;
+  if (!origin) return true; // not a browser
+  try {
+    const o = new URL(origin);
+    const host = String(req.headers['x-forwarded-host'] ?? req.headers.host ?? '');
+    return o.host === host || (devClient !== undefined && origin === new URL(devClient).origin);
+  } catch {
+    return false;
+  }
+}
+
+/** A message from the client, or null when it is not one (a closed vocabulary with a string tag). */
+function parseMessage(data: unknown): ClientMessage | null {
+  if (String(data).length > 64_000) return null;
+  try {
+    const m = JSON.parse(String(data)) as unknown;
+    return m && typeof m === 'object' && !Array.isArray(m) && typeof (m as { t?: unknown }).t === 'string' ? (m as ClientMessage) : null;
+  } catch {
+    return null;
+  }
+}
+
 wss.on('connection', (ws: WebSocket, req) => {
+  if (!sameOrigin(req)) return ws.close();
   const user = store.sessionUser(cookie(req, 'gd_session'));
   const url = new URL(req.url ?? '', 'http://x');
   const instanceId = url.searchParams.get('instance') ?? '';
@@ -578,12 +625,8 @@ wss.on('connection', (ws: WebSocket, req) => {
   inst.join(conn);
   let reload = false;
   ws.on('message', (data) => {
-    let msg: ClientMessage;
-    try {
-      msg = JSON.parse(String(data));
-    } catch {
-      return;
-    }
+    const msg = parseMessage(data);
+    if (!msg) return;
     if (msg.t === 'ping') return send({ t: 'pong', serverTime: Date.now(), clientTime: msg.clientTime });
     if (msg.t === 'dev') {
       if (!user.isAdmin) return;

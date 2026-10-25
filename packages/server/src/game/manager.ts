@@ -10,7 +10,6 @@ const UNLOAD_AFTER_MS = 30_000;
 /** Why a save can't be played with the current engine (null if it can). */
 export function incompatibility(state: InstanceState, world: WorldDefinition | null): string | null {
   if (!world) return 'Its daydream no longer exists.';
-  if (!world.ruleset) return 'Its daydream was made before rules were made per daydream. Regenerate the daydream’s rules on its page, then start a new journey.';
   if (Object.values(state.players).some((p) => p.party.some((c) => !world.ruleset.classes.some((k) => k.id === c.classId))))
     return 'This reverie began before the daydream’s rules were regenerated. Start a new reverie.';
   return null;

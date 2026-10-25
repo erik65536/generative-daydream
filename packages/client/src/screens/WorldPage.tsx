@@ -121,7 +121,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
                 <div key={i} className={l.kind}>{l.msg}</div>
               ))}
             </div>
-            <div className="hint">Generation keeps running if you leave this page. With local models this can take a while: each place, character, quest and image is made individually.</div>
+            <div className="hint">It keeps running if you leave this page. It takes a few hours: every place, character and item is painted for this daydream alone.</div>
           </div>
         )}
 
@@ -195,11 +195,11 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
                 <div className="panel">
                   <div className="panel-head"><h3>Art</h3></div>
                   <div className="panel-body col">
-                    <div className="small muted">{w.artProgress.total ? `${w.artProgress.ok} of ${w.artProgress.total} images generated.` : 'Using procedural art.'}</div>
+                    <div className="small muted">{`${w.artProgress.ok} of ${w.artProgress.total} images painted.`}</div>
                     <div className="row">
                       <button className="btn sm primary" onClick={() => api.regenArt(w.id, 'full', true).catch((e) => alert(e.message))}>Paint everything</button>
                     </div>
-                    <div className="hint">Only paints what is missing, failed, out of date or changed. Requires an image model in config/genai.json.</div>
+                    <div className="hint">Only paints what is missing, failed or changed.</div>
                     <button className="btn sm" onClick={() => navigate(`#/world/${w.id}/studio`)}>Open the daydream studio</button>
                     <div className="hint">See every place, person, quest and image with the prompts behind them; edit them and regenerate any piece.</div>
                   </div>
@@ -222,7 +222,7 @@ function RulesPanel({ w, me, ruleset, canRebalance, hasSaves, onView }: { w: Wor
   const [busy, setBusy] = useState(false);
   const run = async (mode: 'regenerate' | 'rebalance') => {
     const msg = mode === 'regenerate'
-      ? `Design a completely new ruleset for this daydream (classes, skills, items…)? The story, places and people stay. ${hasSaves ? 'Existing reveries will no longer be playable. ' : ''}New classes start with procedural art until you generate art again. This takes several minutes.`
+      ? `Design a completely new ruleset for this daydream (classes, skills, items…)? The story, places and people stay. ${hasSaves ? 'Existing reveries will no longer be playable. ' : ''}Their heroes are painted afterwards. This takes several minutes.`
       : 'Run the balance simulation again on the current rules? Numbers may change; reveries stay playable. This takes several minutes.';
     if (!confirm(msg)) return;
     setBusy(true);
