@@ -531,14 +531,15 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     if (z) add(z, { id: f.featureId, kind: 'object', name: capital(f.name) });
   }
 
-  // Quest items: carried by a boss, or in a chest of their own in a wild place or dungeon.
+  // Quest items: carried by a boss, or in a chest of their own where the story says they are (a town too: "the ribbon
+  // caught beneath the stand" is on the green, not in the nearest dungeon), else in the region's dungeon.
   for (const p of itemPlacements) {
     if (p.bossId) {
       bosses.find((b) => b.id === p.bossId)?.drops.push(p.uniqueId);
       continue;
     }
     const want = p.zoneId ? zoneById.get(p.zoneId) : undefined;
-    const z = want && want.kind !== 'town' ? want : zones.find((x) => x.kind === 'dungeon' && x.regionIndex === (want?.regionIndex ?? 0)) ?? zones.find((x) => x.kind === 'dungeon')!;
+    const z = want ?? zones.find((x) => x.kind === 'dungeon' && x.regionIndex === 0) ?? zones.find((x) => x.kind === 'dungeon')!;
     const chest = z.features.find((f) => f.id === `${z.id}_chest_quest`);
     if (chest) chest.items!.push(p.uniqueId);
     else add(z, { id: `${z.id}_chest_quest`, kind: 'chest', name: 'Chest', lootTier: z.levelRange[1] + 1, items: [p.uniqueId] });
