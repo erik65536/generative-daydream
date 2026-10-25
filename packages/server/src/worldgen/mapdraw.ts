@@ -180,11 +180,16 @@ class Raster {
   crop(x: number, y: number, w: number, h: number): Promise<Buffer> {
     return sharp(this.px, { raw: { width: this.W, height: this.H, channels: 3 } }).extract({ left: x, top: y, width: w, height: h }).png().toBuffer();
   }
-  /** Paste a window's pixels (resized to w × h) where `take(x, y)` (window coordinates) holds. */
-  async paste(win: Buffer, x0: number, y0: number, w: number, h: number, take: (x: number, y: number) => boolean) {
+  /** Paste a window's pixels (resized to w × h), blended by `weight(x, y)` (window coordinates, 0 keeps what is there). */
+  async paste(win: Buffer, x0: number, y0: number, w: number, h: number, weight: (x: number, y: number) => number) {
     const p = await sharp(win).resize(w, h, { fit: 'fill' }).removeAlpha().raw().toBuffer();
     for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) if (take(x, y)) p.copy(this.px, ((y0 + y) * this.W + x0 + x) * 3, (y * w + x) * 3, (y * w + x) * 3 + 3);
+      for (let x = 0; x < w; x++) {
+        const a = Math.max(0, Math.min(1, weight(x, y)));
+        if (!a) continue;
+        const i = ((y0 + y) * this.W + x0 + x) * 3, j = (y * w + x) * 3;
+        for (let c = 0; c < 3; c++) this.px[i + c] = Math.round(p[j + c]! * a + this.px[i + c]! * (1 - a));
+      }
   }
 }
 
@@ -425,7 +430,7 @@ async function detail(b: MapBrief, p: MapPlan, guide: Buffer, seed: number, io: 
     const strength = (i: number) => (fresh[i] ? 1 : d[i]! <= R ? 1 - d[i]! / R : 0);
     const c = Math.min(cols - 1, Math.floor((x0 + S / 2) / TILE)), r = Math.min(rows - 1, Math.floor((y0 + S / 2) / TILE));
     const out = await io.gpu('krea', async () => kreaMasked(await cv.crop(x0, y0, S, S), await maskOf(S, S, (x, y) => strength(y * S + x)), detailPrompt(b, p, notes[r * cols + c] ?? p.tiles[r * cols + c] ?? ''), seed + 300 + k, DETAIL));
-    await cv.paste(out, x0, y0, S, S, (x, y) => strength(y * S + x) > 0);
+    await cv.paste(out, x0, y0, S, S, (x, y) => strength(y * S + x));
     for (let y = 0; y < S; y++) done.fill(1, (y0 + y) * W + x0, (y0 + y) * W + x0 + S);
   }
   return cv.png();
@@ -511,14 +516,14 @@ async function wayOut(cv: Raster, b: MapBrief, p: MapPlan, e: MapExit, depth: nu
   const S = 768, wx = Math.max(0, Math.min(W - S, Math.round((r.x0 + r.x1) / 2 - S / 2))), wy = Math.max(0, Math.min(H - S, Math.round((r.y0 + r.y1) / 2 - S / 2)));
   const src = cv.clone();
   const turned = await sharp(await exitTexture(b, p, seed, io)).rotate(e.side === 'top' ? 0 : e.side === 'bottom' ? 180 : e.side === 'left' ? 270 : 90).resize(rw, rh, { fit: 'fill' }).png().toBuffer();
-  await src.paste(turned, rx, ry, rw, rh, () => true);
+  await src.paste(turned, rx, ry, rw, rh, () => 1);
   const strength = (x: number, y: number) => {
     const dx = Math.max(r.x0 - x, x - (r.x1 - 1), 0), dy = Math.max(r.y0 - y, y - (r.y1 - 1), 0), d = Math.hypot(dx, dy);
     return d === 0 ? 1 : d < FEATHER ? 1 - d / FEATHER : 0;
   };
   const prompt = `${LEAD[b.kind]} A way out: ${p.exitLook} It leads straight from the place to the ${e.side} edge of the picture and off the map, open so anyone can walk along it, joining the streets and open ground of the place. Art style: ${p.style}. ${TAIL}`;
   const out = await io.gpu('krea', async () => kreaMasked(await src.crop(wx, wy, S, S), await maskOf(S, S, (x, y) => strength(x + wx, y + wy)), prompt, seed, 0.75));
-  await cv.paste(out, wx, wy, S, S, (x, y) => strength(x + wx, y + wy) > 0);
+  await cv.paste(out, wx, wy, S, S, (x, y) => strength(x + wx, y + wy));
 }
 
 async function paintExits(b: MapBrief, p: MapPlan, map: Buffer, exits: MapExit[], seed: number, io: MapRun): Promise<Buffer> {
@@ -592,7 +597,7 @@ async function paintBarrier(b: MapBrief, p: MapPlan, map: Buffer, exits: MapExit
     const here = exits.filter((e, i) => { const r = gaps[i]!; return r.x0 < s.x + s.w && r.x1 > s.x && r.y0 < s.y + s.h && r.y1 > s.y; });
     const prompt = `${LEAD[b.kind]} Along the ${edges.join(' and ')} edge${edges.length > 1 ? 's' : ''} of this picture runs the outer edge of the place: a solid, continuous belt of ${p.barrier} about four metres wide, ${p.barrierLook} It closes the place off so nobody can pass through it.${here.length ? ` The belt is broken by exactly ${here.length === 1 ? 'one opening' : `${here.length} openings`}, where the way out runs straight through it and off the edge of the picture.` : ' The belt is unbroken: no gap, path, gate or opening anywhere along it.'} Inside the belt the place continues as already painted; anything cut by the belt is finished off neatly or removed. Art style: ${p.style}. ${TAIL}`;
     const out = await io.gpu('krea', async () => kreaMasked(await src.crop(s.x, s.y, s.w, s.h), await maskOf(s.w, s.h, strength), prompt, seed + 500 + k, 0.75));
-    await cv.paste(out, s.x, s.y, s.w, s.h, (x, y) => strength(x, y) > 0);
+    await cv.paste(out, s.x, s.y, s.w, s.h, strength);
     for (let y = 0; y < s.h; y++) for (let x = 0; x < s.w; x++) if (freshM[y * s.w + x]) painted[(s.y + y) * W + s.x + x] = 1;
   }
   return cv.png();
@@ -654,7 +659,7 @@ async function closeOpening(cv: Raster, b: MapBrief, p: MapPlan, o: MapExit, tex
   for (let y = wy; y < wy + S; y++) for (let x = wx; x < wx + S; x++) if (strength(x, y) > 0 && depth(x, y) < BAND) tex.px.copy(src.px, (y * W + x) * 3, ((y % TILE) * TILE + (x % TILE)) * 3, ((y % TILE) * TILE + (x % TILE)) * 3 + 3);
   const prompt = `${LEAD[b.kind]} Along the ${o.side} edge of the map runs a solid, unbroken belt of ${p.barrier}: ${p.barrierLook} Nothing can pass through it. Just inside it, the ground of the place (${p.floor}) ends naturally before the barrier: no road, path or street continues into the barrier or off the map here. Art style: ${p.style}. ${TAIL}`;
   const out = await io.gpu('krea', async () => kreaMasked(await src.crop(wx, wy, S, S), await maskOf(S, S, (x, y) => strength(x + wx, y + wy)), prompt, seed, 0.85));
-  await cv.paste(out, wx, wy, S, S, (x, y) => strength(x + wx, y + wy) > 0);
+  await cv.paste(out, wx, wy, S, S, (x, y) => strength(x + wx, y + wy));
 }
 
 /** The barrier band's depth in metres (the walk plan blocks it except at the exits). */
