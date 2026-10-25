@@ -439,7 +439,7 @@ function People({ ctx, sel }: { ctx: Ctx; sel?: string }) {
       list={
         <>
           <input className="input" placeholder="Search people" value={q} onChange={(e) => setQ(e.target.value)} style={{ marginBottom: 6 }} />
-          {list.map((x) => <ListItem key={x.id} on={x.id === n?.id} onClick={() => setId(x.id)} title={x.name} sub={`${x.title} · ${zoneName(x.zoneId)}`} badge={x.essential ? <span className="badge">story</span> : undefined} />)}
+          {list.map((x) => <ListItem key={x.id} on={x.id === n?.id} onClick={() => setId(x.id)} title={x.name} sub={`${x.title} · ${zoneName(x.zoneId)}`} badge={x.companion ? <span className="badge">companion</span> : x.essential ? <span className="badge">story</span> : undefined} />)}
           <div className="label" style={{ marginTop: 12 }}>Heroes (player classes)</div>
           {w.origins.map((o) => <div key={o.id} className="tiny dim" style={{ padding: '2px 4px' }}>{o.name}: see Art → characters</div>)}
         </>
