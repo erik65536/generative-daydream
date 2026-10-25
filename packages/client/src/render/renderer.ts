@@ -441,8 +441,68 @@ export class Renderer {
     this.drawLighting(z);
     this.drawWeather(dt, z);
     this.setWorldTransform();
+    // Walk hints over the light, so they read at night too.
+    this.drawWalkHints(z);
     this.drawTexts();
     this.drawOverlayLabels(z);
+  }
+
+  /**
+   * Where one can walk, shown only near where it matters, the same for mouse and controller: the edge of the walkable
+   * ground fades in around the mouse (or, with a controller, around the leader), and a small ring under the mouse is
+   * warm on ground a click walks to and dim red where no one can stand (a click there walks only as near as it can).
+   */
+  private drawWalkHints(z: ZoneData) {
+    const st = this.client.state;
+    if (st.combat || st.dialog || st.panel || st.targeting) return;
+    const ctx = this.ctx, nav = z.walk;
+    if (st.inputMode === 'pad') {
+      const leader = this.client.leaderEntity();
+      if (leader) this.walkEdges(nav, this.client.entityPos(leader), 3, 0.5);
+      return;
+    }
+    const h = this.hover.point;
+    if (!h || this.hover.entityId || this.hover.featureId || this.hover.lootId) return;
+    this.walkEdges(nav, h, 2.2, 0.42);
+    const ok = nav.walkable(h.x, h.y);
+    ctx.save();
+    ctx.strokeStyle = ok ? 'rgba(255,248,225,0.5)' : 'rgba(255,105,85,0.7)';
+    ctx.lineWidth = 1.5;
+    if (!ok) ctx.setLineDash([2.5, 2.5]);
+    this.groundCircle(h.x, h.y, 0.3);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  /** The sides walkable ground shares with ground no one can stand on, within `R` metres of `at`, fading outward. */
+  private walkEdges(nav: ZoneData['walk'], at: Vec2, R: number, alpha: number) {
+    const ctx = this.ctx;
+    const [ax, ay] = nav.cellOf(at.x, at.y), n = Math.ceil(R / NAV_CELL);
+    ctx.save();
+    ctx.lineWidth = 2;
+    ctx.lineCap = 'round';
+    ctx.shadowColor = 'rgba(255,240,200,0.6)';
+    ctx.shadowBlur = 4;
+    const edge = (x0: number, y0: number, x1: number, y1: number) => {
+      const d = Math.hypot((x0 + x1) / 2 - at.x, (y0 + y1) / 2 - at.y);
+      if (d >= R) return;
+      const a = pic(x0, y0), b = pic(x1, y1);
+      ctx.strokeStyle = `rgba(255,244,215,${(alpha * (1 - d / R)).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    };
+    for (let cy = ay - n; cy <= ay + n; cy++)
+      for (let cx = ax - n; cx <= ax + n; cx++) {
+        if (!nav.walkableCell(cx, cy)) continue;
+        const x0 = cx * NAV_CELL, y0 = cy * NAV_CELL, x1 = x0 + NAV_CELL, y1 = y0 + NAV_CELL;
+        if (!nav.walkableCell(cx - 1, cy)) edge(x0, y0, x0, y1);
+        if (!nav.walkableCell(cx + 1, cy)) edge(x1, y0, x1, y1);
+        if (!nav.walkableCell(cx, cy - 1)) edge(x0, y0, x1, y0);
+        if (!nav.walkableCell(cx, cy + 1)) edge(x0, y1, x1, y1);
+      }
+    ctx.restore();
   }
 
   /** Developer view of the navigation grid. */
