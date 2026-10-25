@@ -45,12 +45,17 @@ db.exec('PRAGMA busy_timeout = 10000');
 db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
-  -- must_change_password: made or reset by an administrator, with a one-time password the user must replace.
-  -- daily_limit_usd: the user's own daily AI budget (null: the server default).
+  -- Accounts (see "users" below): invited with a code, then active once they have a user name and a password or a passkey.
   CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL, salt TEXT NOT NULL,
-    created_at INTEGER NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0, must_change_password INTEGER NOT NULL DEFAULT 0, daily_limit_usd REAL
+    id TEXT PRIMARY KEY, username TEXT UNIQUE COLLATE NOCASE, display_name TEXT NOT NULL, password_hash TEXT, salt TEXT,
+    created_at INTEGER NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL, invite_code TEXT UNIQUE, invite_expires INTEGER,
+    monthly_budget_usd REAL NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS passkeys (
+    id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, public_key BLOB NOT NULL, counter INTEGER NOT NULL,
+    transports TEXT NOT NULL, created_at INTEGER NOT NULL, last_used_at INTEGER
+  );
+  CREATE INDEX IF NOT EXISTS passkeys_user ON passkeys (user_id);
   CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires INTEGER NOT NULL);
   -- Spending on paid models, per user and day.
   CREATE TABLE IF NOT EXISTS spend (user_id TEXT NOT NULL, day TEXT NOT NULL, usd REAL NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day));
@@ -100,15 +105,6 @@ function removeSqlite(file: string) {
 }
 
 const q = {
-  insertUser: db.prepare('INSERT INTO users (id, username, password_hash, salt, created_at, is_admin, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?)'),
-  setPassword: db.prepare('UPDATE users SET password_hash = ?, salt = ?, must_change_password = ? WHERE id = ?'),
-  setAdmin: db.prepare('UPDATE users SET is_admin = ? WHERE id = ?'),
-  allUsers: db.prepare('SELECT * FROM users ORDER BY created_at'),
-  adminCount: db.prepare('SELECT COUNT(*) AS n FROM users WHERE is_admin = 1'),
-  userSessionsDelete: db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?'),
-  userByName: db.prepare('SELECT * FROM users WHERE username = ?'),
-  userById: db.prepare('SELECT * FROM users WHERE id = ?'),
-  userCount: db.prepare('SELECT COUNT(*) AS n FROM users'),
   insertSession: db.prepare('INSERT OR REPLACE INTO sessions (token, user_id, expires) VALUES (?, ?, ?)'),
   session: db.prepare('SELECT user_id, expires FROM sessions WHERE token = ?'),
   deleteSession: db.prepare('DELETE FROM sessions WHERE token = ?'),
@@ -130,130 +126,330 @@ const catalogInstance = (s: InstanceState) => q.upsertInstance.run(s.id, s.world
 
 // ------------------------------------------------------------------------------------ users
 
+/**
+ * An account's life: an administrator makes it "invited" with an invite code and a name saying who it is for; the
+ * user follows the invite link, picks their user name and chooses a password, a passkey or both, which makes it
+ * "active"; an administrator can disable it, or reset it to "invited" again with a new code (its password and passkeys
+ * are gone; its user name, worlds and saves stay: a user name never changes once chosen).
+ */
+export type UserStatus = 'invited' | 'active' | 'disabled';
+
 export interface User {
   id: string;
-  username: string;
-  passwordHash: string;
-  salt: string;
+  /** The sign-in name the user chose when setting the account up (case-insensitive, never changes); null until then. */
+  username: string | null;
+  /** What other players see; the user can change it. */
+  displayName: string;
+  passwordHash: string | null;
+  salt: string | null;
   createdAt: number;
   isAdmin: boolean;
-  /** Signed in with a password an administrator set: must choose a new one before doing anything else. */
-  mustChangePassword: boolean;
-  /** Daily budget for paid models in dollars, when an administrator set one (otherwise the server default). */
-  dailyLimitUsd: number | null;
+  status: UserStatus;
+  /** While invited: the code in the invite link, and when it stops working. */
+  inviteCode: string | null;
+  inviteExpires: number | null;
+  /** What this user may spend on paid models in a calendar month (dollars). */
+  monthlyBudgetUsd: number;
 }
 
 interface UserRow {
   id: string;
-  username: string;
-  password_hash: string;
-  salt: string;
+  username: string | null;
+  display_name: string;
+  password_hash: string | null;
+  salt: string | null;
   created_at: number;
   is_admin: number;
-  must_change_password: number;
-  daily_limit_usd: number | null;
+  status: UserStatus;
+  invite_code: string | null;
+  invite_expires: number | null;
+  monthly_budget_usd: number;
 }
 
+export interface Passkey {
+  /** The credential id (base64url). */
+  id: string;
+  userId: string;
+  name: string;
+  publicKey: Uint8Array;
+  counter: number;
+  transports: string[];
+  createdAt: number;
+  lastUsedAt: number | null;
+}
+
+interface PasskeyRow {
+  id: string;
+  user_id: string;
+  name: string;
+  public_key: Uint8Array;
+  counter: number;
+  transports: string;
+  created_at: number;
+  last_used_at: number | null;
+}
+
+/** A new account's monthly budget unless the administrator sets another. */
+export const DEFAULT_MONTHLY_BUDGET = 10;
+/** How long an invite link works. */
+export const INVITE_DAYS = 5;
+export const MIN_PASSWORD = 8;
+
+const uq = {
+  insert: db.prepare('INSERT INTO users (id, display_name, created_at, is_admin, status, invite_code, invite_expires, monthly_budget_usd) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'),
+  setUsername: db.prepare('UPDATE users SET username = ? WHERE id = ? AND username IS NULL'),
+  all: db.prepare('SELECT * FROM users ORDER BY created_at'),
+  byName: db.prepare('SELECT * FROM users WHERE username = ?'),
+  byId: db.prepare('SELECT * FROM users WHERE id = ?'),
+  byInvite: db.prepare('SELECT * FROM users WHERE invite_code = ?'),
+  count: db.prepare('SELECT COUNT(*) AS n FROM users'),
+  activeAdmins: db.prepare("SELECT COUNT(*) AS n FROM users WHERE is_admin = 1 AND status = 'active'"),
+  setPassword: db.prepare('UPDATE users SET password_hash = ?, salt = ? WHERE id = ?'),
+  setStatus: db.prepare('UPDATE users SET status = ? WHERE id = ?'),
+  setInvite: db.prepare("UPDATE users SET status = 'invited', invite_code = ?, invite_expires = ?, password_hash = NULL, salt = NULL WHERE id = ?"),
+  activate: db.prepare("UPDATE users SET status = 'active', invite_code = NULL, invite_expires = NULL WHERE id = ?"),
+  setName: db.prepare('UPDATE users SET display_name = ? WHERE id = ?'),
+  setBudget: db.prepare('UPDATE users SET monthly_budget_usd = ? WHERE id = ?'),
+  setAdmin: db.prepare('UPDATE users SET is_admin = ? WHERE id = ?'),
+  signOut: db.prepare('DELETE FROM sessions WHERE user_id = ? AND token != ?'),
+  passkeys: db.prepare('SELECT * FROM passkeys WHERE user_id = ? ORDER BY created_at'),
+  passkey: db.prepare('SELECT * FROM passkeys WHERE id = ?'),
+  addPasskey: db.prepare('INSERT INTO passkeys (id, user_id, name, public_key, counter, transports, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'),
+  usePasskey: db.prepare('UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?'),
+  removePasskey: db.prepare('DELETE FROM passkeys WHERE id = ? AND user_id = ?'),
+  removePasskeys: db.prepare('DELETE FROM passkeys WHERE user_id = ?'),
+};
+
 const toUser = (r: UserRow | undefined): User | undefined =>
-  r && { id: r.id, username: r.username, passwordHash: r.password_hash, salt: r.salt, createdAt: r.created_at, isAdmin: !!r.is_admin, mustChangePassword: !!r.must_change_password, dailyLimitUsd: r.daily_limit_usd ?? null };
+  r && {
+    id: r.id, username: r.username, displayName: r.display_name, passwordHash: r.password_hash, salt: r.salt, createdAt: r.created_at, isAdmin: !!r.is_admin,
+    status: r.status, inviteCode: r.invite_code, inviteExpires: r.invite_expires, monthlyBudgetUsd: r.monthly_budget_usd,
+  };
+
+const toPasskey = (r: PasskeyRow | undefined): Passkey | undefined =>
+  r && { id: r.id, userId: r.user_id, name: r.name, publicKey: new Uint8Array(r.public_key), counter: r.counter, transports: JSON.parse(r.transports || '[]') as string[], createdAt: r.created_at, lastUsedAt: r.last_used_at };
 
 function hashPassword(password: string, salt: string): string {
   return crypto.scryptSync(password, salt, 64).toString('hex');
 }
 
-function insertUser(u: User) {
-  q.insertUser.run(u.id, u.username, u.passwordHash, u.salt, u.createdAt, u.isAdmin ? 1 : 0, u.mustChangePassword ? 1 : 0);
+/** An invite code: 12 characters in three groups, no look-alike characters (about 60 bits). */
+function inviteCode(): string {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const c = Array.from({ length: 12 }, () => alphabet[crypto.randomInt(alphabet.length)]).join('');
+  return `${c.slice(0, 4)}-${c.slice(4, 8)}-${c.slice(8)}`;
 }
 
-export const MIN_PASSWORD = 8;
-
-/** A one-time password an administrator hands out (no look-alike characters). */
-export function randomPassword(length = 14): string {
-  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
-  return Array.from({ length }, () => alphabet[crypto.randomInt(alphabet.length)]).join('');
-}
-
-function validUsername(username: string): string {
+/** A user name that is well formed and free (checked again when it is taken). */
+export function validUsername(username: string): string {
   const name = username.trim();
-  if (!/^[\w.-]{3,24}$/.test(name)) throw new Error('User ids are 3-24 letters, numbers, dots, dashes or underscores.');
+  if (!/^[\w.-]{3,24}$/.test(name)) throw new Error('User names are 3-24 letters, numbers, dots, dashes or underscores.');
+  if (uq.byName.get(name)) throw new Error('That user name is taken. Choose another.');
   return name;
 }
 
-/** Accounts are made by administrators: a one-time password the user replaces on first sign-in. */
-export function inviteUser(username: string, isAdmin = false): { user: User; password: string } {
-  const name = validUsername(username);
-  const password = randomPassword();
+function validDisplayName(name: string): string {
+  const n = name.trim().replace(/\s+/g, ' ');
+  if (n.length < 1 || n.length > 32) throw new Error('Names are 1-32 characters.');
+  return n;
+}
+
+function validPassword(password: string) {
+  if (password.length < MIN_PASSWORD) throw new Error(`Choose a password of at least ${MIN_PASSWORD} characters.`);
+  if (password.length > 200) throw new Error('That password is too long.');
+}
+
+function requireUser(id: string): User {
+  const u = getUser(id);
+  if (!u) throw new Error('No such user.');
+  return u;
+}
+
+const activeAdmins = () => (uq.activeAdmins.get() as { n: number }).n;
+/** The last active administrator cannot be disabled, reset or demoted. */
+function keepAnAdmin(u: User) {
+  if (u.isAdmin && u.status === 'active' && activeAdmins() <= 1) throw new Error('The server needs at least one active administrator.');
+}
+
+/** An administrator makes an account: invited, with a name saying who it is for and a code for its invite link. */
+export function createUser(o: { displayName: string; isAdmin?: boolean; monthlyBudgetUsd?: number }): User {
+  const displayName = validDisplayName(o.displayName);
+  const id = `u_${crypto.randomBytes(6).toString('hex')}`;
+  uq.insert.run(id, displayName, Date.now(), o.isAdmin ? 1 : 0, 'invited', inviteCode(), Date.now() + INVITE_DAYS * 86400_000, Math.max(0, o.monthlyBudgetUsd ?? DEFAULT_MONTHLY_BUDGET));
+  return getUser(id)!;
+}
+
+/**
+ * Invited again with a new code (an account not set up yet gets a fresh link; an administrator resetting one ends
+ * its password and passkeys and signs it out everywhere). Its worlds and saves stay.
+ */
+export function resetUser(userId: string): User {
   return tx(() => {
-    if (q.userByName.get(name)) throw new Error('That user id is taken.');
-    const salt = crypto.randomBytes(16).toString('hex');
-    const user: User = { id: `u_${crypto.randomBytes(6).toString('hex')}`, username: name, salt, passwordHash: hashPassword(password, salt), createdAt: Date.now(), isAdmin, mustChangePassword: true, dailyLimitUsd: null };
-    insertUser(user);
-    return { user, password };
+    keepAnAdmin(requireUser(userId));
+    uq.setInvite.run(inviteCode(), Date.now() + INVITE_DAYS * 86400_000, userId);
+    uq.removePasskeys.run(userId);
+    uq.signOut.run(userId, '');
+    return getUser(userId)!;
   });
 }
 
-export function verifyUser(username: string, password: string): User | null {
-  const u = toUser(q.userByName.get(username.trim()) as UserRow | undefined);
-  if (!u) {
-    hashPassword(password, 'timing'); // same cost whether or not the account exists
-    return null;
-  }
-  const h = hashPassword(password, u.salt);
-  return crypto.timingSafeEqual(Buffer.from(h, 'hex'), Buffer.from(u.passwordHash, 'hex')) ? u : null;
+/** The account an invite code is for, while the code still works. */
+export function userByInvite(code: string): User | undefined {
+  const u = toUser(uq.byInvite.get(code.trim().toUpperCase()) as UserRow | undefined);
+  return u && u.status === 'invited' && (u.inviteExpires ?? 0) > Date.now() ? u : undefined;
 }
 
-/** The user replaces their password (knowing the current one). Their other sessions are signed out. */
-export function changePassword(userId: string, current: string, next: string, keepToken = ''): void {
-  const u = getUser(userId);
-  if (!u || !verifyUser(u.username, current)) throw new Error('Your current password is wrong.');
-  if (next.length < MIN_PASSWORD) throw new Error(`Choose a password of at least ${MIN_PASSWORD} characters.`);
-  if (next === current) throw new Error('Choose a password different from the current one.');
-  const salt = crypto.randomBytes(16).toString('hex');
-  q.setPassword.run(hashPassword(next, salt), salt, 0, userId);
-  q.userSessionsDelete.run(userId, keepToken);
+/**
+ * Setting up from an invite: the user name (only when the account has none yet: it never changes once chosen) and
+ * the name others see. Done before the first way to sign in is stored, so a taken name stops it cleanly.
+ */
+export function claimInvite(userId: string, o: { username?: string; displayName?: string }) {
+  tx(() => {
+    const u = requireUser(userId);
+    if (!u.username) {
+      if (!o.username) throw new Error('Choose a user name.');
+      uq.setUsername.run(validUsername(o.username), userId);
+    }
+    if (o.displayName !== undefined) uq.setName.run(validDisplayName(o.displayName), userId);
+  });
 }
 
-/** An administrator resets a password: a new one-time password, every session signed out. */
-export function resetPassword(userId: string): string {
-  if (!getUser(userId)) throw new Error('No such user.');
-  const password = randomPassword();
-  const salt = crypto.randomBytes(16).toString('hex');
-  q.setPassword.run(hashPassword(password, salt), salt, 1, userId);
-  q.userSessionsDelete.run(userId, '');
-  return password;
+/** The account's first way to sign in is set: it becomes active and the invite code is spent. */
+export function activateUser(userId: string) {
+  uq.activate.run(userId);
+}
+
+export function setEnabled(userId: string, enabled: boolean) {
+  tx(() => {
+    const u = requireUser(userId);
+    if (u.status === 'invited') throw new Error('This account has not been set up yet.');
+    if (!enabled) keepAnAdmin(u);
+    uq.setStatus.run(enabled ? 'active' : 'disabled', userId);
+    if (!enabled) uq.signOut.run(userId, '');
+  });
+}
+
+export function setDisplayName(userId: string, name: string) {
+  requireUser(userId);
+  uq.setName.run(validDisplayName(name), userId);
+}
+
+export function setMonthlyBudget(userId: string, usd: number) {
+  requireUser(userId);
+  uq.setBudget.run(Math.max(0, usd), userId);
 }
 
 export function setAdmin(userId: string, isAdmin: boolean): void {
   tx(() => {
-    const u = getUser(userId);
-    if (!u) throw new Error('No such user.');
-    if (u.isAdmin && !isAdmin && (q.adminCount.get() as { n: number }).n <= 1) throw new Error('The server needs at least one administrator.');
-    q.setAdmin.run(isAdmin ? 1 : 0, userId);
+    const u = requireUser(userId);
+    if (!isAdmin) keepAnAdmin(u);
+    uq.setAdmin.run(isAdmin ? 1 : 0, userId);
   });
+}
+
+/** The user's password, when they have one (the same cost whether or not they do). */
+export function checkPassword(u: User, password: string): boolean {
+  if (!u.passwordHash || !u.salt) {
+    hashPassword(password, 'timing');
+    return false;
+  }
+  return crypto.timingSafeEqual(Buffer.from(hashPassword(password, u.salt), 'hex'), Buffer.from(u.passwordHash, 'hex'));
+}
+
+/** Sign in with a user name and password: active accounts that have a password. */
+export function verifyUser(username: string, password: string): User | null {
+  const u = findUser(username);
+  if (!u) {
+    hashPassword(password, 'timing');
+    return null;
+  }
+  return checkPassword(u, password) && u.status === 'active' ? u : null;
+}
+
+/** Set (or replace) a password. The user's other sessions are signed out. */
+export function setPassword(userId: string, password: string, keepToken = '') {
+  validPassword(password);
+  const salt = crypto.randomBytes(16).toString('hex');
+  uq.setPassword.run(hashPassword(password, salt), salt, userId);
+  uq.signOut.run(userId, keepToken);
+}
+
+/** Remove the password: only for someone who signs in with a passkey. */
+export function clearPassword(userId: string) {
+  if (!listPasskeys(userId).length) throw new Error('Add a passkey before removing your password, or you could not sign in.');
+  uq.setPassword.run(null, null, userId);
+}
+
+export function listPasskeys(userId: string): Passkey[] {
+  return (uq.passkeys.all(userId) as unknown as PasskeyRow[]).map((r) => toPasskey(r)!);
+}
+
+export function getPasskey(id: string): Passkey | undefined {
+  return toPasskey(uq.passkey.get(id) as PasskeyRow | undefined);
+}
+
+export function addPasskey(p: Omit<Passkey, 'createdAt' | 'lastUsedAt'>) {
+  const name = p.name.trim().slice(0, 40) || 'Passkey';
+  uq.addPasskey.run(p.id, p.userId, name, p.publicKey, p.counter, JSON.stringify(p.transports), Date.now());
+}
+
+export function passkeyUsed(id: string, counter: number) {
+  uq.usePasskey.run(counter, Date.now(), id);
+}
+
+/**
+ * Remove a passkey. A user removing their own (`own`) keeps a way to sign in; an administrator may remove the last
+ * one (the account then needs its password, or a reset).
+ */
+export function removePasskey(userId: string, passkeyId: string, own: boolean) {
+  const u = requireUser(userId);
+  if (own && !u.passwordHash && listPasskeys(userId).length <= 1) throw new Error('This is your only way to sign in: set a password or add another passkey first.');
+  uq.removePasskey.run(passkeyId, userId);
+}
+
+export function listUsers(): User[] {
+  return (uq.all.all() as unknown as UserRow[]).map((r) => toUser(r)!);
+}
+
+export function getUser(id: string): User | undefined {
+  return toUser(uq.byId.get(id) as UserRow | undefined);
+}
+
+export function findUser(username: string): User | undefined {
+  return toUser(uq.byName.get(username.trim()) as UserRow | undefined);
+}
+
+/** A server without accounts gets an administrator, invited: its invite code is returned once. */
+export function ensureAdmin(): string | null {
+  if ((uq.count.get() as { n: number }).n > 0) return null;
+  return createUser({ displayName: 'Administrator', isAdmin: true }).inviteCode;
 }
 
 // ------------------------------------------------------------------------------------ spending
 
-/** Today's date (server local time): budgets reset at midnight. */
+/** Today's date (server local time), the spending ledger's key. */
 export const spendDay = (t = Date.now()) => {
   const d = new Date(t);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
+/** The first day of this calendar month: budgets start again then. */
+export const monthStart = (t = Date.now()) => `${spendDay(t).slice(0, 7)}-01`;
+
 const sq = {
   add: db.prepare('INSERT INTO spend (user_id, day, usd, calls) VALUES (?, ?, ?, 1) ON CONFLICT(user_id, day) DO UPDATE SET usd = usd + excluded.usd, calls = calls + 1'),
-  one: db.prepare('SELECT usd, calls FROM spend WHERE user_id = ? AND day = ?'),
+  since: db.prepare('SELECT COALESCE(SUM(usd), 0) AS usd, COALESCE(SUM(calls), 0) AS calls FROM spend WHERE user_id = ? AND day >= ?'),
   total: db.prepare('SELECT COALESCE(SUM(usd), 0) AS usd FROM spend WHERE day = ?'),
   range: db.prepare('SELECT user_id, SUM(usd) AS usd, SUM(calls) AS calls FROM spend WHERE day >= ? GROUP BY user_id'),
-  setLimit: db.prepare('UPDATE users SET daily_limit_usd = ? WHERE id = ?'),
 };
 
 export function recordSpend(userId: string, usd: number) {
   sq.add.run(userId, spendDay(), usd);
 }
 
-export function spentToday(userId: string): { usd: number; calls: number } {
-  return (sq.one.get(userId, spendDay()) as { usd: number; calls: number } | undefined) ?? { usd: 0, calls: 0 };
+/** What a user has spent this calendar month. */
+export function spentThisMonth(userId: string): { usd: number; calls: number } {
+  return sq.since.get(userId, monthStart()) as { usd: number; calls: number };
 }
 
 export const spentTodayTotal = () => (sq.total.get(spendDay()) as { usd: number }).usd;
@@ -263,27 +459,7 @@ export function spendSince(day: string): Record<string, { usd: number; calls: nu
   return Object.fromEntries((sq.range.all(day) as { user_id: string; usd: number; calls: number }[]).map((r) => [r.user_id, { usd: r.usd, calls: r.calls }]));
 }
 
-export function setDailyLimit(userId: string, usd: number | null) {
-  sq.setLimit.run(usd === null ? null : Math.max(0, usd), userId);
-}
-
-export function listUsers(): User[] {
-  return (q.allUsers.all() as unknown as UserRow[]).map((r) => toUser(r)!);
-}
-
-export function getUser(id: string): User | undefined {
-  return toUser(q.userById.get(id) as UserRow | undefined);
-}
-
-export function findUser(username: string): User | undefined {
-  return toUser(q.userByName.get(username.trim()) as UserRow | undefined);
-}
-
-/** A server without accounts gets an administrator "admin" with a one-time password (returned once). */
-export function ensureAdmin(): string | null {
-  if ((q.userCount.get() as { n: number }).n > 0) return null;
-  return inviteUser('admin', true).password;
-}
+// ------------------------------------------------------------------------------------ sessions
 
 export function createSession(userId: string): string {
   const token = crypto.randomBytes(32).toString('hex');
@@ -292,11 +468,13 @@ export function createSession(userId: string): string {
   return token;
 }
 
+/** The signed-in user of a session: only an active account. */
 export function sessionUser(token: string | undefined): User | null {
   if (!token) return null;
   const s = q.session.get(token) as { user_id: string; expires: number } | undefined;
   if (!s || s.expires < Date.now()) return null;
-  return getUser(s.user_id) ?? null;
+  const u = getUser(s.user_id);
+  return u && u.status === 'active' ? u : null;
 }
 
 export function deleteSession(token: string) {

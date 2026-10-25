@@ -133,7 +133,7 @@ class InstanceManager {
       worldId: state.worldId,
       name: state.name,
       ownerId: state.ownerId,
-      ownerName: getUser(state.ownerId)?.username,
+      ownerName: getUser(state.ownerId)?.displayName,
       updatedAt: state.updatedAt,
       createdAt: state.createdAt,
       snapshotOf: state.snapshotOf,

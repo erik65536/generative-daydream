@@ -75,10 +75,9 @@
   "jobConcurrency": 1,
   "waitForModelsMs": 1800000,
   "spending": {
-    "dailyPerUserUsd": 0.5,
     "dailyTotalUsd": 3,
     "adminsUnlimited": true,
-    "_comment": "Daily budgets for OpenAI in dollars: per player (an administrator can set each player's own on the Users page) and for the whole server. Administrators are unlimited unless given their own budget. Providers may set \"pricing\": {\"inputPerM\", \"cachedPerM\", \"outputPerM\"}; OpenAI providers default to gpt-6-luna prices."
+    "_comment": "OpenAI spending in dollars: the whole server's daily ceiling, and whether administrators are unlimited. Each player's monthly budget is set on their account (Users page, $10 by default). Providers may set \"pricing\": {\"inputPerM\", \"cachedPerM\", \"outputPerM\"}; OpenAI providers default to gpt-6-luna prices."
   },
   "animation": {
     "_comment": "Actor animation (docs/world-art.md, Characters in motion): a 3D model, rig and clip sheets in eight directions per character and creature, made in the background after the art. Paths are this machine's. python: one with numpy, scipy and Pillow (ComfyUI's embedded Python has them). library: Quaternius' Universal Animation Library (CC0, the glTF from its Unreal-Godot folder). skintokens (optional, for animals and other bodies): a SkinTokens checkout with its own venv; on the GPU it takes a hold on the whole GPU from the broker (about 14 GB), cpu takes 12-18 minutes per creature. pitch: degrees the sprite camera looks down at figures standing on the top-down maps (35, a classic three-quarter view). Leave this block out to keep still images.",

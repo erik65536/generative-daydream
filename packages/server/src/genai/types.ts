@@ -72,8 +72,11 @@ export interface GenAIConfig {
   jobConcurrency?: number;
   /** How long background work waits for a busy, rate-limited or unreachable model before failing (ms). */
   waitForModelsMs?: number;
-  /** Daily budgets for paid models, in dollars: per user (an admin can set each user's own) and for the whole server. */
-  spending?: { dailyPerUserUsd?: number; dailyTotalUsd?: number; adminsUnlimited?: boolean };
+  /**
+   * Paid models: the whole server's daily ceiling in dollars, and whether administrators are unlimited (default yes).
+   * Each user's monthly budget is set on their account.
+   */
+  spending?: { dailyTotalUsd?: number; adminsUnlimited?: boolean };
   /** Actor animation (packages/server/animator): mesh, rig and clip sheets for characters and creatures. */
   animation?: AnimationConfig;
 }

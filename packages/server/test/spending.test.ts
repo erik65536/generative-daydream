@@ -3,7 +3,8 @@ import { checkBudget, costOf, chargeUsage, BudgetExceeded } from '../src/genai/s
 import { withCallContext } from '../src/genai/context';
 import { genai } from '../src/genai/service';
 import { installSpendLedger } from '../src/spending';
-import { inviteUser, setDailyLimit, spentToday } from '../src/storage';
+import { setMonthlyBudget, spentThisMonth } from '../src/storage';
+import { activeUser } from './helpers';
 import type { ProviderConfig } from '../src/genai/types';
 
 const paid: ProviderConfig = { type: 'openai-responses', model: 'gpt-6-luna', pricing: { inputPerM: 1, cachedPerM: 0.1, outputPerM: 5 } };
@@ -24,23 +25,24 @@ describe('AI spending', () => {
     expect(costOf({ ...luna, modelPricing: { 'gpt-6.1-sol': { inputPerM: 4 } } }, { input: 1_000_000 }, 'gpt-6.1-sol')).toBeCloseTo(2);
   });
 
-  it('charges the user a call is for and refuses them past their daily budget', () => {
-    genai().config.spending = { dailyPerUserUsd: 0.01, dailyTotalUsd: 1000 };
+  it('charges the user a call is for and refuses them past their monthly budget', () => {
+    genai().config.spending = { dailyTotalUsd: 1000 };
     installSpendLedger();
-    const u = inviteUser(`t_spend_${Date.now().toString(36)}`).user;
+    const u = activeUser();
+    setMonthlyBudget(u.id, 0.01);
     withCallContext({ priority: 'interactive', userId: u.id }, () => {
       expect(() => checkBudget(paid)).not.toThrow();
       chargeUsage(paid, { input: 6000 });
       chargeUsage(paid, { input: 6000 });
-      expect(spentToday(u.id).usd).toBeCloseTo(0.012);
+      expect(spentThisMonth(u.id).usd).toBeCloseTo(0.012);
       expect(() => checkBudget(paid)).toThrow(BudgetExceeded);
       // An administrator raises this player's own budget.
-      setDailyLimit(u.id, 1);
+      setMonthlyBudget(u.id, 1);
       expect(() => checkBudget(paid)).not.toThrow();
     });
     // Painting on the GPU (and a free provider) is never refused.
     withCallContext({ priority: 'interactive', userId: u.id }, () => {
-      setDailyLimit(u.id, 0);
+      setMonthlyBudget(u.id, 0);
       expect(() => checkBudget({ type: 'comfyui' })).not.toThrow();
       expect(() => checkBudget({ ...paid, pricing: { inputPerM: 0 } })).not.toThrow();
     });

@@ -10,7 +10,8 @@ import { Nav, PX_PER_METRE, Rng, makeNav, type CharacterSpec, type ClassRole, ty
 import { reloadGenAI } from '../src/genai/service';
 import { WorldGenJob, places, runGeneration } from '../src/worldgen/pipeline';
 import { populate, type Painted } from '../src/worldgen/zones';
-import { loadWorld } from '../src/storage';
+import crypto from 'node:crypto';
+import { activateUser, claimInvite, createUser, getUser, loadWorld, setPassword, type User } from '../src/storage';
 
 type Json = Record<string, unknown>;
 let counter = 0;
@@ -232,4 +233,13 @@ export function validateWorld(w: WorldDefinition) {
 export function hero(w: WorldDefinition, name: string, role: ClassRole = 'tank'): CharacterSpec {
   const cls = w.ruleset.classes.find((c) => c.role === role) ?? w.ruleset.classes[0]!;
   return { name, classId: cls.id, kinId: w.ruleset.kins[0]!.id };
+}
+
+/** An active account set up as a player would from an invite: a fresh user name and a password. */
+export function activeUser(isAdmin = false, password = 'a-chosen-password'): User {
+  const u = createUser({ displayName: 'Tester', isAdmin });
+  claimInvite(u.id, { username: `t_${crypto.randomBytes(5).toString('hex')}` });
+  setPassword(u.id, password);
+  activateUser(u.id);
+  return getUser(u.id)!;
 }

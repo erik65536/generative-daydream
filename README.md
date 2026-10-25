@@ -9,7 +9,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173 and sign in as `admin` with the one-time password the server prints on its first start (you choose your own password next). Accounts are invite only: administrators create them on the **Users** page, and `npm run users -w @gd/server -- reset <user id>` resets a password from the console. Building a daydream needs OpenAI and ComfyUI behind the GPU broker (below); then choose **Dream a new daydream**.
+Open the invite link the server prints on its first start (http://localhost:5173/#/invite/<code>) and set up the administrator: a user name, then a password, a passkey or both. Accounts are invite only: administrators create invite links on the **Users** page, and `npm run users -w @gd/server -- list` / `reset <user name or id>` make a new link from the console. Building a daydream needs OpenAI and ComfyUI behind the GPU broker (below); then choose **Dream a new daydream**.
 
 - `npm run dev` — game server (port 3000, restarts on every change), job worker (pauses its jobs at a safe point and restarts with new code; they resume from checkpoints) + Vite client (port 5173)
 - `npm run build && npm start` — production: the server also serves the built client on port 3000 (`GD_PORT` to change) and runs jobs itself; set `GD_WORKER=external` and run `npm run worker -w @gd/server` (one or more) to run them in separate processes. See [docs/server-architecture.md](docs/server-architecture.md).
@@ -86,7 +86,7 @@ Each purpose maps to a provider:
 | `image.sprite` / `image.icon` | Characters, creatures, objects and item icons | ComfyUI (Krea 2 + BiRefNet) |
 | `speech.input` | Talking to people by voice | OpenAI transcription |
 
-Provider types: `openai-responses`, `openai-decision`, `openai-transcribe` and `comfyui`. API keys can be literal, `"env:VAR_NAME"` or `"credential:NAME"` (a systemd credential). Paid calls are charged to the user they are for, within daily budgets (`spending`).
+Provider types: `openai-responses`, `openai-decision`, `openai-transcribe` and `comfyui`. API keys can be literal, `"env:VAR_NAME"` or `"credential:NAME"` (a systemd credential). Paid calls are charged to the user they are for, within each account's monthly budget and the server's daily ceiling (`spending`).
 
 World generation runs text and image work side by side: places are painted as top-down maps as soon as they have a name, while the story is still being written. ComfyUI needs Krea 2 (with its AnyPaint LoRA and nodes), Qwen-Image 2.1 Turbo, SeedVR2 and BiRefNet (`config/comfyui/`, see `docs/places.md` and `docs/world-art.md`). It sits behind the GPU broker, which gives every installation's work its turn on the GPU and unloads one model before the next: copy `config/broker.example.json` to `config/broker.json` on the GPU PC and start it with `npm run broker`; the comfyui provider's `baseUrl` is the broker's address. Animation also needs the `animation` block (local paths to a Python with numpy, scipy and Pillow, the clip library and optionally SkinTokens).
 
@@ -97,4 +97,4 @@ World generation runs text and image work side by side: places are painted as to
 - Combat balance was tuned with automated AI-vs-AI simulations (`packages/server/test/balance.test.ts`); it needs human playtesting, especially for higher levels and long campaigns.
 - The rule-based stand-in for people (when out of budget, or the model is down) handles common intents (work, trade, news, persuasion, gifts, remembering dates); real conversation needs the model.
 - Multiplayer works mechanically but is lightly tested; there is no lobby chat or invite flow beyond "open to others".
-- Accounts are local username/password (scrypt) with cookie sessions; there is no password reset or OAuth.
+- Accounts are local: a password (scrypt), passkeys or both, with cookie sessions. A forgotten password is an administrator's reset (a new invite link); there is no email or OAuth.

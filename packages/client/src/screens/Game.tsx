@@ -234,7 +234,7 @@ function GameView({ me }: { me: Me }) {
               <button className="btn ghost" onClick={() => navigate('#/')}>Back to daydreams</button>
             </div>
           )}
-          <span className="dim small">{me.username}</span>
+          <span className="dim small">{me.displayName}</span>
         </div>
       )}
     </div>

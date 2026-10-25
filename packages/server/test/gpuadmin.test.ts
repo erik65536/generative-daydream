@@ -21,7 +21,8 @@ await vi.hoisted(async () => {
 });
 
 import type { WorldDefinition } from '@gd/shared';
-import { changePassword, createSession, inviteUser, saveWorld, worldDir } from '../src/storage';
+import { createSession, saveWorld, worldDir } from '../src/storage';
+import { activeUser } from './helpers';
 import { mountGpuAdmin } from '../src/gpu/admin';
 import { control, flush, pausedFor, promptBody, setProcessRole } from '../src/gpu/presence';
 import { claimNext, enqueue, enqueueAnimation, getJobRecord, queuedJobs, type JobRecord } from '../src/jobs/queue';
@@ -81,9 +82,7 @@ const comfy = fakeComfy();
 let base = '';
 
 function user(isAdmin: boolean) {
-  const name = `g_${crypto.randomBytes(4).toString('hex')}`;
-  const { user, password } = inviteUser(name, isAdmin);
-  changePassword(user.id, password, 'a-chosen-password');
+  const user = activeUser(isAdmin);
   return { user, cookie: `gd_session=${createSession(user.id)}` };
 }
 

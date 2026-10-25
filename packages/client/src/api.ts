@@ -15,33 +15,48 @@ async function call<T>(method: string, url: string, body?: unknown): Promise<T> 
   });
   const text = await res.text();
   const data = text ? JSON.parse(text) : {};
-  // The account's one-time password must be replaced first: the app shows that screen on reload.
-  if (res.status === 403 && data.code === 'password_change_required') location.reload();
   if (!res.ok) throw new ApiError(data.error ?? `Request failed (${res.status})`, res.status);
   return data as T;
 }
 
+export interface PasskeyInfo { id: string; name: string; createdAt: number; lastUsedAt: number | null }
+
 export interface Me {
   id: string;
+  /** The sign-in name (fixed). */
   username: string;
+  /** What other players see. */
+  displayName: string;
   isAdmin: boolean;
-  /** Signed in with a one-time password: must choose a new one first. */
-  mustChangePassword: boolean;
-  /** Today's spending on paid AI models against the daily budget (null limit: unlimited). */
-  ai?: { spentToday: number; limit: number | null };
+  hasPassword: boolean;
+  passkeys: PasskeyInfo[];
+  /** This month's spending on paid AI models against the monthly budget (null budget: unlimited). */
+  ai: { spentMonth: number; budget: number | null };
 }
 
-export interface UserRow extends Me {
+export type UserStatus = 'invited' | 'active' | 'disabled';
+
+export interface UserRow extends Omit<Me, 'username'> {
+  /** Chosen by the user when setting the account up (null until then). */
+  username: string | null;
+  status: UserStatus;
   createdAt: number;
-  /** This user's own daily budget, if an administrator set one (null: the server default). */
-  dailyLimitUsd: number | null;
-  spentWeek: number;
+  monthlyBudgetUsd: number;
+  /** While invited: the code for the invite link (#/invite/<code>) and when it stops working. */
+  inviteCode: string | null;
+  inviteExpires: number | null;
 }
+
+/** That it is you, before changing how you sign in: your current password, or a passkey you just used. */
+export type Proof = { password: string } | { passkey: { flow: string; response: unknown } };
+
+/** A passkey ceremony the server started: its id and the options for the browser. */
+export interface Ceremony<O> { flow: string; options: O }
 
 /** A deleted daydream waiting in the trash. */
 export interface TrashEntry { id: string; title: string; ownerId: string; ownerName: string; deletedAt: number; deletedBy: string; saves: number }
 
-export interface SpendingSummary { today: number; dailyTotalUsd: number | null; dailyPerUserUsd: number | null; adminsUnlimited: boolean; systemWeek: number }
+export interface SpendingSummary { today: number; dailyTotalUsd: number | null; adminsUnlimited: boolean; systemMonth: number }
 
 /** The admin GPU page: everything that uses the GPU, across the server, the worker and CLI runs. */
 export interface GpuJob {
@@ -198,12 +213,25 @@ export type CharSpec = Omit<import('@gd/shared').CharacterSpec, 'sprite'>;
 export const api = {
   me: () => call<Me>('GET', '/api/me'),
   login: (username: string, password: string) => call<Me>('POST', '/api/auth/login', { username, password }),
-  changePassword: (current: string, next: string) => call<Me>('POST', '/api/auth/password', { current, next }),
+  passkeySignInStart: () => call<Ceremony<unknown>>('POST', '/api/auth/passkey/start', {}),
+  passkeySignInFinish: (flow: string, response: unknown) => call<Me>('POST', '/api/auth/passkey/finish', { flow, response }),
+  /** An invite: the user name it already has (an account reset keeps it) or null to choose one, and the name it was made for. */
+  invite: (code: string) => call<{ username: string | null; displayName: string }>('GET', `/api/join/${encodeURIComponent(code)}`),
+  joinWithPassword: (code: string, o: { username?: string; displayName: string; password: string }) => call<Me>('POST', `/api/join/${encodeURIComponent(code)}/password`, o),
+  joinPasskeyStart: (code: string, username?: string) => call<Ceremony<unknown>>('POST', `/api/join/${encodeURIComponent(code)}/passkey/start`, { username }),
+  joinPasskeyFinish: (code: string, o: { flow: string; response: unknown; name: string; username?: string; displayName: string }) => call<Me>('POST', `/api/join/${encodeURIComponent(code)}/passkey/finish`, o),
+  setDisplayName: (displayName: string) => call<Me>('PATCH', '/api/account', { displayName }),
+  proofStart: () => call<Ceremony<unknown>>('POST', '/api/account/proof/start', {}),
+  setPassword: (proof: Proof | undefined, next: string) => call<Me>('POST', '/api/account/password', { proof, next }),
+  clearPassword: (proof: Proof) => call<Me>('DELETE', '/api/account/password', { proof }),
+  passkeyAddStart: (proof: Proof) => call<Ceremony<unknown>>('POST', '/api/account/passkeys/start', { proof }),
+  passkeyAddFinish: (flow: string, response: unknown, name: string) => call<Me>('POST', '/api/account/passkeys/finish', { flow, response, name }),
+  removePasskey: (id: string, proof: Proof) => call<Me>('DELETE', `/api/account/passkeys/${encodeURIComponent(id)}`, { proof }),
   users: () => call<UserRow[]>('GET', '/api/admin/users'),
-  inviteUser: (username: string, isAdmin: boolean) => call<{ user: UserRow; password: string }>('POST', '/api/admin/users', { username, isAdmin }),
-  resetUser: (id: string) => call<{ password: string }>('POST', `/api/admin/users/${id}/reset`, {}),
-  setUserAdmin: (id: string, isAdmin: boolean) => call<UserRow>('PATCH', `/api/admin/users/${id}`, { isAdmin }),
-  setUserBudget: (id: string, dailyLimitUsd: number | null) => call<UserRow>('PATCH', `/api/admin/users/${id}`, { dailyLimitUsd }),
+  createUser: (o: { displayName: string; isAdmin: boolean; monthlyBudgetUsd: number }) => call<UserRow>('POST', '/api/admin/users', o),
+  updateUser: (id: string, patch: { displayName?: string; monthlyBudgetUsd?: number; isAdmin?: boolean; enabled?: boolean }) => call<UserRow>('PATCH', `/api/admin/users/${id}`, patch),
+  resetUser: (id: string) => call<UserRow>('POST', `/api/admin/users/${id}/reset`, {}),
+  removeUserPasskey: (id: string, passkeyId: string) => call<UserRow>('DELETE', `/api/admin/users/${id}/passkeys/${encodeURIComponent(passkeyId)}`),
   spending: () => call<SpendingSummary>('GET', '/api/admin/spending'),
   trash: () => call<{ days: number; entries: TrashEntry[] }>('GET', '/api/admin/trash'),
   restoreWorld: (id: string) => call<{ ok: true; id: string }>('POST', `/api/admin/trash/${id}/restore`, {}),

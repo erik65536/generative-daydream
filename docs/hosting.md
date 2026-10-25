@@ -76,7 +76,7 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
    sudo cp /opt/gd/deploy/systemd/gd-*.service /opt/gd/deploy/systemd/gd-ddns.timer /etc/systemd/system/
    sudo systemctl daemon-reload
    sudo systemctl enable --now gd-server gd-worker gd-ddns.timer
-   journalctl -u gd-server -n 50        # the first start prints the administrator's one-time password
+   journalctl -u gd-server -n 50        # the first start prints the administrator's invite link
    ```
 6. **DNS (Namecheap).**
    - In *Domain List → erik.engineer → Advanced DNS*, turn on **Dynamic DNS**. Its password is the
@@ -170,12 +170,14 @@ removes entries older than 30 days when it starts and twice a day after that.
 
 ## Security notes
 
-- **Accounts:** invite only, hashed passwords, and a lockout per user id and per address after repeated failed
-  sign-ins.
+- **Accounts:** invite only (links that run out after 5 days), scrypt-hashed passwords and/or passkeys (WebAuthn,
+  checked against the site's own origin), and a lockout per user name and per address after repeated failed
+  sign-ins or invite guesses.
 - **Behind Caddy:**
   - The server trusts `X-Forwarded-*` from loopback only. The lockout therefore sees each player's real address,
     and on https the session cookie is marked `Secure`.
   - Caddy adds HSTS, `nosniff`, `X-Frame-Options` and `Referrer-Policy`.
-- **Spending:** daily caps per user and for the whole server in `genai.json`, plus the project limit at OpenAI.
+- **Spending:** a monthly budget per account (set on the Users page), a daily ceiling for the whole server in
+  `genai.json`, plus the project limit at OpenAI.
 - **Service sandbox:** the services run as `gd` with `ProtectSystem=strict`. They can write only `/var/lib/gd`
   (and a private `/tmp`), and they cannot read home folders.

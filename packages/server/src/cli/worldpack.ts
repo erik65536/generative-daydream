@@ -114,7 +114,7 @@ function importWorld(file: string) {
       fs.rmSync(dest, { recursive: true, force: true });
       fs.cpSync(path.join(tmp, 'world'), dest, { recursive: true });
       w.ownerId = owner.id;
-      w.ownerName = owner.username;
+      w.ownerName = owner.displayName;
       saveWorld(w);
       console.log(`Added "${w.concept.title}" (${w.id}), owned by ${owner.username}.`);
     }

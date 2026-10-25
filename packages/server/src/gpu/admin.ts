@@ -139,7 +139,7 @@ export function mountGpuAdmin(app: Express) {
     const body = z.object({ scope: z.enum(['all', 'animation']), on: z.boolean() }).safeParse(req.body);
     if (!body.success) return void res.status(400).json({ error: 'scope (all or animation) and on are required.' });
     const key = body.data.scope === 'all' ? 'paused' : 'animationPaused';
-    setControl(key, body.data.on, admin(req).username);
+    setControl(key, body.data.on, admin(req).username ?? admin(req).displayName);
     audit(admin(req), body.data.on ? 'pause' : 'resume', body.data.scope === 'all' ? 'all GPU work' : 'background animation');
     res.json({ paused: control('paused'), animationPaused: control('animationPaused') });
   });

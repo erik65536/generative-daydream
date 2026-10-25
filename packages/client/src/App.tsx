@@ -1,6 +1,6 @@
 import { Component, useEffect, useState, type ReactNode } from 'react';
 import { api, ApiError, type Me } from './api';
-import { AuthScreen, ForcedPasswordScreen } from './screens/Auth';
+import { AuthScreen, InviteScreen } from './screens/Auth';
 import { Account, Users } from './screens/Account';
 import { Lobby } from './screens/Lobby';
 import { CreateWorld } from './screens/CreateWorld';
@@ -76,9 +76,10 @@ export function App() {
         <div className="spinner" />
       </div>
     );
-  if (!me) return <AuthScreen onAuthed={setMe} />;
-  if (me.mustChangePassword) return <ForcedPasswordScreen me={me} onDone={setMe} onLogout={() => setMe(null)} />;
   const parts = hash.replace(/^#\/?/, '').split('/');
+  // An invite link sets up its account, whoever is signed in on this browser.
+  if (parts[0] === 'invite' && parts[1]) return <InviteScreen code={decodeURIComponent(parts[1])} onAuthed={setMe} />;
+  if (!me) return <AuthScreen onAuthed={setMe} />;
   let screen;
   switch (parts[0]) {
     case 'create':

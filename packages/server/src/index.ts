@@ -8,7 +8,8 @@ import { z } from 'zod';
 import { COMBAT_MODES, DIFFICULTIES, GAME_LENGTHS, PROMPT_TOPICS, WORLD_SIZES, type ClientMessage, type ServerMessage, type WorldDefinition } from '@gd/shared';
 import { CLIENT_DIST, CONFIG_DIR } from './paths';
 import * as store from './storage';
-import { adminOnly, auth, authPending, cookie, type AuthedRequest } from './auth';
+import { adminOnly, auth, cookie, type AuthedRequest } from './auth';
+import { mountAccounts } from './accounts';
 import { mountGpuAdmin } from './gpu/admin';
 import { setProcessRole } from './gpu/presence';
 import { genai, reloadGenAI } from './genai/service';
@@ -18,7 +19,7 @@ import { sendAsset } from './assetroute';
 import { resumeWorldGeneration, startWorldGeneration } from './worldgen/pipeline';
 import { activeJob, ACTIVE, enqueue, JobConflict, latestJob, logSince, logTail, queuePosition, requestCancel, type JobKind } from './jobs/queue';
 import { startWorker } from './jobs/worker';
-import { dailyLimitFor, installSpendLedger } from './spending';
+import { installSpendLedger } from './spending';
 import { withCallContext } from './genai/context';
 import { BudgetExceeded } from './genai/spend';
 import { applyEdit, EditSchema, studioView, TaskSchema } from './worldgen/studio';
@@ -46,54 +47,7 @@ app.use(express.json({ limit: '2mb' }));
 
 // ------------------------------------------------------------------------------ auth (middleware in auth.ts)
 
-/** Today's AI spending against a user's daily budget (limit null: unlimited). */
-const aiOf = (u: store.User) => {
-  const limit = dailyLimitFor(u.id);
-  return { spentToday: Math.round(store.spentToday(u.id).usd * 10000) / 10000, limit: Number.isFinite(limit) ? limit : null };
-};
-
-const meOf = (u: store.User) => ({ id: u.id, username: u.username, isAdmin: u.isAdmin, mustChangePassword: u.mustChangePassword, ai: aiOf(u) });
-
-const setSession = (req: Request, res: Response, token: string) =>
-  res.setHeader('Set-Cookie', `gd_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}${req.secure ? '; Secure' : ''}`);
-
-const Credentials = z.object({ username: z.string().min(1).max(40), password: z.string().min(1).max(200) });
-
-/** Failed sign-ins per user id and per address: a short lockout after repeated failures. */
-const failures = new Map<string, { n: number; until: number }>();
-const locked = (k: string) => (failures.get(k)?.until ?? 0) > Date.now();
-const fail = (k: string) => {
-  // Forget old entries now and then, so the map stays small.
-  if (failures.size > 5000) for (const [key, f] of failures) if (f.until < Date.now()) failures.delete(key);
-  const f = failures.get(k) ?? { n: 0, until: 0 };
-  f.n++;
-  if (f.n >= 5) {
-    f.until = Date.now() + Math.min(15 * 60_000, 30_000 * 2 ** (f.n - 5));
-  }
-  failures.set(k, f);
-};
-
-app.post('/api/auth/login', (req, res) => {
-  const body = Credentials.safeParse(req.body);
-  if (!body.success) return void res.status(400).json({ error: 'User id and password are required.' });
-  const keys = [`u:${body.data.username.trim().toLowerCase()}`, `ip:${req.ip}`];
-  if (keys.some(locked)) return void res.status(429).json({ error: 'Too many failed attempts. Try again in a few minutes.' });
-  const u = store.verifyUser(body.data.username, body.data.password);
-  if (!u) {
-    keys.forEach(fail);
-    return void res.status(401).json({ error: 'Wrong user id or password.' });
-  }
-  keys.forEach((k) => failures.delete(k));
-  setSession(req, res, store.createSession(u.id));
-  res.json(meOf(u));
-});
-
-app.post('/api/auth/logout', (req, res) => {
-  const t = cookie(req, 'gd_session');
-  if (t) store.deleteSession(t);
-  res.setHeader('Set-Cookie', `gd_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${req.secure ? '; Secure' : ''}`);
-  res.json({ ok: true });
-});
+mountAccounts(app, { sameOrigin });
 
 /** Speech to text for conversations: a short recording in, its words out (charged to the speaker's AI budget). */
 app.get('/api/voice', auth, (_req, res) => {
@@ -111,72 +65,6 @@ app.post('/api/voice/transcribe', auth, express.raw({ type: ['audio/*', 'applica
     res.json({ text });
   } catch (e) {
     res.status(e instanceof BudgetExceeded ? 402 : 502).json({ error: (e as Error).message });
-  }
-});
-
-app.get('/api/me', authPending, (req, res) => {
-  res.json(meOf((req as AuthedRequest).user));
-});
-
-/** Change your own password (required after an administrator set it). Other sessions are signed out. */
-app.post('/api/auth/password', authPending, (req, res) => {
-  const body = z.object({ current: z.string().max(200), next: z.string().max(200) }).safeParse(req.body);
-  if (!body.success) return void res.status(400).json({ error: 'Current and new password are required.' });
-  const u = (req as AuthedRequest).user;
-  try {
-    store.changePassword(u.id, body.data.current, body.data.next, cookie(req, 'gd_session'));
-  } catch (e) {
-    return void res.status(400).json({ error: (e as Error).message });
-  }
-  res.json(meOf(store.getUser(u.id)!));
-});
-
-// ------------------------------------------------------------------------------ user administration
-
-const userRow = (u: store.User, week?: Record<string, { usd: number; calls: number }>) => ({ ...meOf(u), createdAt: u.createdAt, dailyLimitUsd: u.dailyLimitUsd, spentWeek: Math.round((week?.[u.id]?.usd ?? 0) * 10000) / 10000 });
-
-app.get('/api/admin/users', auth, adminOnly, (_req, res) => {
-  const week = store.spendSince(store.spendDay(Date.now() - 6 * 86400_000));
-  res.json(store.listUsers().map((u) => userRow(u, week)));
-});
-
-/** The whole server's AI spending today, its ceiling and the default per-user budget. */
-app.get('/api/admin/spending', auth, adminOnly, (_req, res) => {
-  const s = genai().config.spending ?? {};
-  const week = store.spendSince(store.spendDay(Date.now() - 6 * 86400_000));
-  res.json({ today: Math.round(store.spentTodayTotal() * 10000) / 10000, dailyTotalUsd: s.dailyTotalUsd ?? null, dailyPerUserUsd: s.dailyPerUserUsd ?? null, adminsUnlimited: s.adminsUnlimited !== false, systemWeek: week.system?.usd ?? 0 });
-});
-
-/** Invite a user: the server makes a one-time password, shown to the administrator once. */
-app.post('/api/admin/users', auth, adminOnly, (req, res) => {
-  const body = z.object({ username: z.string().max(40), isAdmin: z.boolean().default(false) }).safeParse(req.body);
-  if (!body.success) return void res.status(400).json({ error: 'A user id is required.' });
-  try {
-    const { user, password } = store.inviteUser(body.data.username, body.data.isAdmin);
-    res.json({ user: userRow(user), password });
-  } catch (e) {
-    res.status(400).json({ error: (e as Error).message });
-  }
-});
-
-app.post('/api/admin/users/:id/reset', auth, adminOnly, (req, res) => {
-  try {
-    res.json({ password: store.resetPassword(String(req.params.id)) });
-  } catch (e) {
-    res.status(400).json({ error: (e as Error).message });
-  }
-});
-
-app.patch('/api/admin/users/:id', auth, adminOnly, (req, res) => {
-  const body = z.object({ isAdmin: z.boolean().optional(), dailyLimitUsd: z.number().min(0).max(1000).nullable().optional() }).safeParse(req.body);
-  if (!body.success) return void res.status(400).json({ error: 'Nothing to change.' });
-  try {
-    if (body.data.isAdmin !== undefined) store.setAdmin(String(req.params.id), body.data.isAdmin);
-    // A number sets this user's own daily AI budget; null returns them to the server default.
-    if (body.data.dailyLimitUsd !== undefined) store.setDailyLimit(String(req.params.id), body.data.dailyLimitUsd);
-    res.json(userRow(store.getUser(String(req.params.id))!));
-  } catch (e) {
-    res.status(400).json({ error: (e as Error).message });
   }
 });
 
@@ -271,7 +159,7 @@ app.post('/api/worlds', auth, (req, res) => {
   const body = WorldInputSchema.safeParse(req.body);
   if (!body.success) return void res.status(400).json({ error: body.error.issues[0]?.message ?? 'Invalid input.' });
   try {
-    res.json(startWorldGeneration(body.data, { id: u.id, name: u.username }, { maxPerOwner: u.isAdmin ? undefined : 2 }));
+    res.json(startWorldGeneration(body.data, { id: u.id, name: u.displayName }, { maxPerOwner: u.isAdmin ? undefined : 2 }));
   } catch (e) {
     if (e instanceof JobConflict) return void res.status(429).json({ error: e.message });
     throw e;
@@ -307,7 +195,7 @@ app.delete('/api/worlds/:id', auth, (req, res) => {
   if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your daydream.' });
   // Saves being played stop first, so a last autosave does not write them back outside the trash.
   for (const s of store.listInstances(w.id)) if (instances.isLive(s.id)) instances.drop(s.id);
-  store.deleteWorld(w.id, u.username);
+  store.deleteWorld(w.id, u.displayName);
   res.json({ ok: true });
 });
 
@@ -379,7 +267,7 @@ app.post('/api/worlds/:id/art', auth, (req, res) => {
 /** Queue a job on a world; answers 409 (and returns false) when one is already active there. */
 function queueJob(res: Response, kind: JobKind, w: WorldDefinition, u: store.User, params: unknown, priority = 5): boolean {
   try {
-    enqueue(kind, w.id, { id: u.id, name: u.username }, params, { priority, step: 'Waiting for a free worker' });
+    enqueue(kind, w.id, { id: u.id, name: u.displayName }, params, { priority, step: 'Waiting for a free worker' });
     return true;
   } catch (e) {
     if (!(e instanceof JobConflict)) throw e;
@@ -479,7 +367,7 @@ app.post('/api/worlds/:id/instances', auth, (req, res) => {
   if (w.status !== 'ready') return void res.status(404).json({ error: 'This daydream is not ready yet.' });
   const body = z.object({ name: z.string().max(60).default(''), party: z.array(CharSpecSchema).min(1).max(4), difficulty: z.enum(DIFFICULTIES as [string, ...string[]]).optional() }).safeParse(req.body);
   if (!body.success) return void res.status(400).json({ error: body.error.issues[0]?.message ?? 'Invalid party.' });
-  const inst = instances.create(w, u.id, u.username, body.data.name, body.data.party, body.data.difficulty as never);
+  const inst = instances.create(w, u.id, u.displayName, body.data.name, body.data.party, body.data.difficulty as never);
   res.json({ instanceId: inst.state.id });
 });
 
@@ -491,7 +379,7 @@ app.post('/api/instances/:id/join', auth, (req, res) => {
   if (!inst.state.open && inst.state.ownerId !== u.id) return void res.status(403).json({ error: 'That reverie is not open to other dreamers.' });
   const body = z.object({ party: z.array(CharSpecSchema).min(1).max(4) }).safeParse(req.body);
   if (!body.success) return void res.status(400).json({ error: 'Invalid party.' });
-  instances.addPlayer(inst, u.id, u.username, body.data.party);
+  instances.addPlayer(inst, u.id, u.displayName, body.data.party);
   res.json({ ok: true });
 });
 
@@ -609,8 +497,8 @@ wss.on('connection', (ws: WebSocket, req) => {
   const send = (m: ServerMessage) => {
     if (ws.readyState === ws.OPEN) ws.send(JSON.stringify(m));
   };
-  if (!user || user.mustChangePassword) {
-    send({ t: 'error', message: user ? 'Choose a new password first.' : 'Please sign in.' });
+  if (!user) {
+    send({ t: 'error', message: 'Please sign in.' });
     return ws.close();
   }
   const inst = instances.get(instanceId);
@@ -662,8 +550,10 @@ server.listen(PORT, HOST, () => {
   setInterval(purge, 12 * 3600_000).unref();
   const first = store.ensureAdmin();
   if (first) console.log(`
-No accounts yet: created administrator "admin" with one-time password ${first}
-(change it on first sign-in; reset it any time with: npm run users -w @gd/server -- reset admin)
+No accounts yet: created an administrator. Open this invite link within 5 days to set it up (a user name, then a
+password, a passkey or both):
+  <this site>/#/invite/${first}
+(a new link any time: npm run users -w @gd/server -- list, then reset <its id>)
 `);
   console.log('GenAI purposes:');
   for (const p of g.describe()) console.log(`  ${p.purpose.padEnd(14)} → ${p.provider} (${p.type}${p.model ? `, ${p.model}` : ''})`);

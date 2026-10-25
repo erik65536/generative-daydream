@@ -207,9 +207,10 @@ export function pausedFor(rank: number, kind?: string): string | null {
 
 // ------------------------------------------------------------------------------------ audit
 
-export function audit(admin: { id: string; username: string }, action: string, target: string, detail = '') {
-  q.audit.run(Date.now(), admin.id, admin.username, action, target, detail);
-  console.log(`[gpu admin] ${admin.username}: ${action} ${target}${detail ? ` (${detail})` : ''}`);
+export function audit(admin: { id: string; username: string | null; displayName: string }, action: string, target: string, detail = '') {
+  const who = admin.username ?? admin.displayName;
+  q.audit.run(Date.now(), admin.id, who, action, target, detail);
+  console.log(`[gpu admin] ${who}: ${action} ${target}${detail ? ` (${detail})` : ''}`);
 }
 
 export const auditLog = (n = 40) => q.auditTail.all(n) as { at: number; adminId: string; adminName: string; action: string; target: string; detail: string }[];
