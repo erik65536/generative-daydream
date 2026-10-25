@@ -9,7 +9,7 @@ import { client, useGame } from '../net/game';
 import { ItemIcon, ItemTooltip, Portrait, SkillIcon, SkillTooltip, Window, hideTip, tip } from './common';
 import { navigate } from '../App';
 import { MAP_W, WorldMapView } from './worldmap';
-import { trackedQuest } from './tracker';
+import { objectiveWhere, trackedQuest } from './tracker';
 import { readAloud, setReadAloud, voiceIn, voiceOut } from '../voice';
 
 const iconUrl = (baseId: string) => client().assetUrl(`icon_${baseId}`);
@@ -763,10 +763,11 @@ export function QuestWindow({ onClose }: { onClose: () => void }) {
                   return list.map((o, i) => {
                     const st = cur.p.objectives[o.id];
                     const hidden = o.hidden && i > curIdx && curIdx >= 0 && cur.p.status === 'active';
+                    const where = !hidden && !st?.done && cur.p.status === 'active' ? objectiveWhere(world, player, o) : undefined;
                     return (
                       <div key={o.id} className={`obj ${st?.done ? 'done' : ''} ${hidden ? 'hidden' : ''}`}>
                         <span className="chk">{st?.done ? '✓' : ''}</span>
-                        <span>{hidden ? '???' : o.description}{!hidden && (o.count ?? 1) > 1 ? ` (${st?.progress ?? 0}/${o.count})` : ''}{o.optional ? ' (optional)' : ''}</span>
+                        <span>{hidden ? '???' : o.description}{!hidden && (o.count ?? 1) > 1 ? ` (${st?.progress ?? 0}/${o.count})` : ''}{o.optional ? ' (optional)' : ''}{where && <span className="muted small"> · {where}</span>}</span>
                       </div>
                     );
                   });

@@ -16,21 +16,32 @@ export function currentObjective(player: PlayerView, d: QuestDef): QuestObjectiv
   return list.find((o) => !p?.objectives[o.id]?.done && !o.optional) ?? list.find((o) => !p?.objectives[o.id]?.done);
 }
 
-/** Where an objective leads, in words ("Mara Venn · Switchyard"). */
+/**
+ * Where an objective leads, in words ("Mara Venn · Switchyard"). The place is always named: the quest itself points
+ * there (a step that names nowhere left players searching every place).
+ */
 export function objectiveWhere(world: ClientWorld, player: PlayerView, o: QuestObjective): string | undefined {
   const zoneName = (id?: string) => world.zones.find((x) => x.id === id)?.name;
-  const known = (id?: string) => !!id && player.knownZones.includes(id);
+  const companion = (id: string) => player.party.some((c) => c.npcId === id);
   if (o.npcId) {
     const n = world.npcs.find((x) => x.id === o.npcId);
-    return n ? `${n.name}${known(n.zoneId) ? ` · ${zoneName(n.zoneId)}` : ''}` : undefined;
+    if (!n) return undefined;
+    return companion(n.id) ? `${n.name} · with you` : `${n.name} · ${zoneName(n.zoneId) ?? 'somewhere'}`;
   }
   if (o.targetId) {
     const b = world.bosses.find((x) => x.id === o.targetId);
-    if (b) return known(b.zoneId) ? zoneName(b.zoneId) : 'somewhere not yet found';
+    if (b) return zoneName(b.zoneId);
   }
-  if (o.zoneId) return known(o.zoneId) ? zoneName(o.zoneId) : 'a place not yet on your map';
+  if (o.zoneId) return zoneName(o.zoneId);
+  if (o.featureId) return zoneName(world.zones.find((z) => z.features.some((f) => f.id === o.featureId))?.id);
+  if (o.itemUniqueId) {
+    const z = world.zones.find((x) => x.features.some((f) => f.items?.includes(o.itemUniqueId!)));
+    if (z) return zoneName(z.id);
+  }
   if (o.familyId) {
-    const z = world.zones.find((x) => x.familyIds?.includes(o.familyId!) && player.knownZones.includes(x.id));
+    // Where the party has been first, else the nearest kind of place that has them.
+    const homes = world.zones.filter((x) => x.familyIds?.includes(o.familyId!));
+    const z = homes.find((x) => player.knownZones.includes(x.id)) ?? homes[0];
     return z ? zoneName(z.id) : undefined;
   }
   return undefined;

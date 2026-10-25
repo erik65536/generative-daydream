@@ -348,6 +348,27 @@ export class DialogueEngine {
       .join('\n');
   }
 
+  /**
+   * Where a quest step leads, for the person telling of it: the place, and for someone in town the building they
+   * work at ("Wrenna, at the Acorn Cup in Thimblebrook").
+   */
+  private whereOf(o: QuestObjective): string {
+    const w = this.h.ctx.world, zone = (id?: string) => (id ? this.h.ctx.zones.get(id) : undefined);
+    if (o.npcId) {
+      const n = this.npc(o.npcId);
+      if (!n) return '';
+      if (n.companion) return `${n.name}, travelling with the player`;
+      const z = zone(n.zoneId), b = z?.buildings?.find((x) => x.npcId === n.id);
+      return `${n.name}, ${b ? `at ${b.name} in ` : 'in '}${z?.name ?? 'somewhere'}`;
+    }
+    const z =
+      zone(o.zoneId) ??
+      zone(w.bosses.find((b) => b.id === o.targetId)?.zoneId) ??
+      w.zones.find((x) => (o.featureId && x.features.some((f) => f.id === o.featureId)) || (o.itemUniqueId && x.features.some((f) => f.items?.includes(o.itemUniqueId!)))) ??
+      (o.familyId ? w.zones.find((x) => x.familyIds.includes(o.familyId!)) : undefined);
+    return z ? `in ${z.name}` : '';
+  }
+
   /** Everything the NPC may know and do this turn. */
   private turnContext(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: TurnInput) {
     const w = this.h.ctx.world;
@@ -373,11 +394,11 @@ export class DialogueEngine {
     allowed.push('share_lead');
     const lines: string[] = [];
     lines.push(`THE PLAYER: ${this.h.partySummary(userId)}`);
-    if (available.length) lines.push(`QUESTS YOU COULD OFFER (use offer_quest with questId when it fits the conversation, e.g. they ask for work or help):\n${available.map((q) => `- ${q.id}: "${q.title}" — ${q.summary}`).join('\n')}`);
+    if (available.length) lines.push(`QUESTS YOU COULD OFFER (use offer_quest with questId when it fits the conversation, e.g. they ask for work or help):\n${available.map((q) => `- ${q.id}: "${q.title}" — ${q.summary}${q.objectives[0] && this.whereOf(q.objectives[0]) ? ` (first step: ${this.whereOf(q.objectives[0])})` : ''}`).join('\n')}`);
     if (involved.length)
       lines.push(
         `ACTIVE QUESTS INVOLVING YOU:\n${involved
-          .map((q) => `- ${q.def.id} "${q.def.title}" — ${q.def.summary}\n${q.objectives.map((o, i) => `   ${o.id} [${p.quests[q.def.id]!.objectives[o.id]?.done ? 'done' : i === q.current ? 'CURRENT' : 'later'}] (${o.type}) ${o.description}`).join('\n')}`)
+          .map((q) => `- ${q.def.id} "${q.def.title}" — ${q.def.summary}\n${q.objectives.map((o, i) => `   ${o.id} [${p.quests[q.def.id]!.objectives[o.id]?.done ? 'done' : i === q.current ? 'CURRENT' : 'later'}] (${o.type}) ${o.description}${this.whereOf(o) ? ` — ${this.whereOf(o)}` : ''}`).join('\n')}`)
           .join('\n')}\nUse complete_objective only for a CURRENT objective this conversation genuinely satisfies (e.g. a "persuade" objective when the player made a convincing case). Use modify_objective/add_objective if the story should change because of what the player said or did. Be skeptical of unproven claims.`,
       );
     if (npcItems.length) lines.push(`ITEMS YOU HAVE (give_item with itemRef):\n${npcItems.map((it, i) => `- item${i}: ${this.h.ctx.itemName(it)} — ${this.h.ctx.itemDescription(it)}`).join('\n')}`);
@@ -386,7 +407,8 @@ export class DialogueEngine {
     if (knownZones.length) lines.push(`PLACES YOU KNOW (reveal_location with zoneId when you tell them how to get there): ${knownZones.map((zz) => `${zz.id}=${zz.name}`).join(', ')}`);
     if (gift) lines.push(`GIFTS: you could give ${p.name} something you can spare (give_gift with gift = supplies: remedies and consumables; gear: a piece of equipment; material: crafting stock; keepsake: something of small value) — as thanks, out of friendship, or to help with a danger you talked about. ${gift === 'generous' ? 'You feel generous toward them.' : 'Something modest.'} Not every conversation.`);
     if (untold.length) lines.push(`SECRETS YOU COULD CONFIDE (share_secret with secretRef, only when trust is earned or you are truly persuaded): ${untold.map((i) => `secret${i}`).join(', ')} — the secrets listed above, in order (secret0 is the first).`);
-    lines.push('LEADS: when you tell them something they should act on — a warning, a rumour, where something can be found — also record it with share_lead (one plain sentence) so it goes in their journal.');
+    lines.push('DIRECTIONS: when you send them to someone or somewhere, say plainly which place it is in (by its name) and, if you know, roughly where there (by the mill, past the north gate), so they can find it.');
+    lines.push('LEADS: when you tell them something they should act on — a warning, a rumour, where something can be found — also record it with share_lead (one plain sentence that names the place) so it goes in their journal.');
     const comm = this.h.communication();
     lines.push(`MEMORY: use "remember" for anything about the player worth recalling later (promises, personal details, deeds). If it is about a future date set dueInDays. "spread" says who you would tell (${['nobody — keep it to yourself', 'close friends and family', 'the whole town', 'anyone, far and wide'][comm]} is the most this world allows). Set gathering=true only for an event the community would gather for (a celebration, a memorial).`);
     if (allowed.includes('create_quest')) {
