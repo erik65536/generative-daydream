@@ -90,6 +90,8 @@ export interface Painting {
 }
 
 export type ZoneKind = 'town' | 'wilderness' | 'dungeon';
+/** A way down into a dungeon is drawn inside its town or wilds (a door, a cave mouth); every other way crosses the map's edge. */
+export const wayDrawnInside = (from: { kind: ZoneKind }, to?: { kind: ZoneKind }) => to?.kind === 'dungeon' && from.kind !== 'dungeon';
 
 export type FeatureKind = 'exit' | 'chest' | 'trap' | 'sign' | 'lore' | 'craft_station' | 'waypoint' | 'object';
 

@@ -217,7 +217,7 @@ textarea.input { resize: vertical; min-height: 80px; line-height: 1.5; }
 .close-x { margin-left: auto; }
 
 /* dialog: a wide conversation panel above the action bar, portrait on the left */
-.dialog { left: 50%; transform: translateX(-50%); bottom: 104px; width: min(940px, calc(100vw - 32px)); height: min(380px, 46vh); display: flex; flex-direction: row; overflow: hidden; }
+.dialog { left: 50%; transform: translateX(-50%); bottom: 96px; width: min(940px, calc(100vw - 32px)); height: min(560px, calc(100vh - 150px)); display: flex; flex-direction: row; overflow: hidden; }
 .dialog .dlg-side { width: 190px; flex: none; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 14px 12px; border-right: 1px solid var(--line); background: linear-gradient(180deg, rgba(255,255,255,.03), transparent 60%); }
 .dialog .dlg-portrait { width: 150px; height: 150px; border-radius: 12px; overflow: hidden; border: 1px solid var(--line-strong); background: radial-gradient(circle at 50% 30%, rgba(255,255,255,.1), rgba(0,0,0,.5)); box-shadow: inset 0 -30px 40px rgba(0,0,0,.35); }
 .dialog .dlg-portrait canvas { width: 100%; height: 100%; }
@@ -228,7 +228,7 @@ textarea.input { resize: vertical; min-height: 80px; line-height: 1.5; }
 .dialog .dlg-disp .bar > div { height: 100%; transition: width .6s ease; }
 .dialog .dlg-side .btn { width: 100%; }
 .dialog .dlg-main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.dialog .msgs { flex: 1; overflow: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
+.dialog .msgs { flex: 1; overflow: auto; position: relative; padding: 16px 20px; display: flex; flex-direction: column; gap: 12px; }
 .msg .emo { margin-left: 8px; font-size: 10px; letter-spacing: .06em; opacity: .9; }
 .caret { display: inline-block; width: 7px; height: 1em; margin-left: 2px; vertical-align: -2px; background: var(--gold); opacity: .6; animation: think 1s infinite; }
 .replies { margin: 0; padding: 0 0 0 22px; display: flex; flex-direction: column; gap: 2px; }

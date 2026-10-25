@@ -11,6 +11,7 @@ import sharp from 'sharp';
 import {
   BitSet, NAV_CELL, Nav, PX_PER_METRE, Rng, pictureToGround,
   type AssetRecord, type FeatureDef, type NavDef, type Vec2, type WorldDefinition, type ZoneDef, type ZoneKind,
+  wayDrawnInside,
 } from '@gd/shared';
 import { buildPack } from '../rules/encounters';
 import { worldAssetDir, worldDir, writeJsonAtomic } from '../storage';
@@ -76,7 +77,7 @@ export function sketchOf(w: WorldDefinition, z: ZoneDef): PlaceSketch {
     buildings: (z.buildings ?? []).map((b) => ({ id: b.id, name: b.name, purpose: b.purpose })),
     exits: z.features.filter((f) => f.kind === 'exit').map((f) => {
       // A way down into a dungeon is drawn inside the map; other ways out face where they lead.
-      const into = target(f)?.kind === 'dungeon' && z.kind !== 'dungeon';
+      const into = wayDrawnInside(z, target(f));
       return { id: f.id, to: target(f)?.name ?? 'elsewhere', into, side: into ? undefined : sideToward(z.mapPos, target(f)?.mapPos) };
     }),
   };

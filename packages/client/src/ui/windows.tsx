@@ -115,8 +115,37 @@ export function DialogWindow() {
   useEffect(() => {
     spoken.current = dialog ? dialog.messages.map((m) => m.speaker).lastIndexOf('npc') : -1;
   }, [dialog?.npcId]);
+  // The newest line stays in view while it types itself out and the replies appear under it, unless the player has
+  // scrolled up to read; a new line brings the view back down. A line taller than the view is shown from its start.
+  const stick = useRef(true);
+  const hasDialog = !!dialog;
   useEffect(() => {
-    msgsRef.current?.scrollTo({ top: msgsRef.current.scrollHeight, behavior: 'smooth' });
+    const el = msgsRef.current;
+    if (!el) return;
+    const toEnd = () => {
+      if (!stick.current) return;
+      const last = [...el.querySelectorAll<HTMLElement>('.msg')].pop();
+      if (last && last.offsetHeight > el.clientHeight - 32) el.scrollTop = last.offsetTop - 12;
+      else el.scrollTop = el.scrollHeight;
+    };
+    const onScroll = () => (stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48);
+    el.addEventListener('scroll', onScroll);
+    el.addEventListener('settle', toEnd);
+    const mo = new MutationObserver(toEnd);
+    mo.observe(el, { childList: true, subtree: true, characterData: true });
+    const ro = new ResizeObserver(toEnd);
+    ro.observe(el);
+    toEnd();
+    return () => {
+      el.removeEventListener('scroll', onScroll);
+      el.removeEventListener('settle', toEnd);
+      mo.disconnect();
+      ro.disconnect();
+    };
+  }, [hasDialog, dialog?.npcId]);
+  useEffect(() => {
+    stick.current = true;
+    msgsRef.current?.dispatchEvent(new Event('settle'));
   }, [dialog?.messages.length, dialog?.thinking]);
   useEffect(() => {
     inputRef.current?.focus();
