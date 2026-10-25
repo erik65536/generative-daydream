@@ -96,6 +96,10 @@ describe('durable jobs', () => {
     expect(job.step).toBe('Balancing');
     job.end('balance');
     expect(job.step).toBe('Painting places');
+    // A resumed build passes stages it finished before; they announce themselves and end again.
+    job.push('Balancing', 'step');
+    job.end('balance');
+    expect(job.step).toBe('Painting places');
   });
 
   it('animation runs beside the world jobs, queued once, after them', () => {
