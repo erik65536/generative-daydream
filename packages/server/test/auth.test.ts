@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import crypto from 'node:crypto';
 import { changePassword, createSession, findUser, inviteUser, listUsers, resetPassword, sessionUser, setAdmin, verifyUser } from '../src/storage';
+import { cookie } from '../src/auth';
 
 const uid = () => `t_${crypto.randomBytes(4).toString('hex')}`;
 
@@ -52,5 +53,12 @@ describe('invite-only accounts', () => {
     for (const u of listUsers()) if (u.isAdmin && u.id !== a.id) setAdmin(u.id, false);
     expect(() => setAdmin(a.id, false)).toThrow(/at least one/);
     expect(findUser(a.username)!.isAdmin).toBe(true);
+  });
+
+  it('reads the session cookie, and takes a malformed one for none', () => {
+    const req = (c: string) => ({ headers: { cookie: c } }) as never;
+    expect(cookie(req('a=1; gd_session=abc%20def'), 'gd_session')).toBe('abc def');
+    expect(cookie(req('gd_session=%E0%A4%A'), 'gd_session')).toBeUndefined();
+    expect(cookie(req('other=1'), 'gd_session')).toBeUndefined();
   });
 });
