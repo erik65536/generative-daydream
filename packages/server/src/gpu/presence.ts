@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { globalDb } from '../storage';
 import { HOLDER } from '../jobs/queue';
-import { callContext } from '../genai/context';
+import { callContext, PRIORITY_RANK } from '../genai/context';
 
 export type ProcessRole = 'server' | 'worker' | 'cli';
 
@@ -236,14 +236,17 @@ export interface PromptTag extends WorkTag {
   role: ProcessRole;
   label: string;
   workflow?: string;
+  /** The GPU broker's urgency: 0 a player waits, 1 studio, 2 world builds, 3 background animation. */
+  rank?: number;
 }
 
 export function promptTag(workflow?: string): PromptTag {
-  const t = callContext()?.tag;
-  return { holder: HOLDER, role: me.role, label: me.label, workflow, ...t };
+  const ctx = callContext();
+  const rank = !ctx ? 2 : ctx.tag?.kind === 'animate' ? 3 : PRIORITY_RANK[ctx.priority];
+  return { holder: HOLDER, role: me.role, label: me.label, workflow, rank, ...ctx?.tag };
 }
 
 /** The body of a ComfyUI /prompt request, tagged with this process and the job it is for. */
-export function promptBody(prompt: unknown, workflow?: string): string {
-  return JSON.stringify({ prompt, client_id: `gd-${me.role}`, extra_data: { gd: promptTag(workflow) } });
+export function promptBody(prompt: unknown, workflow?: string, promptId?: string): string {
+  return JSON.stringify({ prompt, prompt_id: promptId, client_id: `gd-${me.role}`, extra_data: { gd: promptTag(workflow) } });
 }

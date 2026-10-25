@@ -7,7 +7,8 @@
   "workspaces": [
     "packages/shared",
     "packages/server",
-    "packages/client"
+    "packages/client",
+    "packages/gpu-broker"
   ],
   "scripts": {
     "dev": "node scripts/dev.mjs",
@@ -15,7 +16,8 @@
     "dev:client": "npm run dev -w @gd/client",
     "build": "npm run build -w @gd/client",
     "start": "npm run start -w @gd/server",
-    "typecheck": "tsc -p packages/shared && tsc -p packages/server && tsc -p packages/client",
+    "broker": "npm run start -w @gd/gpu-broker",
+    "typecheck": "tsc -p packages/shared && tsc -p packages/server && tsc -p packages/client && tsc -p packages/gpu-broker",
     "test": "vitest run"
   },
   "devDependencies": {

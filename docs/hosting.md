@@ -9,7 +9,7 @@ on the GPU PC.
 players ──https 443──▶ router ──▶ game box (Ubuntu 26.04 LTS)
                                    Caddy :443 ──▶ gd-server 127.0.0.1:3000 ─┐
                                                   gd-worker ────────────────┼──▶ OpenAI (hosted)
-                                                  /var/lib/gd (data)        └──▶ ComfyUI on the GPU PC :8188 (LAN)
+                                                  /var/lib/gd (data)        └──▶ GPU broker on the GPU PC :8190 (LAN) ──▶ ComfyUI
 ```
 
 Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and `deploy.sh`.
@@ -19,18 +19,15 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
 - **Game box:** the game server and the job worker, both from this repository, plus Caddy.
   - The worker must run beside the server. The job queue, job leases, GPU leases and spending ledger live in the
     one SQLite database, and world folders sit next to it. SQLite does not work over a network share.
-- **GPU PC:** ComfyUI only. The worker reaches it over HTTP: `/prompt`, `/upload/image`, `/view` and `/free`.
-  Setting `baseUrl` in the config is all a remote ComfyUI needs.
+- **GPU PC:** ComfyUI behind the GPU broker (`docs/gpu-broker.md`), which takes turns on the GPU for production
+  and development alike. The worker speaks ComfyUI's HTTP API to the broker.
+  - Start the broker by hand with `npm run broker`. While it is not running, GPU work waits.
 - **When the GPU PC is off:** a model that does not answer is retried, and the job shows as *waiting*. Builds
   resume when ComfyUI comes back. Play never needs the GPU PC.
 - **Not hosted yet:**
   - **Animation.** The animator starts Python with CUDA and headless Chromium on the machine that runs the job.
     Leave the `animation` block out of the box's config, and characters stay still images. A remote animator
     service on the GPU PC is a separate pass.
-  - **Sharing the GPU between production and development.** Each installation keeps its GPU lease in its own
-    database, so production and development cannot see each other's lease. ComfyUI still runs prompts one at a
-    time, but both sides can interleave models, and SkinTokens (outside ComfyUI) can collide with a painting.
-    A shared GPU broker is a separate pass.
 
 ## Game box setup (once)
 
@@ -48,7 +45,10 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
    ```
 3. **Model config.** Make `/etc/gd/genai.json` from your own `config/genai.json`, with these changes:
    - Every OpenAI provider uses `"apiKey": "credential:openai"`.
-   - The `comfy` provider's `baseUrl` is `http://<GPU PC LAN address>:8188`.
+   - The `comfy` provider has `"baseUrl": "http://<GPU PC LAN address>:8190"`, `"broker": true` and
+     `"apiKey": "credential:gpu-broker"`.
+   - The broker token is a long random string (`openssl rand -hex 32`). It is stored as the `gpu-broker`
+     credential on the box, and under the client `prod` in the GPU PC's `config/broker.json`.
    - No `animation` block, and no llama.cpp providers.
    - Keep the `spending` caps.
 
@@ -63,6 +63,7 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
    sudo mkdir -p /etc/credstore.encrypted
    sudo systemd-creds encrypt --name=openai - /etc/credstore.encrypted/openai
    sudo systemd-creds encrypt --name=namecheap-ddns - /etc/credstore.encrypted/namecheap-ddns
+   sudo systemd-creds encrypt --name=gpu-broker - /etc/credstore.encrypted/gpu-broker
    ```
    - The files are encrypted with the machine's TPM if it has one, else with a host key in `/var/lib/systemd`.
    - systemd decrypts a credential only for the services that list it. Each service sees it as a file in its
@@ -103,16 +104,18 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
 
 ## GPU PC setup
 
-- Start ComfyUI with `--listen 0.0.0.0` (or its LAN address) so the box can reach it.
-- ComfyUI has no sign-in, so allow its port from the game box only:
+- **ComfyUI listens on 127.0.0.1** (its default, without `--listen`), so only the broker reaches it.
+- **The broker:** `config/broker.json` from `config/broker.example.json`, with the `prod` token, then
+  `npm run broker`. It listens on port 8190.
+- **Firewall:** allow the broker's port from the game box only:
   ```powershell
-  New-NetFirewallRule -DisplayName "ComfyUI from game box" -Direction Inbound -Protocol TCP -LocalPort 8188 -RemoteAddress <game box LAN address> -Action Allow
+  New-NetFirewallRule -DisplayName "GPU broker from game box" -Direction Inbound -Protocol TCP -LocalPort 8190 -RemoteAddress <game box LAN address> -Action Allow
   ```
-- Check that no older "allow" rule for `python.exe` opens it to the whole network:
+- Check that no older "allow" rule for `python.exe` or `node.exe` opens ports to the whole network:
   ```powershell
-  Get-NetFirewallApplicationFilter | ? Program -like '*python*'
+  Get-NetFirewallApplicationFilter | ? Program -match 'python|node'
   ```
-- Development keeps using `http://127.0.0.1:8188`.
+- **Development** points its `comfy` provider at `http://127.0.0.1:8190` with `"broker": true`.
 
 ## Deploying
 

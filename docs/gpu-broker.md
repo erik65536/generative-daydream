@@ -1,4 +1,7 @@
-# GPU broker (design for the next pass, not built yet)
+# GPU broker
+
+Stage 1 is built: the broker (`packages/gpu-broker`, `npm run broker`), the ComfyUI pass-through, holds, and the
+game's one ComfyUI client. Stages 2–4 below are still to do.
 
 ## The problem
 
@@ -204,12 +207,20 @@ slow, a `render` adapter on the GPU PC takes the rig files and returns the sheet
 
 ## Order of work
 
-1. **Broker core, ComfyUI pass-through and the unified client.**
-   - Development uses the broker alone at first. Nothing should change except that work goes through the broker.
-   - Tests for the scheduler, with fake adapters: rank order, staying on the loaded model, the grace period, the
-     hold limit, unloading on a switch, cancelling, a down adapter.
-   - Tests for the pass-through, against a fake ComfyUI HTTP server.
-   - A game test for a client following `X-Broker-State`.
+1. **Broker core, ComfyUI pass-through and the unified client. Done.**
+   - Tests: the scheduler with fake programs (`packages/gpu-broker/test/scheduler.test.ts`), the pass-through
+     against a fake ComfyUI (`front.test.ts`), and the game's client waiting in the broker's queue
+     (`packages/server/test/comfyclient.test.ts`).
+   - Tried on the GPU PC: a production-style painting with a token waited behind a development hold, was told
+     "Waiting for the GPU (next)", then painted through the real ComfyUI.
+   - Also built: **holds** (`POST /broker/holds`, then `GET` at least every 30 s, `DELETE` to end). A hold is a
+     turn on the whole GPU for a program the caller runs itself on the GPU PC. Development's SkinTokens uses one
+     (`withBrokerHold` in `genai/comfyclient.ts`) until the SkinTokens adapter of stage 3.
+   - **To use it in development:**
+     - Copy `config/broker.example.json` to `config/broker.json` and start it with `npm run broker`.
+     - In `config/genai.json`, give the `comfy` provider `"baseUrl": "http://127.0.0.1:8190"` and
+       `"broker": true`. Its `gpu` group is then ignored.
+     - Requests from this PC need no token.
 2. **Production through the broker.** Firewall on 8190, ComfyUI on localhost only. Check it by running a
    production build and a development build at once and watching the broker's queue and VRAM.
 3. **SkinTokens adapter and animation in production.**

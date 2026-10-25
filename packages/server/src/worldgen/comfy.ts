@@ -2,7 +2,8 @@
  * ComfyUI calls for painting and reading places: Krea 2 (paint, repaint from a guide, continue), Qwen-Image 2.1 (edit:
  * a map redrawn as a walk plan), SAM 3 (find things) and SeedVR2 (upscale). Everything goes over ComfyUI's HTTP API, so ComfyUI can run on another machine:
  * its address is the configured comfyui provider's baseUrl (COMFY_URL overrides it). Calls take turns on the GPU
- * with every other model through genai's GPU scheduler, which unloads one model before the next needs the memory.
+ * with every other model through genai's GPU scheduler, which unloads one model before the next needs the memory;
+ * behind the GPU broker (provider "broker": true) the broker orders and unloads instead, for every installation.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
@@ -10,9 +11,7 @@ import path from 'node:path';
 import sharp from 'sharp';
 import { DATA_DIR, ROOT_DIR } from '../paths';
 import { genai } from '../genai/service';
-import { callContext } from '../genai/context';
-import { promptBody } from '../gpu/presence';
-import { dropPrompt } from '../gpu/comfyqueue';
+import { ComfyError, comfyFetch, comfyProvider, savedImages, submitAndWait, viewImage } from '../genai/comfyclient';
 
 const KREA = 'krea2_turbo_fp8_scaled.safetensors';
 const SAM = 'sam3.1_multiplex_fp16.safetensors';
@@ -23,12 +22,9 @@ const ANYPAINT_REFERENCE = 768;
 
 const CACHE = path.join(DATA_DIR, 'cache');
 
-const provider = () => Object.entries(genai().config.providers).find(([, p]) => p.type === 'comfyui');
+export { comfyBase, ComfyError } from '../genai/comfyclient';
 
-export function comfyBase(): string {
-  if (process.env.COMFY_URL) return process.env.COMFY_URL.replace(/\/+$/, '');
-  return (provider()?.[1].baseUrl ?? 'http://127.0.0.1:8188').replace(/\/+$/, '');
-}
+const provider = comfyProvider;
 
 /** Run on the GPU when it is free and `model` is loaded (SAM 3 runs as "reader"). */
 function onGpu<T>(model: string, fn: () => Promise<T>): Promise<T> {
@@ -58,7 +54,7 @@ async function upload(png: Buffer): Promise<string> {
   form.append('image', new Blob([new Uint8Array(png)], { type: 'image/png' }), name);
   form.append('subfolder', 'gd_refs');
   form.append('overwrite', 'true');
-  const res = await fetch(`${comfyBase()}/upload/image`, { method: 'POST', body: form });
+  const res = await comfyFetch('/upload/image', { method: 'POST', body: form });
   if (!res.ok) throw new Error(`ComfyUI upload failed: ${res.status}`);
   const out = (await res.json()) as { name: string; subfolder?: string };
   return out.subfolder ? `${out.subfolder}/${out.name}` : out.name;
@@ -70,43 +66,16 @@ function run(model: string, wf: unknown, timeoutMs = 900_000): Promise<Buffer[]>
 }
 
 async function execute(wf: unknown, timeoutMs: number, model: string): Promise<Buffer[]> {
-  const b = comfyBase();
-  const queued = (await (await fetch(`${b}/prompt`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: promptBody(wf, model) })).json()) as { prompt_id?: string };
-  if (!queued.prompt_id) throw new Error(`ComfyUI did not queue: ${JSON.stringify(queued).slice(0, 400)}`);
-  const id = queued.prompt_id;
-  const deadline = Date.now() + timeoutMs;
-  const cancelled = callContext()?.cancelled;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 600));
-    // The job was stopped: take its prompt off ComfyUI rather than wait for it.
-    if (cancelled?.()) {
-      await dropPrompt(b, id).catch(() => undefined);
-      throw new Error('cancelled');
-    }
-    const entry = ((await (await fetch(`${b}/history/${id}`)).json()) as Record<string, any>)[id];
-    if (!entry) continue;
-    if (entry.status?.status_str === 'error') {
-      const err = entry.status.messages?.find((m: [string, any]) => m[0] === 'execution_error')?.[1];
-      throw new ComfyError(String(err?.exception_message ?? 'execution error').slice(0, 400));
-    }
-    if (!entry.status?.completed) continue;
-    const out: Buffer[] = [];
-    for (const o of Object.values(entry.outputs ?? {}) as { images?: { filename: string; subfolder?: string; type?: string }[] }[])
-      for (const img of o.images ?? []) {
-        const q = new URLSearchParams({ filename: img.filename, subfolder: img.subfolder ?? '', type: img.type ?? 'output' });
-        out.push(Buffer.from(await (await fetch(`${b}/view?${q}`)).arrayBuffer()));
-      }
-    return out;
-  }
-  throw new ComfyError('timed out');
+  const entry = await submitAndWait(wf, { workflow: model, timeoutMs });
+  const out: Buffer[] = [];
+  for (const img of savedImages(entry)) out.push(await viewImage(img));
+  return out;
 }
-
-export class ComfyError extends Error {}
 
 /** Whether ComfyUI answers. */
 export async function comfyAlive(): Promise<boolean> {
   try {
-    return (await fetch(`${comfyBase()}/system_stats`, { signal: AbortSignal.timeout(4000) })).ok;
+    return (await comfyFetch('/system_stats', { signal: AbortSignal.timeout(4000) })).ok;
   } catch {
     return false;
   }

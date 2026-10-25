@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy to config/broker.json on the GPU PC and start the broker by hand: npm run broker. It is the only way to the GPU: every installation's ComfyUI provider points at it (\"baseUrl\": \"http://<this PC>:8190\", \"broker\": true) and ComfyUI listens on 127.0.0.1 only. Requests from this PC need no token (client \"local\"); every other client sends Authorization: Bearer <its token> (\"env:NAME\" reads an environment variable). See docs/gpu-broker.md.",
+  "listen": { "host": "0.0.0.0", "port": 8190 },
+  "clients": { "prod": "env:GD_BROKER_TOKEN_PROD" },
+  "adapters": {
+    "comfyui": { "url": "http://127.0.0.1:8188", "freeBetweenModels": true }
+  },
+  "holdMs": 180000,
+  "graceMs": 1500
+}

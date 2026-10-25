@@ -13,6 +13,8 @@ Environment=NODE_ENV=production GD_HOST=127.0.0.1 GD_PORT=3000 GD_WORKER=externa
 Environment=GD_DATA_DIR=/var/lib/gd GD_GENAI_CONFIG=/etc/gd/genai.json
 # The OpenAI key: a file only this service can read (provider "apiKey": "credential:openai"), never in the environment.
 LoadCredentialEncrypted=openai
+# The GPU broker's token (comfy provider "apiKey": "credential:gpu-broker").
+LoadCredentialEncrypted=gpu-broker
 Restart=always
 RestartSec=2
 # Saves are written on SIGTERM.

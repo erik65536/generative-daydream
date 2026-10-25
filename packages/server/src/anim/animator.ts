@@ -20,6 +20,7 @@ import { ACTOR_CLIPS, ANIM_VERSION, clipKey, type ActorAnim, type BodyPlan, type
 import { genai } from '../genai/service';
 import { callContext } from '../genai/context';
 import { promptTag } from '../gpu/presence';
+import { comfyTarget, withBrokerHold } from '../genai/comfyclient';
 import type { AnimationConfig, ProviderConfig } from '../genai/types';
 import { worldAssetDir, worldDir } from '../storage';
 import { renderSheets, type Rendered } from './render';
@@ -70,7 +71,9 @@ export const jobDir = (worldId: string, key: string) => path.join(worldDir(world
 export function runStep(cfg: AnimationConfig, step: string, job: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
   return new Promise((resolve, reject) => {
     // Its ComfyUI prompts carry the job's tag; a stopped job ends the step.
-    const p = spawn(cfg.python, [ANIMATOR, step, job, JSON.stringify(args)], { env: { ...process.env, PYTHONIOENCODING: 'utf8', GD_PROMPT_TAG: JSON.stringify(promptTag(`animator ${step}`)) } });
+    // The GPU broker's token, when ComfyUI is behind one (the steps that make meshes send prompts there).
+    const token = comfyTarget(comfyProvider(cfg)?.[1]).headers.authorization?.replace(/^Bearer /, '');
+    const p = spawn(cfg.python, [ANIMATOR, step, job, JSON.stringify(args)], { env: { ...process.env, PYTHONIOENCODING: 'utf8', GD_PROMPT_TAG: JSON.stringify(promptTag(`animator ${step}`)), ...(token ? { GD_COMFY_TOKEN: token } : {}) } });
     const cancelled = callContext()?.cancelled;
     let stopped = false;
     const watch = cancelled
@@ -188,7 +191,9 @@ export async function animateActor(job: ActorJob, opts: AnimateOptions = {}): Pr
     } else {
       const st = cfg.skintokens!;
       const run = () => runStep(cfg, 'skintokens', dir, { dir: st.dir, python: st.python, device: st.device ?? 'cuda' });
-      await (st.device === 'cpu' ? run() : turn(() => onGpu(exclusive(cfg), 'skintokens', rank, run)));
+      // On the GPU it needs the GPU alone: a turn from the broker (which unloads everything else), or this process's GPU group.
+      const broker = comfy?.[1].broker;
+      await (st.device === 'cpu' ? run() : turn(() => (broker ? withBrokerHold('skintokens', promptTag().rank ?? 3, run, comfyTarget(comfy[1])) : onGpu(exclusive(cfg), 'skintokens', rank, run))));
       await runStep(cfg, 'rig-auto', dir, { body: job.body, height: ACTOR_HEIGHT });
     }
     redo.add('clips');

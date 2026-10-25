@@ -5,6 +5,7 @@
  */
 import { execFile } from 'node:child_process';
 import type { PromptTag } from './presence';
+import { comfyHeaders } from '../genai/comfyclient';
 
 export interface PromptOrigin {
   /** server / worker / cli: a tagged prompt from that kind of process; animator: the animator's Python steps;
@@ -66,7 +67,7 @@ const toPrompt = (it: QueueItem): ComfyPrompt => {
 
 export async function readQueue(base: string): Promise<ComfyQueue> {
   try {
-    const res = await fetch(`${base}/queue`, { signal: AbortSignal.timeout(4000) });
+    const res = await fetch(`${base}/queue`, { headers: comfyHeaders(), signal: AbortSignal.timeout(4000) });
     if (!res.ok) return { up: false, error: `HTTP ${res.status}`, running: [], pending: [] };
     const data = (await res.json()) as { queue_running?: QueueItem[]; queue_pending?: QueueItem[] };
     return {
@@ -93,7 +94,7 @@ let historyCache: { base: string; t: number; v: ComfyHistory } | null = null;
 export async function readHistory(base: string): Promise<ComfyHistory | null> {
   if (historyCache && historyCache.base === base && Date.now() - historyCache.t < 20_000) return historyCache.v;
   try {
-    const res = await fetch(`${base}/history?max_items=64`, { signal: AbortSignal.timeout(6000) });
+    const res = await fetch(`${base}/history?max_items=64`, { headers: comfyHeaders(), signal: AbortSignal.timeout(6000) });
     if (!res.ok) return null;
     const data = (await res.json()) as Record<string, { prompt?: QueueItem; outputs?: Record<string, { images?: unknown[] }>; status?: { status_str?: string; messages?: [string, { timestamp?: number; exception_message?: string }][] } }>;
     const hourAgo = Date.now() - 3600_000;
@@ -121,7 +122,7 @@ export async function readHistory(base: string): Promise<ComfyHistory | null> {
 export async function dropPrompt(base: string, id: string): Promise<'removed' | 'interrupted' | 'gone'> {
   const q = await readQueue(base);
   if (!q.up) throw new Error(`ComfyUI is not answering (${q.error})`);
-  const post = (p: string, body: unknown) => fetch(`${base}${p}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) });
+  const post = (p: string, body: unknown) => fetch(`${base}${p}`, { method: 'POST', headers: { ...comfyHeaders(), 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) });
   if (q.pending.some((p) => p.id === id)) {
     await post('/queue', { delete: [id] });
     return 'removed';
@@ -165,7 +166,7 @@ function nvidiaSmi(): Promise<Device | null> {
 
 async function comfyDevice(base: string): Promise<Device | null> {
   try {
-    const s = (await (await fetch(`${base}/system_stats`, { signal: AbortSignal.timeout(3000) })).json()) as { devices?: { name: string; vram_total: number; vram_free: number }[] };
+    const s = (await (await fetch(`${base}/system_stats`, { headers: comfyHeaders(), signal: AbortSignal.timeout(3000) })).json()) as { devices?: { name: string; vram_total: number; vram_free: number }[] };
     const d = s.devices?.[0];
     return d ? { name: d.name, vramUsedMb: Math.round((d.vram_total - d.vram_free) / 2 ** 20), vramTotalMb: Math.round(d.vram_total / 2 ** 20), source: 'comfyui' } : null;
   } catch {

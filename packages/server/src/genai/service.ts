@@ -24,6 +24,8 @@ export function loadGenAIConfig(): GenAIConfig {
   const file = process.env.GD_GENAI_CONFIG ?? path.join(CONFIG_DIR, 'genai.json');
   if (!fs.existsSync(file)) return DEFAULT_CONFIG;
   const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Partial<GenAIConfig>;
+  // Behind the GPU broker, the broker takes turns and unloads: no in-process GPU group for that provider.
+  for (const p of Object.values(raw.providers ?? {})) if (p.broker) delete p.gpu;
   return {
     ...DEFAULT_CONFIG,
     ...raw,

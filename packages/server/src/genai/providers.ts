@@ -7,9 +7,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { GenAIError, type DecisionAnswer, type DecisionProvider, type DecisionRequest, type ImageProvider, type ImageRequest, type ProviderConfig, type StructuredRequest, type TextProvider, type TextRequest } from './types';
 import { ROOT_DIR } from '../paths';
 import { strictSchema } from './json';
-import { callContext } from './context';
-import { promptBody } from '../gpu/presence';
-import { dropPrompt } from '../gpu/comfyqueue';
+import { ComfyError, comfyTarget, savedImages, submitAndWait, viewImage } from './comfyclient';
 
 /**
  * A key from the config: "env:NAME" reads an environment variable (.env in development); "credential:NAME" reads a
@@ -361,53 +359,32 @@ export class ComfyUIProvider implements ImageProvider {
   }
 
   async generate(req: ImageRequest, model?: string): Promise<Buffer> {
-    const base = trimSlash(this.cfg.baseUrl ?? 'http://127.0.0.1:8188');
+    const checkpoint = model ?? this.cfg.checkpoint ?? this.cfg.model ?? 'krea2_turbo_fp8_scaled.safetensors';
     const workflow = this.fill(this.template, {
       prompt: req.prompt,
       seed: req.seed,
       width: req.width,
       height: req.height,
-      checkpoint: model ?? this.cfg.checkpoint ?? this.cfg.model ?? 'krea2_turbo_fp8_scaled.safetensors',
+      checkpoint,
       steps: this.cfg.steps ?? 8,
       cfg: this.cfg.cfg ?? 1,
       cutter: this.cfg.cutter ?? 'birefnet.safetensors',
     });
-    return this.run(base, workflow);
+    return this.run(workflow, checkpoint);
   }
 
   /** Queue a workflow and wait for its first image. */
-  private async run(base: string, workflow: unknown): Promise<Buffer> {
-    const queued = await httpJson(`${base}/prompt`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: promptBody(workflow, 'image'),
-      timeoutMs: 30_000,
-    });
-    const id = queued.prompt_id as string;
-    if (!id) throw new GenAIError(`ComfyUI did not queue the prompt: ${JSON.stringify(queued).slice(0, 300)}`);
-    const deadline = Date.now() + (this.cfg.timeoutMs ?? 300_000);
-    const cancelled = callContext()?.cancelled;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 750));
-      if (cancelled?.()) {
-        await dropPrompt(base, id).catch(() => undefined);
-        throw new GenAIError('cancelled', false);
-      }
-      const hist = await httpJson(`${base}/history/${id}`, { method: 'GET', timeoutMs: 15_000 });
-      const entry = hist[id];
-      if (!entry) continue;
-      if (entry.status?.status_str === 'error') throw new GenAIError(`ComfyUI error: ${JSON.stringify(entry.status).slice(0, 400)}`);
-      for (const out of Object.values(entry.outputs ?? {}) as any[]) {
-        const img = out.images?.[0];
-        if (img) {
-          const q = new URLSearchParams({ filename: img.filename, subfolder: img.subfolder ?? '', type: img.type ?? 'output' });
-          const res = await fetch(`${base}/view?${q}`);
-          if (!res.ok) throw new GenAIError(`ComfyUI view failed: ${res.status}`);
-          return Buffer.from(await res.arrayBuffer());
-        }
-      }
+  private async run(workflow: unknown, model: string): Promise<Buffer> {
+    const target = comfyTarget(this.cfg);
+    try {
+      const img = savedImages(await submitAndWait(workflow, { workflow: model, timeoutMs: this.cfg.timeoutMs ?? 300_000, pollMs: 750, target }))[0];
+      if (!img) throw new GenAIError('ComfyUI saved no image');
+      return await viewImage(img, target);
+    } catch (e) {
+      if (!(e instanceof ComfyError)) throw e;
+      if (e.message === 'cancelled') throw new GenAIError('cancelled', false);
+      throw new GenAIError(e.message === 'timed out' ? 'ComfyUI timed out' : `ComfyUI error: ${e.message}`);
     }
-    throw new GenAIError('ComfyUI timed out');
   }
 }
 

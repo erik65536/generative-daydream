@@ -13,6 +13,8 @@ WorkingDirectory=/opt/gd/packages/server
 ExecStart=/opt/gd/node_modules/.bin/tsx src/worker.ts
 Environment=NODE_ENV=production GD_DATA_DIR=/var/lib/gd GD_GENAI_CONFIG=/etc/gd/genai.json
 LoadCredentialEncrypted=openai
+# The GPU broker's token (comfy provider "apiKey": "credential:gpu-broker").
+LoadCredentialEncrypted=gpu-broker
 Restart=always
 RestartSec=2
 TimeoutStopSec=180

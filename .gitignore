@@ -2,6 +2,7 @@ node_modules/
 dist/
 data/
 config/genai.json
+config/broker.json
 config/server.json
 *.log
 .env

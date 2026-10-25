@@ -55,6 +55,11 @@ export interface ProviderConfig {
    * the scheduler unloads the previous model (llama.cpp router /models/unload, ComfyUI /free) before switching.
    */
   gpu?: string;
+  /**
+   * ComfyUI: baseUrl is the GPU broker (docs/gpu-broker.md), which orders every installation's GPU work and does
+   * the unloading itself, so this provider takes no part in a `gpu` group. apiKey is the broker's token.
+   */
+  broker?: boolean;
 }
 
 export interface PurposeConfig {
