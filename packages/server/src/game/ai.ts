@@ -83,7 +83,10 @@ function scoreSkill(c: Combat, a: Actor, skill: SkillDef, target: Actor | undefi
           if (def.dot) score += ((statusDot(r, id!, stats.dpa * pot) * e.turns) / unit) * e.chance * 0.8;
           else if (def.hot) score += (who.stats().maxHp - who.hp > who.stats().maxHp * 0.2 ? (def.hot.coef * stats.dpa * pot * e.turns) / unit : 0) * e.chance;
           else if (def.control) score += 2.2 * e.turns * e.chance;
-          else score += 1.3 * e.turns * e.chance;
+          // A plain buff. The player's heroes give one only to someone a foe is close to, and value it below a blow:
+          // a cheap one-turn buff otherwise beat a healer's attack every turn and was cast over and over.
+          else if (!(a instanceof CharActor)) score += 1.3 * e.turns * e.chance;
+          else if (all.some((x) => x.alive() && isHostileTo(x, who) && d(x, who) < 6)) score += 0.6 * e.turns * e.chance;
           break;
         }
         case 'cleanse':

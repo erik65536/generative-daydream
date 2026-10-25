@@ -28,6 +28,16 @@ describe('world generation', () => {
 });
 
 describe('populating a place', () => {
+  it('only something solid blocks a line of sight, not a thin strip or the cover at either end', () => {
+    // Open ground 20 m wide with a 0.5 m strip of ferns at x = 6 and a 3 m wall at x = 12-15, both blocking sight.
+    const fern = (x: number) => x >= 6 && x < 6.5, wall = (x: number) => x >= 12 && x < 15;
+    const nav = new Nav(makeNav(20, 10, (x) => !fern(x) && !wall(x), (x) => !fern(x) && !wall(x)));
+    expect(nav.sees({ x: 2, y: 5 }, { x: 10, y: 5 })).toBe(true);
+    expect(nav.sees({ x: 10, y: 5 }, { x: 18, y: 5 })).toBe(false);
+    // Standing right behind the wall's near face still sees out past it.
+    expect(nav.sees({ x: 11.6, y: 5 }, { x: 2, y: 5 })).toBe(true);
+  });
+
   it('a party coming in through a narrow way in stands on the open ground past it', () => {
     // A 4 m gap through the barrier at the top edge, then a 2 m path 7 m long, into a 14 m clearing.
     const nav = new Nav(makeNav(30, 30, (x, y) => (x > 13 && x < 17 && y < 3) || (x > 14 && x < 16 && y < 10) || (x > 8 && x < 22 && y >= 10 && y < 24)));

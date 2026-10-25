@@ -13,6 +13,8 @@ import { findPath, hasLineOfSight, reachable, type PathOptions, type Vec2 } from
 export const PX_PER_METRE = 82 / 1.75;
 /** Navigation cell size in metres. */
 export const NAV_CELL = 0.5;
+/** How much unbroken sight-blocking ground (m) blocks a line of sight (see Nav.sees). */
+export const SIGHT_WALL = 1.5;
 
 /** Ground metres to picture pixels, given the picture position of the ground origin. */
 export function groundToPicture(x: number, y: number, ox: number, oy: number): Vec2 {
@@ -90,10 +92,20 @@ export class Nav {
     return this.walkableCell(cx, cy);
   }
 
-  /** Whether one can see from a to b (metres). */
+  /**
+   * Whether one can see from a to b (metres). Only something solid blocks the view: SIGHT_WALL metres of unbroken
+   * sight-blocking ground (a wall, a building). A thinner strip (the sight plan reads ferns and bushes as solid too)
+   * and the metre around either end (the cover one stands in or by) never do.
+   */
   sees(a: Vec2, b: Vec2): boolean {
     const [ax, ay] = this.cellOf(a.x, a.y), [bx, by] = this.cellOf(b.x, b.y);
-    return hasLineOfSight({ x: ax, y: ay }, { x: bx, y: by }, (x, y) => !this.seeThroughCell(x, y));
+    const wall = Math.round(SIGHT_WALL / NAV_CELL), edge = 1 / NAV_CELL;
+    let run = 0;
+    return hasLineOfSight({ x: ax, y: ay }, { x: bx, y: by }, (x, y) => {
+      if (Math.hypot(x - ax, y - ay) <= edge || Math.hypot(x - bx, y - by) <= edge || this.seeThroughCell(x, y)) run = 0;
+      else run++;
+      return run >= wall;
+    });
   }
 
   /** The straight walk a→b stays on walkable ground (checked every quarter metre). */
