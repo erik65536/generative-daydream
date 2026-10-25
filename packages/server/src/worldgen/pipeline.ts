@@ -465,6 +465,9 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
     const heroes = balance.then(() => art(afterRules, 20));
 
     await Promise.all([...settled, balance, people, heroes]);
+    // The art stops quietly for a worker restart or a stop; the world is not ready then (a restart resumes it).
+    job.yieldPoint();
+    if (job.cancelled) throw new Error('cancelled');
     job.end('places');
     job.end('art');
 
