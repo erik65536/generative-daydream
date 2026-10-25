@@ -19,13 +19,16 @@ import type { GpuQueue } from './gpu';
 import { BARRIER_DEPTH_M, EXIT_GAP_M, MAP_STEPS, PAINT_PXM, makeMap, mapPixels, planMap, type MapBrief, type MapExit, type MapPlan } from './mapdraw';
 import { CELL, type Grid, type Side } from './mapgrid';
 import { fixMap } from './mapfix';
-import { BUILDING_PLAN, entrances, judgeArea, judgeWater, landmarks, readPlan, settle, WALK_READINGS, type PlanCells, type Spot } from './mapread';
+import { BUILDING_PLAN, judgeArea, judgeWater, landmarks, readPlan, settle, WALK_READINGS, type PlanCells } from './mapread';
+import { dropSameBuilding, findEntrances, fuseDoors, nameLandmarks, ontoWalk, readDoorPlan, type Spot } from './mapspots';
 import { candidates, place, pxPerMetre, type Candidate, type MapReading, type PlaceNeeds } from './placement';
 import { MIST_SIZE, measureLight, paintMist, type MistBrief } from './atmosphere';
 import { normColor } from './schemas';
 
 /** Monster packs keep their distance so fighting one never drags in the next (aggro reaches about 6.5 m). */
 const PACK_SPACING = 13;
+/** A pack's centre keeps this far (m) from anything blocked where the map has room: in a room or clearing, not a passage. */
+const PACK_CLEARANCE = 2;
 
 const THING_KINDS = new Set(['chest', 'sign', 'lore', 'waypoint', 'craft_station', 'bed', 'object']);
 
@@ -121,6 +124,7 @@ export function placeNeeds(w: WorldDefinition, z: ZoneDef): PlaceNeeds {
     ...sketchOf(w, z),
     people: w.npcs.filter((n) => n.zoneId === z.id).map((n) => ({ id: n.id, name: n.name, title: n.title, role: n.role, works: z.buildings?.find((b) => b.npcId === n.id)?.name })),
     things: z.features.filter((f) => THING_KINDS.has(f.kind)).map((f) => ({ id: f.id, what: thingText(f) })),
+    bosses: w.bosses.filter((b) => b.zoneId === z.id).map((b) => ({ id: b.id, name: `${b.name}, ${b.title}`, what: b.description.slice(0, 200) })),
   };
 }
 
@@ -238,8 +242,8 @@ export async function paintAndRead(w: WorldLook, s: PlaceSketch, ctx: PlaceConte
 
 /**
  * Read a painted map (mapread.ts, then mapfix.ts): Qwen's plans of it, Luna where they split and on its water, the
- * fixes that make it usable, and its entrances, landmarks and ways out. Every step is saved per map, so a resumed
- * build picks up where it stopped.
+ * fixes that make it usable, and its entrances, named landmarks and ways out (mapspots.ts). Every step is saved per
+ * map, so a resumed build picks up where it stopped.
  */
 export async function readPlace(draft: PlaceDraft, map: Buffer, s: PlaceSketch, exits: MapExit[], ctx: PlaceContext): Promise<MapReading> {
   const { W, H, X, Y } = mapPixels(s.kind);
@@ -279,6 +283,24 @@ export async function readPlace(draft: PlaceDraft, map: Buffer, s: PlaceSketch, 
     await draft.saveCells(`fixed_${tag}`, fixedOpen, g);
   }
   const water = Uint8Array.from(fixedOpen, (_, i) => (2 * walkPlans.reduce((a, p) => a + p.water[i]!, 0) > walkPlans.length ? 1 : 0));
+  let spots = draft.json<{ doors: Spot[]; landmarks: Spot[] }>(`spots_${tag}`);
+  if (!spots) {
+    const pxm = W / X;
+    // Entrances only where the place has buildings: Luna's finds, moved onto Qwen's door marks (marks she missed are
+    // kept too), onto the walkable ground, then one per building.
+    const doors = async () => {
+      const marks = await ctx.gpu.run('reader', ctx.priority, () => readDoorPlan(map, pxm, ctx.seed));
+      const found = fuseDoors(await findEntrances(map, pxm, place), marks, pxm);
+      const missed = marks.filter((m) => m.building && found.every((f) => Math.hypot(f.x - m.x, f.y - m.y) >= 2 * pxm)).map((m) => ({ x: m.x, y: m.y, label: 'a building' }));
+      return dropSameBuilding(map, pxm, place, ontoWalk([...found, ...missed], walk!, g, W, H));
+    };
+    const [d, named] = await Promise.all([s.buildings.length ? doors() : Promise.resolve([]), nameLandmarks(map, pxm, place).catch((): Spot[] => [])]);
+    // People stand on the walkable ground nearest a landmark (a pond's shore, a statue's foot).
+    const sights = named.length ? ontoWalk(named, walk, g, W, H, 15) : landmarks(fixedOpen, walk, building, water, g, W, H);
+    spots = { doors: d, landmarks: sights };
+    ctx.report(`${s.name}: ${d.length} entrances; landmarks: ${sights.map((m) => m.label).join(', ')}`);
+    draft.saveJson(`spots_${tag}`, spots);
+  }
   const inset = (BARRIER_DEPTH_M + 2) * PAINT_PXM;
   const edges: Spot[] = exits.map((e) => {
     const a = e.at * (e.side === 'top' || e.side === 'bottom' ? W : H);
@@ -288,10 +310,9 @@ export async function readPlace(draft: PlaceDraft, map: Buffer, s: PlaceSketch, 
     width: W, height: H, X, Y, grid: g, walk,
     // Buildings block sight; the rest of what blocks walking is mostly low (props, rocks) or seen through (trees' gaps).
     sight: Uint8Array.from(building, (v) => (v ? 0 : 1)),
-    // Entrances only where the place has buildings (a dungeon's dark stone can come out as "building" in the plan).
-    doors: s.buildings.length ? entrances(building, walk, g, W, H) : [],
+    doors: spots.doors,
     edges,
-    landmarks: landmarks(fixedOpen, walk, building, water, g, W, H),
+    landmarks: spots.landmarks,
     area: walk.reduce((a, v) => a + v, 0) * CELL * CELL,
   };
 }
@@ -475,11 +496,16 @@ function furnish(w: WorldDefinition, z: ZoneDef, r: MapReading, spots: Map<strin
   const entryFeature = z.features.find((f) => f.kind === 'waypoint') ?? z.features.find((f) => f.kind === 'exit' || f.kind === 'door');
   z.entry = entryFeature ? { x: entryFeature.x, y: entryFeature.y } : settle(fallbackSpot());
 
-  if (z.kind === 'wilderness' || z.kind === 'dungeon') populate(w, z, nav, rng, r.area, taken);
+  // A boss waits in the lair Luna chose for it (its spot), else deepest in.
+  const lairs = new Map([...spots].filter(([id]) => w.bosses.some((b) => b.id === id)).map(([id, c]) => [id, at(c)]));
+  if (z.kind === 'wilderness' || z.kind === 'dungeon') populate(w, z, nav, rng, r.area, taken, lairs);
 }
 
-/** Monster packs, the boss and traps, spread by walking distance from the way in (deeper = harder). */
-export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, area: number, taken: Vec2[]) {
+/**
+ * Monster packs, the boss and traps, spread by walking distance from the way in (deeper = harder). Packs gather in open
+ * ground (rooms, clearings, squares), never passages: their centres keep PACK_CLEARANCE from anything blocked. A boss waits in its lair (a spot placement chose), else deepest in.
+ */
+export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, area: number, taken: Vec2[], lairs = new Map<string, Vec2>()) {
   const r = w.ruleset;
   const costs = nav.reach(z.entry, 1e6);
   if (!costs.size) return;
@@ -507,22 +533,28 @@ export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, are
     });
   };
 
-  // The boss waits deepest in.
   const bosses = w.bosses.filter((b) => b.zoneId === z.id);
-  const lair = cells.reduce((a, b) => (b.depth > a.depth ? b : a)).p;
+  const deepest = cells.reduce((a, b) => (b.depth > a.depth ? b : a)).p;
+  const reached = (p: Vec2) => costs.has(nav.cellOf(p.x, p.y)[1] * nav.cols + nav.cellOf(p.x, p.y)[0]);
+  const lairOf = (id: string) => (lairs.has(id) && reached(lairs.get(id)!) ? lairs.get(id)! : deepest);
+  const lair = bosses.length ? lairOf(bosses[0]!.id) : deepest;
   for (const b of bosses) {
     const fam = w.families.find((f) => f.id === b.familyId) ?? families[0];
     if (!fam) continue;
     const adds = buildPack(r, rng.fork(`boss:${b.id}`), { mode: w.input.combatMode, level: b.level, kind: 'boss', roles: fam.members.map((m) => m.archetype) }).filter((m) => !m.boss);
-    spawnAt(`${z.id}_boss`, [{ role: b.archetype, level: b.level, boss: true }, ...adds.map((m) => ({ ...m, level: Math.max(1, b.level - 1) }))], lair, fam.id, b.id);
+    spawnAt(`${z.id}_boss`, [{ role: b.archetype, level: b.level, boss: true }, ...adds.map((m) => ({ ...m, level: Math.max(1, b.level - 1) }))], lairOf(b.id), fam.id, b.id);
   }
 
   // Packs: about one per 160 m² of walkable ground, spaced apart, away from the ways in and out.
   if (families.length) {
     const want = Math.max(3, Math.min(12, Math.round(area / (z.kind === 'dungeon' ? 130 : 160))));
-    const packs: Vec2[] = [lair];
+    const packs: Vec2[] = bosses.length ? bosses.map((b) => lairOf(b.id)) : [deepest];
+    // Only open ground, best clearance first (with some chance): fewer packs rather than packs in passages. A map with no
+    // open ground at all takes the shuffled order.
+    const clear = clearance(nav), roomy = cells.filter((c) => clear[c.i]! >= PACK_CLEARANCE);
+    const order = roomy.length ? roomy.map((c) => ({ c, s: clear[c.i]! * (0.6 + 0.8 * rng.next()) })).sort((a, b) => b.s - a.s).map((x) => x.c) : cells;
     let n = 0;
-    for (const c of cells) {
+    for (const c of order) {
       if (n >= want) break;
       if (nearDoor(c.p, 9) || packs.some((p) => Math.hypot(p.x - c.p.x, p.y - c.p.y) < PACK_SPACING)) continue;
       packs.push(c.p);
@@ -545,4 +577,22 @@ export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, are
       z.features.push({ id: `${z.id}_trap${traps.length}`, kind: 'trap', x: c.p.x, y: c.p.y, trapKind: trap.id, trapLevel: z.levelRange[1], name: trap.name });
     }
   }
+}
+
+/** Each navigation cell's distance (m) to the nearest blocked cell or the map's edge (city-block steps). */
+export function clearance(nav: Nav): Float32Array {
+  const n = nav.cols * nav.rows, d = new Float32Array(n).fill(Infinity), queue: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const cx = i % nav.cols, cy = Math.floor(i / nav.cols);
+    if (!nav.walkableCell(cx, cy)) (d[i] = 0), queue.push(i);
+    else if (cx === 0 || cy === 0 || cx === nav.cols - 1 || cy === nav.rows - 1) (d[i] = NAV_CELL), queue.push(i);
+  }
+  for (let h = 0; h < queue.length; h++) {
+    const i = queue[h]!, cx = i % nav.cols, cy = Math.floor(i / nav.cols);
+    for (const [x, y] of [[cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]] as const) {
+      const j = y * nav.cols + x;
+      if (nav.inside(x, y) && d[j]! > d[i]! + NAV_CELL) (d[j] = d[i]! + NAV_CELL), queue.push(j);
+    }
+  }
+  return d;
 }

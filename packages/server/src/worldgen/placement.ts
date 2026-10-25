@@ -7,7 +7,7 @@ import sharp from 'sharp';
 import { z } from 'zod';
 import { genai } from '../genai/service';
 import type { Grid } from './mapgrid';
-import type { Spot } from './mapread';
+import type { Spot } from './mapspots';
 
 /** What a place must hold. Ids are the world's own (feature, NPC ids); placement answers per id. */
 export interface PlaceNeeds {
@@ -19,6 +19,8 @@ export interface PlaceNeeds {
   /** `works`: the building they work in (they stand outside its entrance). */
   people: { id: string; name: string; title: string; role: string; works?: string }[];
   things: { id: string; what: string }[];
+  /** Bosses (dungeons, wilds): where each waits, its lair. */
+  bosses?: { id: string; name: string; what: string }[];
 }
 
 /** A read map, ready to be furnished: the picture, its plan and its spots (picture px). */
@@ -49,7 +51,6 @@ export interface Candidate {
   x: number;
   y: number;
   what: string;
-  building?: number;
 }
 
 /**
@@ -59,11 +60,11 @@ export interface Candidate {
 export function candidates(r: MapReading, open = 24): Candidate[] {
   const gap = (2.2 * r.width) / 55;
   const out: Candidate[] = [
-    ...r.doors.map((d, i) => ({ id: `D${i + 1}`, x: d.x, y: d.y, what: `entrance (${d.label})${d.building ? `, building B${d.building}` : ''}`, building: d.building })),
+    ...r.doors.map((d, i) => ({ id: `D${i + 1}`, x: d.x, y: d.y, what: `entrance of ${d.label}` })),
     ...r.edges.map((e, i) => ({ id: `E${i + 1}`, x: e.x, y: e.y, what: `way out at the ${e.label} edge` })),
   ];
   let ln = 0;
-  for (const l of r.landmarks) if (out.every((c) => Math.hypot(c.x - l.x, c.y - l.y) >= gap)) out.push({ id: `L${++ln}`, x: l.x, y: l.y, what: l.label });
+  for (const l of r.landmarks) if (out.every((c) => Math.hypot(c.x - l.x, c.y - l.y) >= gap)) out.push({ id: `L${++ln}`, x: l.x, y: l.y, what: l.kind === 'way in' ? `way in: ${l.label}` : l.label });
   const kx = r.width / r.grid.cols, ky = r.height / r.grid.rows;
   const pts: [number, number][] = [];
   for (let i = 0; i < r.walk.length; i += 7) if (r.walk[i]) pts.push([((i % r.grid.cols) + 0.5) * kx, (Math.floor(i / r.grid.cols) + 0.5) * ky]);
@@ -122,14 +123,14 @@ The numbered circles are the spots the game can use: D = an entrance into a buil
 ${cands.map((c) => `${c.id}: ${c.what}`).join('\n')}
 
 Assign a spot to each of these, as a level designer would (answer with their ids):
-${list('Buildings, each the workplace of someone who stands outside it (one D spot each, all different; entrances with the same B number belong to one building: use two of them only where the map clearly shows separate units; a big building for an inn, a small one for a shop or workshop):', n.buildings.map((b) => ({ id: b.id, text: `${b.name} (${b.purpose})` })))}${list('Ways out (all different spots, of the kinds in brackets; an E spot leaves across the edge, a D, L or P spot is a way in such as a door, a cave mouth or stairs down):', n.exits.map((e) => ({ id: e.id, text: `${e.into ? 'through' : 'to'} ${e.to} [${wayOut(e.into).split('').join('/')}]` })))}${list('People (near their work, home or a fitting landmark; never on a D or E spot; spread them out; those who work in a building stand by its entrance, so any spot near it):', n.people.map((p) => ({ id: p.id, text: `${p.name}, ${p.title} (${p.role})${p.works ? `, works at ${p.works}` : ''}` })))}${list('Things (an L or P spot that suits each):', n.things.map((t) => ({ id: t.id, text: t.what })))}If something cannot be placed sensibly, leave it out and say why in problems.`,
+${list('Buildings, each the workplace of someone who stands outside it (one D spot each, all different; each D is a separate building, described in its list entry: a big building for an inn or hall, a small one for a shop or workshop, a stall for a trader):', n.buildings.map((b) => ({ id: b.id, text: `${b.name} (${b.purpose})` })))}${list('Ways out (all different spots, of the kinds in brackets; an E spot leaves across the edge, a D, L or P spot is a way in such as a door, a cave mouth or stairs down; prefer an L spot listed as a way in):', n.exits.map((e) => ({ id: e.id, text: `${e.into ? 'through' : 'to'} ${e.to} [${wayOut(e.into).split('').join('/')}]` })))}${list('People (near their work, home or a fitting landmark; never on a D or E spot; spread them out; those who work in a building stand by its entrance, so any spot near it):', n.people.map((p) => ({ id: p.id, text: `${p.name}, ${p.title} (${p.role})${p.works ? `, works at ${p.works}` : ''}` })))}${list('Things (an L or P spot that suits each):', n.things.map((t) => ({ id: t.id, text: t.what })))}${list('Bosses (the lair where each waits: an L or P spot, the most dramatic open chamber or landmark that suits it, far from the ways in):', (n.bosses ?? []).map((b) => ({ id: b.id, text: `${b.name}: ${b.what}` })))}If something cannot be placed sensibly, leave it out and say why in problems.`,
     schema: PlacementSchema,
     name: 'place_placement',
     images: [await candidateView(png, cands)],
     maxTokens: 3000,
     validate: (p) => {
       const errs: string[] = [];
-      const need = new Map<string, 'b' | 'x' | 'p' | 't'>([...n.buildings.map((b) => [b.id, 'b'] as const), ...n.exits.map((e) => [e.id, 'x'] as const), ...n.people.map((x) => [x.id, 'p'] as const), ...n.things.map((t) => [t.id, 't'] as const)]);
+      const need = new Map<string, 'b' | 'x' | 'p' | 't'>([...n.buildings.map((b) => [b.id, 'b'] as const), ...n.exits.map((e) => [e.id, 'x'] as const), ...n.people.map((x) => [x.id, 'p'] as const), ...n.things.map((t) => [t.id, 't'] as const), ...(n.bosses ?? []).map((b) => [b.id, 't'] as const)]);
       const used = new Map<string, string>();
       for (const a of p.assign) {
         const c = byId.get(a.spot), t = need.get(a.id);

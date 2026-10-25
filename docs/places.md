@@ -45,7 +45,7 @@ Studied in two rounds in October 2026 (reports: side-session notes `tile-outpain
    most), then reviews the whole map as a level designer and lists unplanned ways off it; each is closed with a
    soft patch 6 m deep where the ground ends before the barrier, up to three rounds.
 7. **Read** (`readPlace`): where people can walk, made usable without repainting, with building entrances,
-   landmarks and a spot just inside each way out's gap (below).
+   named landmarks and a spot just inside each way out's gap (below).
 8. **Settle** (`settlePlace`): Luna places everything on the numbered spots; the map is brought to game scale; the
    navigation grid, people, things, monster packs and traps are laid out (see `world-art.md`).
 
@@ -86,9 +86,7 @@ report is in the side-session notes (`walkability/REPORT.md`). `mapread.ts`:
 3. **Water by the place.** Each patch most plans painted blue, inside the place, gets one look: can the character walk
    across it here (a shallow puddle, ice meant for walking) or is it a barrier (a pond, canal, marsh, darkness)?
 
-Buildings are the building plan's red pieces of 6 m² or more (only in places with buildings: a dungeon's dark stone
-comes out red); each has an entrance at the walkable ground nearest the middle of its lower side. Landmarks are the
-largest solid things standing in walkable ground. Buildings block sight.
+Buildings (the building plan's red) block sight. Entrances and landmarks are found apart (below).
 
 At the points: 91–92% right after the fixes below, 88–89% of the truly walkable points reachable, 92–93% of the
 reachable ground truly walkable; about 2–3 GPU minutes (four Qwen plans) and a cent or two of Luna per map. SAM 3 with
@@ -96,6 +94,50 @@ Luna's names (the earlier reader, 85% on the old small maps) was weak here: name
 trails; a dungeon read almost wholly wrong), its masks take minutes to save per map, and arbitrating it with Qwen
 helped only on towns. Sol on crops was no better than Luna (87% against 95% on the same points) at forty times the
 price.
+
+## Entrances and landmarks
+
+The spots things are placed on (`mapspots.ts`). Studied in October 2026 against hand labels on five towns (about 150
+buildings with their doors, a joined row labelled per unit), among them two painted for the test: a mushroom village
+and a canyon of tents, yurts and cave dwellings; the report is in the side-session notes (`entrances/REPORT.md`).
+
+1. **Luna finds the entrances** (`findEntrances`, low reasoning) on full-size crops of 24 m with a lettered grid of
+   2 m cells, beside the whole map with the crop boxed. She lists every building whose entrance is in the crop (a
+   house, shop, stall, tent, hut, cave dwelling...), once per door in a joined row, with the cell of the ground in
+   front of it and a few words on the building (its size and look, which placement uses to choose an inn or a
+   stall). Overlapping crops each keep only the spots nearest their own middle.
+2. **Qwen's door plan** (`DOOR_PLAN`) marks every door with a yellow square: right at the door, but almost always on
+   a building's lower side. Each of Luna's spots moves to the nearest unclaimed mark within 3 m; marks she missed
+   are kept as "a building" where Qwen painted a building beside them.
+3. **One per building.** Every spot moves onto the walkable ground (within 3 m); spots closer than 4.5 m are shown
+   to Luna as a pair: one building or two, and if one, which stands nearer its door (the other goes).
+
+| Town | Earlier reader: found / at the door | Now |
+| --- | --- | --- |
+| Gingerbread | 61% / 52% | 91% / 73% |
+| Cliff-top city (dense, few painted doors) | 69% / 41% | 72% / 41% |
+| Brinewake | 80% / 57% | 97% / 77% |
+| Mushroom village | 50% / 41% | 91% / 86% |
+| Canyon of tents and caves | 35% / 35% | 61% / 30% |
+
+The earlier reader put one entrance at the middle of each red patch's lower side in the building plan, so a joined
+block was one building and a mushroom or tent the plan did not paint red had none. On the canyon, Luna finds nearly
+every tent and cave, but her spot is often on a canopy and the nearest walkable ground can be behind it. Sol finding
+the entrances was better only on the dense city, at about seventeen times the price; Luna with no reasoning found
+fewer; SAM 3 asked for "door" found under half. Placement, given the descriptions, put every designed building of
+the two unusual towns at a fitting entrance (the smith at the forge cave, the healer at the yurt). Per place: about
+30 s of GPU (Qwen's door plan) and two to three cents of Luna and Sol.
+
+**Landmarks** (`nameLandmarks`): Sol looks once at the whole map with a grid of 4 m cells and names up to 12 (a
+monument, a plaza, a bridge, a pond, a striking rock) and every way in or down drawn inside the map (a cave mouth,
+stairs down), each at its cell; people stand on the walkable ground nearest it. Luna named them as well but placed
+them worse (on the city 3 of 8 in the right place against Sol's 6 of 7). Placement sees them by name ("way in: the
+cave mouth"), so a quest objective or a way down goes to the landmark that fits.
+
+**Monster packs and the boss.** Placement also chooses each boss's lair among the landmarks and open spots. Packs
+gather only in open ground: a pack's centre keeps 2 m from anything blocked (`PACK_CLEARANCE`), best clearance first
+with some chance, so packs stand in rooms, clearings and squares rather than passages (on the dungeon, 7 of 12 packs
+of the earlier random rule stood in passages; none now).
 
 ## Making it usable
 

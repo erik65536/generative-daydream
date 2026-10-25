@@ -1,6 +1,7 @@
 /**
- * Reading a big top-down map (see docs/places.md): where people can walk, its buildings and their entrances,
- * landmarks, and what blocks sight. Studied in October 2026 against 400 hand-labelled points on five maps.
+ * Reading a big top-down map (see docs/places.md): where people can walk, where its buildings are (for sight) and
+ * what blocks sight; the spots things are placed on (entrances, named landmarks) are found in mapspots.ts. Studied
+ * in October 2026 against 400 hand-labelled points on five maps.
  *
  * 1. Qwen-Image 2.1 edit redraws the whole map (at about 1.4 or 2.4 MP: tiles lose the context that tells a roof
  *    from a floor) as flat plans, three ways (WALK_READINGS): white walkable, black solid (filled, not outlined),
@@ -21,6 +22,7 @@ import sharp from 'sharp';
 import { genai } from '../genai/service';
 import { qwenEdit } from './comfy';
 import { CELL, cellsOf, components, type Grid } from './mapgrid';
+import type { Spot } from './mapspots';
 
 /** Qwen prompts for the walk readings, and the megapixels each map is read at. */
 export const WALK_READINGS: { prompt: string; mp: number }[] = [
@@ -38,7 +40,7 @@ export const WALK_READINGS: { prompt: string; mp: number }[] = [
   },
 ];
 
-/** The plan that marks buildings (red), for their entrances and for sight. */
+/** The plan that marks buildings (red), for sight. */
 export const BUILDING_PLAN = {
   mp: 1.4,
   prompt: 'Convert this top-down game map into a flat four-colour plan for the game, with exactly the same layout, shapes and positions. Paint pure white all ground the player can walk on: floors, streets, paths, plazas, decks, bridges, stairs, grass, snow and sand, including patterns, rugs and decorations lying flat on the ground. Paint pure red every building and roof. Paint pure black, filled solid, everything else the player cannot walk through: walls, fences, hedges, furniture, tables, crates, carts, statues, rocks, trees, bushes and unlit dark areas. Paint pure blue all water, pits and the area outside the place. Fill every shape completely: no outlines, no texture, no grey.',
@@ -256,15 +258,6 @@ export async function judgeWater(png: Buffer, open: Uint8Array, waters: Uint8Arr
   return opened;
 }
 
-/** A picture point and what is there. */
-export interface Spot {
-  x: number;
-  y: number;
-  label: string;
-  /** The building it belongs to (1-based), for entrances. */
-  building?: number;
-}
-
 /** The walkable cell nearest a grid point, within `max` cells. */
 function nearestWalk(walk: Uint8Array, g: Grid, cx: number, cy: number, max: number): [number, number] | null {
   let best: [number, number] | null = null, bd = Infinity;
@@ -277,19 +270,7 @@ function nearestWalk(walk: Uint8Array, g: Grid, cx: number, cy: number, max: num
   return best;
 }
 
-/** Buildings (the building plan's red pieces of 6 m² or more), each with an entrance at the walkable ground nearest the middle of its lower side (the side facing the viewer). Spots are picture px. */
-export function entrances(building: Uint8Array, walk: Uint8Array, g: Grid, W: number, H: number): Spot[] {
-  const kx = W / g.cols, ky = H / g.rows, out: Spot[] = [];
-  components(g, (i) => !!building[i]).filter((q) => q.length * CELL * CELL >= 6).forEach((q, bi) => {
-    let c0 = Infinity, c1 = -Infinity, r1 = -Infinity;
-    for (const i of q) (c0 = Math.min(c0, i % g.cols)), (c1 = Math.max(c1, i % g.cols)), (r1 = Math.max(r1, Math.floor(i / g.cols)));
-    const at = nearestWalk(walk, g, (c0 + c1) / 2, r1 + 1, 3 / CELL);
-    if (at) out.push({ x: (at[0] + 0.5) * kx, y: (at[1] + 0.5) * ky, label: 'front of a building', building: bi + 1 });
-  });
-  return out;
-}
-
-/** Landmarks: the largest solid things (not buildings or water, 0.5 to 40 m²) standing in walkable ground, each at the walkable ground beside it. */
+/** Unnamed landmarks, when Sol names none: the largest solid things (not buildings or water, 0.5 to 40 m²) standing in walkable ground, each at the walkable ground beside it. */
 export function landmarks(open: Uint8Array, walk: Uint8Array, building: Uint8Array, water: Uint8Array, g: Grid, W: number, H: number, max = 10): Spot[] {
   const kx = W / g.cols, ky = H / g.rows, out: { spot: Spot; size: number }[] = [];
   for (const q of components(g, (i) => !open[i] && !building[i] && !water[i])) {

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { BARRIER_DEPTH_M, EXIT_GAP_M, PAINT_PXM, mapPixels } from '../src/worldgen/mapdraw';
 import { fixMap } from '../src/worldgen/mapfix';
 import { CELL, type Grid } from '../src/worldgen/mapgrid';
-import { entrances } from '../src/worldgen/mapread';
+import { fuseDoors, ontoWalk } from '../src/worldgen/mapspots';
 
 describe('painted maps', () => {
   it('are sized in tiles and read at PAINT_PXM pixels per metre', () => {
@@ -71,15 +71,23 @@ describe('making a read map usable', () => {
   });
 });
 
-describe('reading a map', () => {
-  it('puts an entrance at the walkable ground below the middle of each building', () => {
+describe('placing spots', () => {
+  it('moves each entrance onto the nearest unclaimed door mark within 3 m, closest pairs first', () => {
+    const pxm = 40;
+    const spots = [{ x: 100, y: 100, label: 'a' }, { x: 160, y: 100, label: 'b' }, { x: 1000, y: 1000, label: 'c' }];
+    const marks = [{ x: 150, y: 110 }, { x: 600, y: 600 }];
+    const f = fuseDoors(spots, marks, pxm);
+    // b is closer to the mark than a, so b takes it; a stays; c has no mark within 3 m.
+    expect(f.map((s) => [s.label, s.x, s.y])).toEqual([['a', 100, 100], ['b', 150, 110], ['c', 1000, 1000]]);
+  });
+
+  it('stands spots on the nearest walkable ground, and drops those with none near', () => {
     const { g, open, rect } = map();
-    const building = new Uint8Array(g.cols * g.rows);
-    for (let r = 10; r <= 20; r++) for (let c = 30; c <= 45; c++) building[r * g.cols + c] = 1;
     rect(30, 10, 45, 20, 0);
-    const doors = entrances(building, open, g, 800, 480);
-    expect(doors).toHaveLength(1);
-    expect(Math.abs(doors[0]!.x - ((30 + 45) / 2 + 0.5) * 10)).toBeLessThanOrEqual(10);
-    expect(doors[0]!.y).toBeGreaterThan(20 * 10);
+    // A spot on the roof (picture 10 px per cell) moves just outside it; one far inside a big block is dropped.
+    const [s] = ontoWalk([{ x: 37 * 10 + 5, y: 19 * 10 + 5, label: 'roof' }], open, g, 800, 480);
+    expect(s!.y).toBeGreaterThan(20 * 10);
+    rect(0, 0, 79, 47, 0);
+    expect(ontoWalk([{ x: 400, y: 240, label: 'x' }], open, g, 800, 480)).toHaveLength(0);
   });
 });
