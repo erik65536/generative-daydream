@@ -111,6 +111,40 @@ describe('companions', () => {
   }, 300_000);
 });
 
+describe('fleeing', () => {
+  it('carries the fallen along instead of ending in defeat, and creatures leave the party be for a moment', async () => {
+    Combat.instant = true;
+    const w = await genWorld('A sunburnt frontier of mesas and copper mines', 'small', 'party_manual');
+    const inst = instances.create(w, 'uf', 'Tester', 'flee', [hero(w, 'Ana', 'tank'), hero(w, 'Bo', 'ranged')]);
+    const msgs: ServerMessage[] = [];
+    inst.join({ userId: 'uf', send: (m) => msgs.push(m) });
+    const p = inst.state.players.uf!;
+    const wild = w.zones.find((z) => z.kind === 'wilderness')!;
+    inst.transfer(p, wild.id);
+    const zone = inst._live(wild.id);
+    const monster = [...zone.actors.values()].find((a) => a instanceof MonsterActor && a.alive()) as MonsterActor;
+    const [a, b] = inst._charActors('uf') as CharActor[];
+    a!.x = monster.x + 1.2;
+    a!.y = monster.y;
+    inst.handle('uf', { t: 'use_skill', charId: a!.id, skillId: 'attack', targetId: monster.id });
+    await wait(20);
+    const combat = inst._combats()[0]!;
+    // Bo is down; Ana gets clear of the pack and flees on her turn.
+    b!.ch.downed = true;
+    b!.ch.hp = 0;
+    for (const e of combat.participants()) if (e instanceof MonsterActor) e.x = a!.x + 30;
+    (combat as unknown as { idx: number }).idx = combat.order.indexOf(a!);
+    inst.handle('uf', { t: 'flee' });
+    expect(a!.combatId).toBeNull();
+    expect(b!.combatId).toBeNull();
+    expect(msgs.some((m) => m.t === 'narration' && m.style === 'death')).toBe(false);
+    expect(p.zoneId).toBe(wild.id);
+    // Bo gets up a few seconds later (the out-of-fight tick runs each second).
+    await wait(4600);
+    expect(b!.ch.downed).toBe(false);
+  }, 300_000);
+});
+
 describe('combat movement', () => {
   it('lets allies squeeze past each other at a cost, but never stand together', async () => {
     Combat.instant = true;

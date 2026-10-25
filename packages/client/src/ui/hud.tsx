@@ -282,7 +282,7 @@ export function ActionBar() {
           {myTurn ? (
             <>
               <button className="btn primary" onClick={() => c.send({ t: 'end_turn' })}>End turn <span className="tiny key-hint" style={{ opacity: 0.7 }}>Space</span><span className="pad-hint"><Glyph b="Y" /></span></button>
-              <button className="btn sm ghost" onClick={() => c.send({ t: 'flee' })} {...tip('Leave combat if no enemy is near.')}>Flee</button>
+              <button className="btn sm ghost" onClick={() => c.send({ t: 'flee' })} {...tip('Leave combat if no enemy is near.')}>Flee<span className="pad-hint"><Glyph b="B" /></span></button>
             </>
           ) : (
             <div className="badge gray" style={{ padding: '6px 12px' }}>{combat.order.find((o) => o.id === combat.activeId)?.name}’s turn…</div>

@@ -301,6 +301,17 @@ export class GameClient {
     return this.state.player?.party ?? [];
   }
 
+  /** A thing a quest has the player use ("search the stand") is there only while an open quest step needs it. */
+  questThingOpen(featureId: string): boolean {
+    const pl = this.state.player;
+    if (!pl) return false;
+    return Object.values(pl.quests).some((q) => {
+      if (q.status !== 'active') return false;
+      const objectives = q.overrides ?? pl.questDefs[q.questId]?.objectives ?? [];
+      return objectives.some((o) => o.featureId === featureId && !q.objectives[o.id]?.done);
+    });
+  }
+
   /** Readable combat log lines for skill uses, hits, misses and deaths. */
   private combatLines(events: FxEvent[]): { text: string; color?: string; at: number }[] {
     const s = this.state;

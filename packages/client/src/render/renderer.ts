@@ -593,6 +593,7 @@ export class Renderer {
     for (const f of z.features) {
       const fs = st.features.get(f.id);
       if (f.kind === 'trap' && !fs) continue;
+      if (f.kind === 'object' && !this.client.questThingOpen(f.id)) continue;
       const p = pic(f.x, f.y);
       const hovered = this.hover.featureId === f.id;
       const liveTrap = f.kind === 'trap' && !fs?.disarmed && !fs?.triggered;
@@ -652,11 +653,17 @@ export class Renderer {
     return img ? sizedSprite(img, o.key, o.height * PX_PER_METRE) : null;
   }
 
-  /** The ground mark of a feature: a soft ring (with an arrow for ways through, a dashed red one for a trap). */
+  /**
+   * The ground mark of a feature. A way out: cool light with chevrons flowing toward where it leads. A thing a quest
+   * asks about: warm gold light, a slow ripple and the quest sign over it. Others (notes, signs, traps): a soft ring
+   * (dashed and red for a trap).
+   */
   private groundMark(f: FeatureDef, alpha: number, trap: boolean) {
+    if (f.kind === 'exit') return this.exitMark(f, alpha);
+    if (f.kind === 'object') return this.questMark(f, alpha);
     const ctx = this.ctx;
     const p = pic(f.x, f.y);
-    const color = trap ? '255,70,50' : f.kind === 'lore' || f.kind === 'object' ? '255,226,140' : '200,230,255';
+    const color = trap ? '255,70,50' : f.kind === 'lore' ? '255,226,140' : '200,230,255';
     ctx.save();
     ctx.translate(p.x, p.y);
     ctx.lineWidth = 2.5;
@@ -667,38 +674,115 @@ export class Renderer {
       ctx.setLineDash([6, 5]);
       ctx.lineDashOffset = -this.t * 14;
     }
-    const r = (trap ? 0.7 : 0.55) * M;
     ctx.beginPath();
-    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.arc(0, 0, (trap ? 0.7 : 0.55) * M, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
-    if (f.kind === 'exit') {
-      // An arrow on the ground pointing the way out of the place.
-      const z = this.client.state.zone!;
-      const dx = f.x - z.entry.x, dy = f.y - z.entry.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const a = pic(f.x - (dx / len) * 0.25, f.y - (dy / len) * 0.25), b = pic(f.x + (dx / len) * 0.35, f.y + (dy / len) * 0.35);
-      const ang = Math.atan2(b.y - a.y, b.x - a.x);
-      ctx.save();
-      ctx.strokeStyle = `rgba(${color},${Math.min(1, alpha)})`;
-      ctx.lineWidth = 3;
-      ctx.lineCap = 'round';
-      ctx.beginPath();
-      ctx.moveTo(b.x - Math.cos(ang - 0.6) * 12, b.y - Math.sin(ang - 0.6) * 12);
-      ctx.lineTo(b.x, b.y);
-      ctx.lineTo(b.x - Math.cos(ang + 0.6) * 12, b.y - Math.sin(ang + 0.6) * 12);
-      ctx.stroke();
-      ctx.restore();
-    } else if (f.kind === 'lore' || f.kind === 'object') {
-      // A small light hovering over it.
-      const y = p.y - 26 + Math.sin(this.t * 2.2 + f.x) * 4;
-      const g = ctx.createRadialGradient(p.x, y, 0, p.x, y, 12);
-      g.addColorStop(0, `rgba(255,248,210,${alpha})`);
-      g.addColorStop(0.35, `rgba(${color},${alpha * 0.6})`);
-      g.addColorStop(1, `rgba(${color},0)`);
-      ctx.fillStyle = g;
-      ctx.fillRect(p.x - 12, y - 12, 24, 24);
+    if (f.kind === 'lore') this.floatingLight(p, alpha, color);
+  }
+
+  /** A soft light on the ground, a disc of `r` metres. */
+  private groundGlow(p: Vec2, r: number, color: string, alpha: number) {
+    const g = this.ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r * M);
+    g.addColorStop(0, `rgba(${color},${alpha})`);
+    g.addColorStop(1, `rgba(${color},0)`);
+    this.ctx.fillStyle = g;
+    this.ctx.fillRect(p.x - r * M, p.y - r * M, 2 * r * M, 2 * r * M);
+  }
+
+  private exitMark(f: FeatureDef, alpha: number) {
+    const ctx = this.ctx, z = this.client.state.zone!;
+    const p = pic(f.x, f.y), color = '175,215,255';
+    this.groundGlow(p, 1.1, color, 0.3 * Math.max(alpha, 0.5));
+    ctx.save();
+    ctx.lineWidth = 3;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = `rgba(${color},0.9)`;
+    ctx.shadowBlur = 8;
+    const a = Math.min(1, alpha * 1.4);
+    // A way across the edge: chevrons flowing off the map, straight out from the nearest edge.
+    const edges = [
+      { d: f.x, ux: -1, uy: 0 },
+      { d: z.width - f.x, ux: 1, uy: 0 },
+      { d: f.y, ux: 0, uy: -1 },
+      { d: z.height - f.y, ux: 0, uy: 1 },
+    ];
+    const out = edges.reduce((m, e) => (e.d < m.d ? e : m));
+    if (out.d < 8) {
+      for (let i = 0; i < 3; i++) {
+        const ph = (this.t * 0.7 + i / 3) % 1;
+        const at = pic(f.x + out.ux * (ph * 1.2 - 0.5), f.y + out.uy * (ph * 1.2 - 0.5));
+        const w = 0.32 * M, back = 0.2 * M;
+        ctx.strokeStyle = `rgba(${color},${(Math.sin(ph * Math.PI) * a).toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(at.x - out.ux * back - out.uy * w, at.y - out.uy * back + out.ux * w);
+        ctx.lineTo(at.x, at.y);
+        ctx.lineTo(at.x - out.ux * back + out.uy * w, at.y - out.uy * back - out.ux * w);
+        ctx.stroke();
+      }
+    } else {
+      // A way in drawn inside the place (a door, a cave mouth): rings closing in on it.
+      for (let i = 0; i < 2; i++) {
+        const ph = (this.t * 0.6 + i / 2) % 1;
+        ctx.strokeStyle = `rgba(${color},${(Math.sin(ph * Math.PI) * a).toFixed(3)})`;
+        this.groundCircle(f.x, f.y, 0.95 - ph * 0.7);
+        ctx.stroke();
+      }
     }
+    ctx.restore();
+  }
+
+  private questMark(f: FeatureDef, alpha: number) {
+    const ctx = this.ctx, p = pic(f.x, f.y), color = '255,205,90';
+    ctx.save();
+    ctx.globalCompositeOperation = 'lighter';
+    this.groundGlow(p, 0.8, color, 0.4 * Math.max(alpha, 0.5));
+    ctx.restore();
+    // A ripple spreading slowly from it.
+    const ph = (this.t / 1.8) % 1;
+    ctx.save();
+    ctx.strokeStyle = `rgba(${color},${(0.7 * (1 - ph)).toFixed(3)})`;
+    ctx.lineWidth = 2;
+    this.groundCircle(f.x, f.y, 0.3 + ph * 0.7);
+    ctx.stroke();
+    ctx.restore();
+    // The quest sign: a gold diamond with a "!", bobbing over it.
+    const y = p.y - 46 + Math.sin(this.t * 2.2 + f.x) * 4, s = 11;
+    ctx.save();
+    ctx.translate(p.x, y);
+    ctx.shadowColor = 'rgba(255,200,80,0.9)';
+    ctx.shadowBlur = 12;
+    ctx.fillStyle = 'rgba(255,214,110,0.95)';
+    ctx.strokeStyle = 'rgba(90,55,10,0.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, -s);
+    ctx.lineTo(s, 0);
+    ctx.lineTo(0, s);
+    ctx.lineTo(-s, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.stroke();
+    ctx.fillStyle = 'rgba(70,40,5,0.95)';
+    ctx.font = 'bold 13px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('!', 0, 1);
+    ctx.restore();
+  }
+
+  /** A small light hovering over a note one can read. */
+  private floatingLight(p: Vec2, alpha: number, color: string) {
+    const ctx = this.ctx;
+    const y = p.y - 26 + Math.sin(this.t * 2.2 + p.x) * 4;
+    const g = ctx.createRadialGradient(p.x, y, 0, p.x, y, 12);
+    g.addColorStop(0, `rgba(255,248,210,${alpha})`);
+    g.addColorStop(0.35, `rgba(${color},${alpha * 0.6})`);
+    g.addColorStop(1, `rgba(${color},0)`);
+    ctx.fillStyle = g;
+    ctx.fillRect(p.x - 12, y - 12, 24, 24);
   }
 
   private collectLoot(list: Drawable[]) {
@@ -1495,7 +1579,7 @@ export class Renderer {
       else if (e.boss) hole(p.x, p.y, 3, 0.6);
     }
     for (const f of z.features) {
-      if (f.kind === 'waypoint' || f.kind === 'object' || (f.kind === 'lore' && !st.features.get(f.id)?.opened)) {
+      if (f.kind === 'waypoint' || (f.kind === 'object' && this.client.questThingOpen(f.id)) || (f.kind === 'lore' && !st.features.get(f.id)?.opened)) {
         hole(f.x, f.y, f.kind === 'lore' ? 1.6 : 3, 0.7);
         glows.push({ x: f.x, y: f.y, r: 1.4, color: f.kind === 'waypoint' ? z.look.lightColor : '#ffe090' });
       }

@@ -43,6 +43,10 @@ interface PendingInteraction {
 
 const TICK_MS = 100;
 const AGGRO_RADIUS = 6.5;
+/** After fleeing, how long (ms) creatures leave the party alone, so the followers can get clear too. */
+const FLEE_GRACE_MS = 5000;
+/** How long (ms) a party member down out of a fight stays down before getting up. */
+const DOWNED_GET_UP_MS = 3000;
 const JOIN_RADIUS = 13;
 /** How far a character sees: the ground explored around them, in metres. */
 const SIGHT_RADIUS = 11;
@@ -923,11 +927,30 @@ export class GameInstance implements CombatHost {
     }
   }
 
-  /** Out of combat, health and pools always refill (every fight starts fresh). */
+  /** Party members down out of a fight (since when), to get up once DOWNED_GET_UP_MS has passed. */
+  private downedSince = new Map<string, number>();
+
+  /**
+   * Out of combat, health and pools always refill (every fight starts fresh), and anyone down gets up with 1 health a
+   * moment later while someone in the party stands: after a trap, after fleeing with the fallen, after a restart.
+   */
   private regen(z: LiveZone) {
+    const now = Date.now();
     for (const a of z.actors.values()) {
       if (a.combatId || !(a instanceof CharActor)) continue;
-      if (a.ch.downed) continue;
+      if (a.ch.downed) {
+        const owner = this.state.players[a.userId];
+        if (!owner || !this.charActors(owner).some((o) => o.alive())) continue;
+        const since = this.downedSince.get(a.id) ?? now;
+        this.downedSince.set(a.id, since);
+        if (now - since < DOWNED_GET_UP_MS) continue;
+        this.downedSince.delete(a.id);
+        a.ch.downed = false;
+        a.ch.hp = 1;
+        a.dirty = true;
+        this.markPlayer(a.userId);
+        continue;
+      }
       const p = this.state.players[a.userId];
       let changed = regenerate(this.r, a.ch, !!p && this.loneWolf(p), 1);
       for (const k of Object.keys(a.cooldowns)) if (--a.cooldowns[k]! <= 0) delete a.cooldowns[k];
@@ -948,8 +971,17 @@ export class GameInstance implements CombatHost {
 
   // =================================================================== aggro & combat
 
+  /**
+   * Creatures notice a party by its leader, the one the player moves (the followers trailing behind never start a
+   * fight; they join one), and leave a party that just fled alone for a moment so it can get away.
+   */
   private checkAggro(z: LiveZone) {
-    const chars = [...z.actors.values()].filter((a): a is CharActor => a instanceof CharActor && a.alive() && !a.combatId && !this.devPeace.has(a.userId));
+    const now = Date.now();
+    const chars = [...z.actors.values()].filter((a): a is CharActor => {
+      if (!(a instanceof CharActor) || !a.alive() || a.combatId || this.devPeace.has(a.userId) || (this.fledAt.get(a.userId) ?? 0) + FLEE_GRACE_MS > now) return false;
+      const p = this.state.players[a.userId];
+      return !!p && a === this.leader(p);
+    });
     if (!chars.length) return;
     for (const a of z.actors.values()) {
       if (a.combatId || !a.alive()) continue;
@@ -1228,14 +1260,9 @@ export class GameInstance implements CombatHost {
       this.fx(z.id, [{ kind: 'death', targetId: target.id, x: target.x, y: target.y }]);
       const p = this.state.players[target.userId];
       if (p && !target.combatId) {
-        // Downed outside combat (traps): everyone else carries them; if all are down it's a defeat.
+        // Downed outside combat (traps): everyone else carries them (they get up in a moment, see regen); if all
+        // are down it's a defeat.
         if (this.charActors(p).every((a) => !a.alive())) this.defeat(p.userId);
-        else
-          this.after(3000, () => {
-            target.ch.downed = false;
-            target.ch.hp = 1;
-            target.dirty = true;
-          });
       }
       if (p && p.leaderId === target.id) {
         const next = this.charActors(p).find((a) => a.alive());
@@ -1953,10 +1980,17 @@ export class GameInstance implements CombatHost {
     if (!(active instanceof CharActor) || active.userId !== p.userId) return this.sendError(p.userId, 'Not your turn.');
     const enemiesNear = combat.participants().some((e) => e.alive() && isHostileTo(active, e) && Math.hypot(e.x - active.x, e.y - active.y) < 7);
     if (enemiesNear) return this.sendError(p.userId, 'Enemies are too close to flee.');
-    for (const c of this.charActors(p)) if (c.combatId === combat.id) combat.remove(c);
+    // The fallen are carried off with the rest (taken out of the fight first, so it never ends as a defeat with only
+    // them left in it) and get up once clear (see regen).
+    const mine = this.charActors(p).filter((c) => c.combatId === combat.id);
+    for (const c of [...mine.filter((m) => !m.alive()), ...mine.filter((m) => m.alive())]) combat.remove(c);
+    this.fledAt.set(p.userId, Date.now());
     this.sendTo(p.userId, { t: 'combat', combat: null });
     this.sendTo(p.userId, { t: 'toast', text: 'You escaped.', kind: 'info' });
   }
+
+  /** When each player last fled a fight (creatures leave them alone for FLEE_GRACE_MS). */
+  private fledAt = new Map<string, number>();
 
   /** Developer options (the server only lets admins send these). */
   /** Developer option: monsters leave these players alone. */

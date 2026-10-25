@@ -4,7 +4,7 @@
  *   Exploring   left stick walks; the nearest person, chest, way out or pile ahead is focused (LB/RB to change)
  *               and A acts on it; X attacks the nearest foe.
  *   Combat      a ground cursor snaps to foes (LB/RB), shows the path and cost, and A moves or attacks there;
- *               Y ends the turn.
+ *               Y ends the turn; B flees (or backs out of aiming).
  *   Anywhere    hold RT for the skill wheel and LT for the menu wheel (pick with either stick, release to
  *               choose); d-pad left/right switches character; right stick zooms; Menu opens the game menu.
  *   Windows     the d-pad or left stick moves a focus ring between controls, A presses, X opens an item's
@@ -198,7 +198,7 @@ export class PadInput {
       else if (e.kind === 'npc' && !e.hostile && d < 3.2) out.push({ info: this.r.hoverAt(e, { entityId: e.id }), verb: e.marker === 'trade' ? 'Trade' : 'Talk', name: e.name, x: e.x, y: e.y, score: score(e.x, e.y) });
     }
     for (const f of st.zone?.features ?? []) {
-      if (!INTERACTIVE.has(f.kind) || Math.hypot(f.x - lead.x, f.y - lead.y) > 2.6) continue;
+      if (!INTERACTIVE.has(f.kind) || Math.hypot(f.x - lead.x, f.y - lead.y) > 2.6 || (f.kind === 'object' && !this.c.questThingOpen(f.id))) continue;
       const fs = st.features.get(f.id);
       if (f.kind === 'chest' && fs?.opened) continue;
       const verbs: Record<string, string> = { chest: 'Open', exit: 'Travel', sign: 'Read', lore: 'Read', craft_station: 'Craft', waypoint: 'Waypoint', object: 'Examine' };
@@ -270,7 +270,11 @@ export class PadInput {
     if (pressed(B.A)) this.act(info, 0);
     if (pressed(B.X) && foes[0]) this.act(this.r.hoverAt(foes[0], { entityId: foes[0].id }), 0);
     if (pressed(B.Y)) c.send({ t: 'end_turn' });
-    if (pressed(B.B) && st.targeting) c.update({ targeting: null });
+    // B backs out of aiming; with nothing to back out of, it flees (when no foe is near).
+    if (pressed(B.B)) {
+      if (st.targeting) c.update({ targeting: null });
+      else c.send({ t: 'flee' });
+    }
   }
 
   /** A button prompt placed above a spot on the map, in screen pixels (rounded so it only updates when it moves). */
