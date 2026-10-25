@@ -81,7 +81,7 @@ BALANCE REPORT
 ${reportText(r)}
 
 Propose up to 8 revisions that make the rules more fun, clearer or more fitting (rename or re-describe things, change a rarely used skill's effect mix, give a dull passive better stat picks). Leave numbers to the engine. Return an empty list if the rules are good.`;
-  const out = await run('world.design', 'Rules: review', { prompt, schema: ReviewSchema, name: 'rules_review', maxTokens: 3000, system: RP.REVIEW_SYSTEM });
+  const out = await run('world.design', 'Rules: review', { prompt, schema: ReviewSchema, name: 'rules_review', maxTokens: 6000, system: RP.REVIEW_SYSTEM });
   if (!out.revisions.length) return null;
   const next: RulesetIntent = JSON.parse(JSON.stringify(intent));
   const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
