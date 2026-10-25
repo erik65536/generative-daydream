@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { groundToPicture, type AssetRecord, type NpcDef, type ZoneDef } from '@gd/shared';
+import { NAV_CELL, Nav, groundToPicture, type AssetRecord, type NpcDef, type ZoneDef } from '@gd/shared';
 import { api, assetUrl, jobActive, type ArtEntry, type JobStatus, type Me, type StudioEdit, type StudioTask, type StudioView } from '../api';
 import { ClipPreview } from '../ui/clips';
 import { Backdrop } from '../ui/Backdrop';
@@ -365,10 +365,27 @@ function ZoneDetail({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
 
 const MARK: Record<string, string> = { exit: '#7fd0ff', chest: '#ffd24a', trap: '#ff6a5a', sign: '#e8dcc0', lore: '#c0c0ff', craft_station: '#ffb070', waypoint: '#7fffd4', object: '#ffe28c' };
 
-/** The place's painting, with its people, creatures and features marked where they stand. */
+/** The place's painting, with its people, creatures and features marked where they stand (and, on demand, its walk plan). */
 function PlacePainting({ w, z }: { w: World; z: ZoneDef }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const [hover, setHover] = useState('');
+  const [showWalk, setShowWalk] = useState(false);
+  // The walk plan as a picture, one pixel per cell: walkable green, sight-blocking blue (as the game's developer view).
+  const walkPlan = useMemo(() => {
+    if (!z.nav) return null;
+    const nav = new Nav(z.nav);
+    const c = document.createElement('canvas');
+    [c.width, c.height] = [nav.cols, nav.rows];
+    const g = c.getContext('2d')!, img = g.createImageData(nav.cols, nav.rows);
+    for (let y = 0; y < nav.rows; y++)
+      for (let x = 0; x < nav.cols; x++) {
+        const walk = nav.walkableCell(x, y), sight = nav.seeThroughCell(x, y);
+        if (!walk && sight) continue;
+        img.data.set(walk ? [60, 220, 90, 95] : [60, 110, 255, 100], (y * nav.cols + x) * 4);
+      }
+    g.putImageData(img, 0, 0);
+    return { c, w: nav.cols * NAV_CELL, h: nav.rows * NAV_CELL };
+  }, [z]);
   const url = z.painting ? imageOf(w, z.painting.image) : undefined;
   const [img, setImg] = useState<HTMLImageElement | null>(null);
   useEffect(() => {
@@ -383,7 +400,7 @@ function PlacePainting({ w, z }: { w: World; z: ZoneDef }) {
     const at = (x: number, y: number) => groundToPicture(x, y, z.painting!.ox, z.painting!.oy);
     return [
       ...z.features.map((f) => ({ ...at(f.x, f.y), color: MARK[f.kind] ?? '#fff', label: `${f.kind}: ${f.name ?? ''}` })),
-      ...w.npcs.filter((n) => n.zoneId === z.id).map((n) => ({ ...at(n.x, n.y), color: '#ffffff', label: `${n.name}, ${n.title}` })),
+      ...w.npcs.filter((n) => n.zoneId === z.id && !n.companion).map((n) => ({ ...at(n.x, n.y), color: '#ffffff', label: `${n.name}, ${n.title}` })),
       ...z.spawns.map((s) => ({ ...at(s.x, s.y), color: s.bossId ? '#ff3a2a' : '#e06a5a', label: `${w.families.find((f) => f.id === s.familyId)?.name ?? 'creature'} (${s.archetype}, level ${s.level})` })),
     ];
   }, [w, z]);
@@ -398,6 +415,12 @@ function PlacePainting({ w, z }: { w: World; z: ZoneDef }) {
     g.fillStyle = '#0b0a10';
     g.fillRect(0, 0, cv.width, cv.height);
     if (img) g.drawImage(img, 0, 0, cv.width, cv.height);
+    if (showWalk && walkPlan) {
+      const a = groundToPicture(0, 0, z.painting.ox, z.painting.oy), b = groundToPicture(walkPlan.w, walkPlan.h, z.painting.ox, z.painting.oy);
+      g.imageSmoothingEnabled = false;
+      g.drawImage(walkPlan.c, a.x * k, a.y * k, (b.x - a.x) * k, (b.y - a.y) * k);
+      g.imageSmoothingEnabled = true;
+    }
     for (const m of marks) {
       g.fillStyle = m.color;
       g.strokeStyle = 'rgba(0,0,0,0.8)';
@@ -407,7 +430,7 @@ function PlacePainting({ w, z }: { w: World; z: ZoneDef }) {
       g.fill();
       g.stroke();
     }
-  }, [img, marks, k]);
+  }, [img, marks, k, showWalk, walkPlan]);
   if (!z.painting) return <div className="dim small">This place has not been painted.</div>;
   const describe = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -420,7 +443,14 @@ function PlacePainting({ w, z }: { w: World; z: ZoneDef }) {
       <div className="zone-map">
         <canvas ref={canvas} style={{ width: '100%', height: 'auto' }} onMouseMove={describe} onMouseLeave={() => setHover('')} />
       </div>
-      <div className="tiny dim">{hover || 'Hover a mark to see who or what stands there.'}</div>
+      <div className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
+        <div className="tiny dim">{hover || 'Hover a mark to see who or what stands there.'}</div>
+        {walkPlan && (
+          <label className="tiny dim row" style={{ gap: 4, cursor: 'pointer' }} title="Where people can walk (green) and what blocks sight (blue)">
+            <input type="checkbox" checked={showWalk} onChange={(e) => setShowWalk(e.target.checked)} /> Walkable ground
+          </label>
+        )}
+      </div>
     </div>
   );
 }
