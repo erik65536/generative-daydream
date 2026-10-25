@@ -22,7 +22,7 @@ describe('world studio', () => {
     const w = await genWorld('A sleepy harbor town plagued by smugglers.');
     const plan = planAssets(w, 'full');
     expect(plan.some((r) => r.key.includes('@'))).toBe(false);
-    const people = plan.filter((r) => r.key.startsWith('spr_npc_') || r.key.startsWith('spr_origin_'));
+    const people = plan.filter((r) => r.key.startsWith('spr_npc_') || r.key.startsWith('spr_hero_'));
     expect(people.length).toBeGreaterThan(0);
     expect(people.every((r) => r.view === 'front')).toBe(true);
     expect(plan.filter((r) => r.key.startsWith('spr_mon_')).every((r) => r.view === undefined)).toBe(true);
@@ -54,7 +54,7 @@ describe('world studio', () => {
   it('links every way out to a way back', async () => {
     const w = await genWorld('A sleepy harbor town plagued by smugglers.');
     for (const z of w.zones)
-      for (const f of z.features.filter((x) => x.kind === 'exit' || x.kind === 'door')) {
+      for (const f of z.features.filter((x) => x.kind === 'exit')) {
         const back = w.zones.find((x) => x.id === f.targetZoneId)?.features.find((x) => x.id === f.targetFeatureId);
         expect(back, `${f.id} -> ${f.targetZoneId}/${f.targetFeatureId}`).toBeTruthy();
         expect(back!.targetZoneId).toBe(z.id);

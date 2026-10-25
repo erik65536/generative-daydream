@@ -30,8 +30,6 @@ export interface AnimClip {
 
 /** On a sprite's asset record: how to read its clip sheets (each saved as asset `<key>@anim-<clip>`). */
 export interface ActorAnim {
-  /** Format version: sheets of an older version are rendered again. */
-  v: number;
   body: BodyPlan;
   /** Sheet pixels per game picture pixel. */
   scale: number;
@@ -46,8 +44,6 @@ export interface ActorAnim {
   clips: Partial<Record<ClipName, AnimClip>>;
 }
 
-/** Bumped when sheets must be rendered again (2: the camera of the top-down maps). */
-export const ANIM_VERSION = 2;
 /** Moving faster than this (metres per second) plays the run instead of the walk. */
 export const RUN_SPEED = 2.6;
 

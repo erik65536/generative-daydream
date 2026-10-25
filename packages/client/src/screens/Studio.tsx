@@ -234,7 +234,6 @@ function ArtCard({ ctx, k, compact }: { ctx: Ctx; k: string; compact?: boolean }
   if (!e) return null;
   const custom = e.brief !== e.defaultBrief;
   const customPrompt = !!ctx.w.artOverrides?.[k]?.imagePrompt;
-  const variants = [...ctx.art.values()].filter((a) => a.ref === k);
   const url = imageOf(ctx.w, k);
   return (
     <div className={`art-card ${compact ? 'compact' : ''}`}>
@@ -254,15 +253,6 @@ function ArtCard({ ctx, k, compact }: { ctx: Ctx; k: string; compact?: boolean }
           {!open && <div className="small muted clamp2">{e.brief}</div>}
           {rec?.error && open && <div className="tiny bad">{rec.error}</div>}
           {open && <Motion ctx={ctx} k={k} rec={rec} />}
-          {variants.length > 0 && open && (
-            <div className="row" style={{ gap: 6 }}>
-              {variants.map((v) => {
-                const vu = imageOf(ctx.w, v.key);
-                return <div key={v.key} className="art-thumb tiny-thumb" title={v.variant}>{vu ? <img src={vu} alt="" /> : null}</div>;
-              })}
-              <span className="tiny dim">{variants.map((v) => v.variant).join(', ')}</span>
-            </div>
-          )}
         </div>
       </div>
       {open && (
@@ -295,7 +285,7 @@ function ArtCard({ ctx, k, compact }: { ctx: Ctx; k: string; compact?: boolean }
               </button>
             )}
             {(custom || customPrompt) && <button className="btn sm ghost" disabled={ctx.busy} onClick={() => ctx.edit({ type: 'art', key: k, brief: null, imagePrompt: null })}>Reset to the daydream's</button>}
-            <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.task({ kind: 'paint', keys: [k], reroll: !e.stale })}>{e.stale ? 'Paint' : 'Repaint'}{variants.length ? ' (with poses)' : ''}</button>
+            <button className="btn sm" disabled={ctx.busy} onClick={() => ctx.task({ kind: 'paint', keys: [k], reroll: !e.stale })}>{e.stale ? 'Paint' : 'Repaint'}</button>
           </div>
         </div>
       )}
@@ -305,24 +295,17 @@ function ArtCard({ ctx, k, compact }: { ctx: Ctx; k: string; compact?: boolean }
 
 // ------------------------------------------------------------------------------------ places
 
-const KIND_ORDER: Record<string, number> = { town: 0, wilderness: 1, dungeon: 2, interior: 3 };
+const KIND_ORDER: Record<string, number> = { town: 0, wilderness: 1, dungeon: 2 };
 
 function Places({ ctx, sel }: { ctx: Ctx; sel?: string }) {
   const { w } = ctx;
-  const tops = w.zones.filter((z) => z.kind !== 'interior').sort((a, b) => KIND_ORDER[a.kind]! - KIND_ORDER[b.kind]! || a.levelRange[0] - b.levelRange[0]);
+  const tops = [...w.zones].sort((a, b) => KIND_ORDER[a.kind]! - KIND_ORDER[b.kind]! || a.levelRange[0] - b.levelRange[0]);
   const [id, setId] = useState(sel ?? tops[0]?.id);
   const z = w.zones.find((x) => x.id === id) ?? tops[0];
   return (
     <Split
       list={tops.map((t) => (
-        <div key={t.id}>
-          <ListItem on={t.id === z?.id} onClick={() => setId(t.id)} title={t.name} sub={`${t.kind} · level ${t.levelRange.join('–')}`} />
-          {w.zones.filter((i) => i.parentZoneId === t.id).map((i) => (
-            <div key={i.id} style={{ paddingLeft: 14 }}>
-              <ListItem on={i.id === z?.id} onClick={() => setId(i.id)} title={i.name} sub={i.buildingPurpose ?? 'interior'} />
-            </div>
-          ))}
-        </div>
+        <ListItem key={t.id} on={t.id === z?.id} onClick={() => setId(t.id)} title={t.name} sub={`${t.kind} · ${t.tiles.join(' × ')} tiles · level ${t.levelRange.join('–')}`} />
       ))}
     >
       {z && <ZoneDetail key={z.id} ctx={ctx} z={z} />}
@@ -334,10 +317,7 @@ function ZoneDetail({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
   const { w } = ctx;
   const people = w.npcs.filter((n) => n.zoneId === z.id);
   const quests = w.quests.filter((q) => q.zoneId === z.id || q.objectives.some((o) => o.zoneId === z.id));
-  const peopleArt = () => {
-    const here = new Set([z.id, ...w.zones.filter((i) => i.parentZoneId === z.id).map((i) => i.id)]);
-    return w.npcs.filter((n) => here.has(n.zoneId)).map((n) => `spr_npc_${n.id}`).filter((k) => ctx.art.has(k));
-  };
+  const peopleArt = () => people.map((n) => `spr_npc_${n.id}`).filter((k) => ctx.art.has(k));
   return (
     <div className="col" style={{ gap: 14 }}>
       <div className="row wrap" style={{ gap: 6 }}>
@@ -383,7 +363,7 @@ function ZoneDetail({ ctx, z }: { ctx: Ctx; z: ZoneDef }) {
   );
 }
 
-const MARK: Record<string, string> = { door: '#e0b060', exit: '#7fd0ff', chest: '#ffd24a', trap: '#ff6a5a', sign: '#e8dcc0', lore: '#c0c0ff', bed: '#c0e0ff', craft_station: '#ffb070', waypoint: '#7fffd4', object: '#ffe28c' };
+const MARK: Record<string, string> = { exit: '#7fd0ff', chest: '#ffd24a', trap: '#ff6a5a', sign: '#e8dcc0', lore: '#c0c0ff', craft_station: '#ffb070', waypoint: '#7fffd4', object: '#ffe28c' };
 
 /** The place's painting, with its people, creatures and features marked where they stand. */
 function PlacePainting({ w, z }: { w: World; z: ZoneDef }) {
@@ -480,7 +460,7 @@ function PersonDetail({ ctx, n }: { ctx: Ctx; n: NpcDef }) {
         <span className="badge">{n.role}{n.merchantKind ? ` · ${n.merchantKind}` : ''}</span>
         <span className="badge gray">level {n.level}</span>
         <span className="badge gray">{n.pronouns}</span>
-        {n.canJoinParty && <span className="badge green">can join the party</span>}
+        {n.companion && <span className="badge green">companion</span>}
         <button className="btn sm ghost" onClick={() => ctx.go('places', n.zoneId)}>{w.zones.find((z) => z.id === n.zoneId)?.name}</button>
       </div>
       <div className="studio-cols">

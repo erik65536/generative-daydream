@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
-import { ACTOR_CLIPS, ANIM_DIRS, ANIM_VERSION, clipFrame, clipKey, dirRow, type AnimClip, type AssetRecord, type WorldDefinition } from '@gd/shared';
+import { ACTOR_CLIPS, ANIM_DIRS, clipFrame, clipKey, dirRow, type AnimClip, type AssetRecord, type WorldDefinition } from '@gd/shared';
 import { actorSprites, bodyPlan, needsAnimation } from '../src/anim/actors';
 import { saveAnimation } from '../src/anim/animator';
 import { worldAssetDir } from '../src/storage';
@@ -35,7 +35,7 @@ describe('sheet rows and frames', () => {
     expect(clipFrame(die, 99)).toBe(29);
   });
 
-  it('keeps clip sheets apart from the base sprite and older pose strips', () => {
+  it('keys clip sheets apart from the base sprite', () => {
     expect(clipKey('spr_npc_a', 'walk')).toBe('spr_npc_a@anim-walk');
     expect(clipKey('spr_npc_a', 'walk')).not.toBe('spr_npc_a@walk');
   });
@@ -44,7 +44,7 @@ describe('sheet rows and frames', () => {
 describe('actors', () => {
   it('reads body plans from the brief', () => {
     expect(bodyPlan(sprite('spr_npc_n_x', 'A floating jellyfish lantern'))).toBe('humanoid');
-    expect(bodyPlan(sprite('spr_origin_cl_a_feminine', 'A wolf-masked hunter'))).toBe('humanoid');
+    expect(bodyPlan(sprite('spr_hero_cl_a_k_wolf', 'A wolf-masked hunter'))).toBe('humanoid');
     expect(bodyPlan(sprite('spr_mon_f0_a', 'A gaunt grey wolf with a kelp mane'))).toBe('quadruped');
     expect(bodyPlan(sprite('spr_mon_f0_b', 'A drifting lantern creature with trailing tentacles'))).toBe('floater');
     expect(bodyPlan(sprite('spr_mon_f0_c', 'A hooded cultist in salt-stained robes'))).toBe('humanoid');
@@ -63,7 +63,7 @@ describe('actors', () => {
     const w = {
       assets: {
         spr_npc_a: sprite('spr_npc_a'),
-        'spr_npc_a@walk': sprite('spr_npc_a@walk', '', { ref: 'spr_npc_a', variant: 'walk' }),
+        'spr_npc_a@anim-walk': { ...sprite('spr_npc_a@anim-walk'), kind: 'sheet', ref: 'spr_npc_a' },
         spr_mon_b: sprite('spr_mon_b', '', { status: 'failed' }),
         icon_x: { ...sprite('icon_x'), kind: 'icon' },
         obj_chest: { ...sprite('obj_chest'), kind: 'object' },
@@ -72,7 +72,7 @@ describe('actors', () => {
     expect(actorSprites(w).map((a) => a.key)).toEqual(['spr_npc_a']);
     const rec = w.assets.spr_npc_a!;
     expect(needsAnimation(rec)).toBe(true);
-    rec.anim = { v: ANIM_VERSION, body: 'humanoid', scale: 2, cell: [10, 10], anchor: [5, 8], height: 1.75, from: 'spr_npc_a.png', clips: {} };
+    rec.anim = { body: 'humanoid', scale: 2, cell: [10, 10], anchor: [5, 8], height: 1.75, from: 'spr_npc_a.png', clips: {} };
     expect(needsAnimation(rec)).toBe(false);
     rec.file = 'spr_npc_a_v2.png';
     expect(needsAnimation(rec)).toBe(true);
@@ -92,7 +92,7 @@ describe('actors', () => {
     expect(Object.keys(anim.clips)).toEqual(['idle', 'die']);
     for (const clip of ['idle', 'die'] as const) {
       const rec = w.assets[clipKey('spr_npc_a', clip)]!;
-      expect(rec).toMatchObject({ kind: 'sprite', status: 'ok', ref: 'spr_npc_a', variant: 'anim', width: 40, height: 80 });
+      expect(rec).toMatchObject({ kind: 'sheet', status: 'ok', ref: 'spr_npc_a', width: 40, height: 80 });
       expect(rec.file).toMatch(/^[\w.-]+\.webp$/);
       expect(fs.existsSync(path.join(worldAssetDir(id), rec.file!))).toBe(true);
     }

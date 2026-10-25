@@ -1,10 +1,10 @@
+import type { Presentation } from '../world/instance';
 /**
  * A world's ruleset: pure data, generated with the world and interpreted by the engine.
  * See docs/rulesets.md. Ids are world-specific strings; nothing here is a fixed enum except the
  * engine vocabularies (turn models, death modes, effect primitives, control kinds, monster roles).
  */
 
-export const RULESET_VERSION = 1;
 
 // ------------------------------------------------------------------------------------ engine vocabularies
 
@@ -186,6 +186,10 @@ export interface KinDef {
   id: string;
   name: string;
   description: string;
+  /** What a person of this kin looks like (used to draw its heroes). */
+  appearance: string;
+  /** Each kin is one gender, balanced over the world's kins. */
+  presentation: Presentation;
   attributes: Record<string, number>;
   modifiers: Modifier[];
 }
@@ -321,7 +325,6 @@ export interface MonsterRoleDef {
 // ------------------------------------------------------------------------------------ the ruleset
 
 export interface Ruleset {
-  version: number;
   id: string;
   name: string;
   /** Short flavour introduction for the codex. */
@@ -397,12 +400,14 @@ export interface Ruleset {
     buffPotions: boolean;
     damagePotions: boolean;
     dynamicQuests: boolean;
+    /** Travel between visited cities from their waypoints, and items that take the party back (a rule the world's maker picks). */
+    fastTravel: boolean;
   };
 
   /** Per-save difficulty: enemy multipliers over level and encounter adjustments. */
   difficulty: Record<DifficultyId, { name: string; enemyHp: Knots; enemyDmg: Knots; extraEnemyChance: number; eliteChance: number; lootMult: number }>;
 
-  terminology: { xp: string; level: string; actionPoints: string; party: string; town: string; dungeon: string; wilderness: string; quest: string; currency: string; /** What a class is called (older worlds: absent). */ calling?: string; /** What an origin or ancestry choice is called. */ kin?: string };
+  terminology: { xp: string; level: string; actionPoints: string; party: string; town: string; dungeon: string; wilderness: string; quest: string; currency: string; /** What a class is called. */ calling: string; /** What an origin or ancestry choice is called. */ kin: string };
 
   ui: { material: 'parchment' | 'wood' | 'stone' | 'metal' | 'glass' | 'organic' | 'paper' | 'neon'; ornament: 'none' | 'filigree' | 'runes' | 'rivets' | 'circuit' | 'vines'; typeface?: 'engraved' | 'classic' | 'modern' | 'condensed' | 'storybook' | 'gothic' | 'technical'; grading: { tint: string; saturation: number; contrast: number; vignette: number; grain: number } };
 
@@ -424,7 +429,6 @@ export interface BalanceScenarioResult {
 
 export interface BalanceReport {
   at: number;
-  engineVersion: number;
   iterations: number;
   durationMs: number;
   fights: number;

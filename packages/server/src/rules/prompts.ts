@@ -2,10 +2,16 @@
 import type { WorldInput } from '@gd/shared';
 import type { ClassesIntent, CoreIntent, GearIntent, RulesOverrides } from './intent';
 
+/**
+ * Players must understand every rule word at first sight: plain, familiar game words, renamed only when the theme truly
+ * calls for it, and then to a word anyone recognises. (Worlds that invented words for health and damage were hard to read.)
+ */
+export const PLAIN_TERMS = `WORDS: players must understand every rule word at first sight, so use plain, familiar game words: Health, Experience, Level, AP, Gold, Party, Quest, Town, Dungeon, Wilds, Class, Kin; damage types such as Physical and Magic with Armour and Resistance; damage kinds such as Fire, Cold, Lightning, Poison, Acid, Holy and Shadow; statuses such as Burning, Poisoned, Slowed, Rooted, Silenced, Shielded; resources such as Stamina, Mana, Energy, Focus; attributes such as Strength, Agility, Intellect, Toughness, Willpower. The theme shows in skills, items, classes and descriptions, not in renamed basics. Rename a basic word only when the theme truly calls for it, and then to a word anyone knows at once in that sense (Credits for gold on a space station, Hull for a ship's health, Department for kin in an office). Never invent or compound a word (no "Vitae", "Moxie Points", "Aetherflux", "Woundweave"), never use an obscure or archaic word, and when in doubt keep the plain one.`;
+
 export const RULES_SYSTEM = `You design the RULES of a turn-based RPG world for the "Generative Daydream" engine (in the spirit of Baldur's Gate 2 / Divinity: Original Sin 2).
 You choose structure, names and relative weights (1-5). You never write numbers for damage, health or costs: a deterministic engine prices everything and a simulator balances it.
-Engine facts you cannot change: combat is turn-based with action points; there is always a health stat (you name it); defeat sends the party back to the last town; items have levels and rarities; skills belong to one class each and are learned through an upgrade tree (three themed branches per class, four tiers).
-Make the rules feel native to the setting — a cozy world might fight with bonks and sparkles, a sci-fi world with plasma and shielding — while staying clear and readable to players.
+Engine facts you cannot change: combat is turn-based with action points; there is always a health stat; defeat sends the party back to the last town; items have levels and rarities; skills belong to one class each and are learned through an upgrade tree (three themed branches per class, four tiers).
+${PLAIN_TERMS}
 Output only the requested JSON.`;
 
 function overrideLines(o?: RulesOverrides): string {
@@ -29,12 +35,12 @@ export function corePrompt(world: string, input: WorldInput): string {
 
 Design the CORE RULES for this world.${overrideLines(input.rules)}
 - "numbers": how big numbers feel (cozy/silly worlds: small; grim/epic: medium; high-tech: large).
-- "health": what this world calls health (Health, Integrity, Spirits, Composure...) and its bar colour.
-- "terminology": names for experience, level, action points (short, like AP), currency, party, town, dungeon, wilderness, quest, and what this world calls a character's class ("calling") and their origin or ancestry ("kin"). Use the world's own idiom (an office world might say Job Title and Department).
+- "health": its name (Health unless the theme truly calls for another plain word) and its bar colour.
+- "terminology": the words for experience, level, action points (short, like AP), currency, party, town, dungeon, wilderness, quest, a character's class ("calling") and their origin or ancestry ("kin"). Keep the plain words (Experience, Level, AP, Gold, Party, Town, Dungeon, Wilds, Quest, Class, Kin) unless the theme truly calls for another word anyone knows.
 - "pools": 0-3 resources skills spend. Mark each physical, magical or any. Classes will be built around them.
 - "attributes": 3-6 attributes. Each lists 1-3 effects with weights 1-5. Effects: health, health_regen, pool (of = pool name), pool_regen, melee_damage, ranged_damage, skill_damage, all_damage, type_damage (of = damage type), subtype_damage (of = subtype), healing, crit_chance, crit_damage, dodge, movement, initiative, mitigation (of = damage type), resist_all, resist (of = subtype), trap_sense, lockpicking, barter, loot_find, life_steal, thorns. Give every major play style (melee, ranged, skills, healing) an attribute that feeds it.
-- "damageTypes": 1-3 broad categories, each with its own mitigation stat name (e.g. Physical → Armor, Magical → Ward).
-- "subtypes": 0-8 flavours of damage, each belonging to a damage type, optionally with the status it tends to inflict.
+- "damageTypes": 1-3 broad categories, each with its own mitigation stat (usually Physical → Armour and Magic → Resistance).
+- "subtypes": 0-8 kinds of damage with plain names (Fire, Cold, Lightning, Poison...), each belonging to a damage type, optionally with the status it tends to inflict.
 - "statuses": up to 12 conditions. kinds: damage_over_time (give subtype), heal_over_time, buff, debuff (stats with direction), control (root = cannot move, silence = no skills, disarm = no weapon attacks, slow = fewer action points). NEVER create skip-turn, sleep, stun-skip or taunt effects.
 - "slots": 3-10 equipment slots with exactly one weapon slot (add off-hand, armor and accessory slots that fit the setting).
 - "rarities": five quality names, lowest to highest.
@@ -70,7 +76,7 @@ Design the GEAR, CONSUMABLES and PEOPLES of this world (names and kinds only; th
 - "materials": up to 6 crafting materials with tiers 1-3; "valuables": things only worth selling.
 - "tools": names for the trap-disarming tool, the lock-opening tool and the item that returns you to town.
 - "affixNames": optional prefix/suffix names for item enchantments by effect (e.g. melee_damage → "Brutal" / "of Force").
-- "kins": 1-6 peoples/species/backgrounds the player can be. Each gets up to two small attribute bonuses and an optional perk.`;
+- "kins": 1-4 peoples, species or backgrounds the player can be (2-3 is usual). Each gets up to two small attribute bonuses and an optional perk, and a "look": what a person of this kin looks like, body and face only, without clothes or gender (every hero is drawn from it, wearing their class's outfit). Each kin will be drawn as one gender, so never describe a gender.`;
 }
 
 export function classesPrompt(world: string, core: CoreIntent, gear: GearIntent, count: [number, number]): string {
@@ -80,7 +86,7 @@ ${coreSummary(core)}
 Weapons: ${gear.weapons.map((w) => `${w.name} (${w.style})`).join(', ')}. Off-hands: ${gear.offhands.map((o) => `${o.name} (${o.style})`).join(', ') || 'none'}.
 
 Design ${count[0]}-${count[1]} player CLASSES. Each needs a clear role (tank, melee, ranged, caster, support, hybrid) so a party feels complete; cover at least a front-liner, a damage dealer and a healer/support.
-For each: name, description, role, 1-2 primary attributes (from the list), the pool its skills spend, its starting weapon (exact name), armor weight, optional off-hand, "appearance" (a visual description of their outfit, gear and bearing used to draw them; gender-neutral, because players choose a feminine, masculine or androgynous hero: no he/she, man/woman, beards or other gendered traits), and three themed upgrade-tree "branches".`;
+For each: name, description, role, 1-2 primary attributes (from the list), the pool its skills spend, its starting weapon (exact name), armor weight, optional off-hand, "appearance" (a visual description of their outfit, gear and bearing used to draw them, worn by heroes of every kin: no body, species or gender, no he/she, man/woman or beards), and three themed upgrade-tree "branches".`;
 }
 
 export function treePrompt(world: string, core: CoreIntent, cls: ClassesIntent['classes'][number]): string {

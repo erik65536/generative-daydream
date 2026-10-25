@@ -15,7 +15,7 @@ import { genai } from './service';
 import type { Purpose } from './types';
 import { KEY_NAMES, backdropSentence, cutout, cutoutProblems, finishCutout, type Cutout, type FinishedImage, type KeyColour } from './cutout';
 
-export type AssetKind = Exclude<AssetRecord['kind'], 'painting' | 'texture'>;
+export type AssetKind = Exclude<AssetRecord['kind'], 'painting' | 'texture' | 'sheet'>;
 /** An image this pipeline makes (places are painted elsewhere). */
 export type ImageRecord = AssetRecord & { kind: AssetKind };
 /** How an actor is shown: from the front (people, upright figures) or from the side (animals and other body plans). */
@@ -26,7 +26,7 @@ export const KREA_WRITER_NOTES = 'This model likes natural, flowing captions. Ke
 
 // ------------------------------------------------------------------------------------ briefs and prompts
 
-const KIND_PURPOSE: Record<AssetKind, Purpose> = { sprite: 'image.sprite', object: 'image.sprite', icon: 'image.icon', portrait: 'image.sprite' };
+const KIND_PURPOSE: Record<AssetKind, Purpose> = { sprite: 'image.sprite', object: 'image.sprite', icon: 'image.icon' };
 
 /** The base view of every actor: what the 3D animation step builds the rigged figure from. */
 const VIEW_FRAMING: Record<View, string> = {
@@ -46,8 +46,6 @@ function framing(rec: ImageRecord): string {
       return 'A game prop seen from a high three-quarter angle (about 35 degrees from above, as the figures of a top-down game are drawn): one object shown whole and centred, standing upright as it would stand on the ground (a sign on its post, a lantern on its base or pole, a table on its legs), with empty space around it.';
     case 'icon':
       return 'A game inventory icon: one item centred and shown whole, slightly angled, filling most of a square frame, no hands.';
-    case 'portrait':
-      return 'A head-and-shoulders character portrait.';
   }
 }
 
@@ -78,7 +76,7 @@ ${KREA_WRITER_NOTES}`;
 export const promptEntry = <K extends [string, ...string[]]>(keys: K) =>
   z.object({ key: z.enum(keys), prompt: z.string().min(40).max(2400), backdrop: z.enum(KEY_NAMES), view: z.enum(['front', 'side']) });
 
-/** Used when no LLM is available: a plain observer-style paragraph assembled from the brief. */
+/** For an asset the prompt writer left out: a plain observer-style paragraph assembled from the brief. */
 function describeFallback(rec: ImageRecord, style: string): string {
   const medium = rec.kind === 'icon' ? 'game icon illustration' : 'game asset illustration';
   return `The image is a ${style} ${medium} of ${rec.prompt}. ${framing({ ...rec, view: rec.view ?? 'front' })} The lighting is soft and even with a gentle rim light, giving the forms volume and clear contrast. The overall composition is clean and readable, with a cohesive palette and a clear silhouette.`;
@@ -91,12 +89,12 @@ export function buildPrompt(rec: ImageRecord, style: string, key: KeyColour): st
 
 /** Canvas per asset: actors in their view's orientation, props and icons square. */
 export function canvasOf(rec: ImageRecord): { width: number; height: number } {
-  if (rec.kind === 'sprite' || rec.kind === 'portrait') return (rec.view ?? 'front') === 'side' ? { width: 1216, height: 832 } : { width: 832, height: 1216 };
+  if (rec.kind === 'sprite') return (rec.view ?? 'front') === 'side' ? { width: 1216, height: 832 } : { width: 832, height: 1216 };
   return { width: 1024, height: 1024 };
 }
 
 /** Longest side of the kept image: actors keep detail for the 3D animation step; icons are shown small. */
-const MAX_SIDE: Record<AssetKind, number> = { sprite: 768, portrait: 512, object: 512, icon: 256 };
+const MAX_SIDE: Record<AssetKind, number> = { sprite: 768, object: 512, icon: 256 };
 
 // ------------------------------------------------------------------------------------ content check
 
@@ -104,7 +102,6 @@ const CRITERIA: Record<AssetKind, string> = {
   sprite: 'exactly one full-body character or creature, fully visible (not cut off), clean silhouette, well lit and readable, no text, no extra characters, no scenery.',
   object: 'exactly one object, fully visible, clean silhouette, well lit and readable, no text, no scenery.',
   icon: 'exactly one clearly readable item centered, no text, no hands, no scenery.',
-  portrait: 'a single character portrait, face clearly visible, no text.',
 };
 
 /** Quality levels, each with what it means for a game asset (checkers calibrate on the descriptions). */

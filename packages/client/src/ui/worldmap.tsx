@@ -308,7 +308,7 @@ export function WorldMapView({ world, player, here, canTravelTo, onTravel, terms
   terms: { town: string; dungeon: string; wilderness: string; level: string };
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
-  const zones = useMemo(() => world.zones.filter((z) => z.kind !== 'interior'), [world]);
+  const zones = world.zones;
   const terr = useMemo(() => territories(zones, seedOf(world.id)), [zones, world.id]);
   const [hover, setHover] = useState<Zone | null>(null);
   const knownKey = `${player.knownZones.join(',')}|${player.visitedZones.join(',')}`;

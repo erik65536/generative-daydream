@@ -5,7 +5,7 @@ import http from 'node:http';
 import express, { type Request, type Response } from 'express';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { z } from 'zod';
-import { COMBAT_MODES, DIFFICULTIES, GAME_LENGTHS, WORLD_SIZES, type ClientMessage, type ServerMessage, type WorldDefinition } from '@gd/shared';
+import { COMBAT_MODES, DIFFICULTIES, GAME_LENGTHS, PROMPT_TOPICS, WORLD_SIZES, type ClientMessage, type ServerMessage, type WorldDefinition } from '@gd/shared';
 import { CLIENT_DIST, CONFIG_DIR } from './paths';
 import * as store from './storage';
 import { adminOnly, auth, authPending, cookie, type AuthedRequest } from './auth';
@@ -179,7 +179,7 @@ mountGpuAdmin(app);
 function coverArt(w: WorldDefinition): { scene?: string; figures: string[] } | undefined {
   const ok = (k: string) => (w.assets[k]?.status === 'ok' ? w.assets[k]!.file : undefined);
   const scene = ok(`place_${w.startZoneId}`);
-  const keys = [...w.bosses.map((b) => `spr_boss_${b.id}`), ...w.npcs.filter((n) => n.essential).map((n) => `spr_npc_${n.id}`), ...w.origins.map((o) => `spr_origin_${o.id}_androgynous`), ...w.npcs.map((n) => `spr_npc_${n.id}`)];
+  const keys = [...w.bosses.map((b) => `spr_boss_${b.id}`), ...w.npcs.filter((n) => n.essential).map((n) => `spr_npc_${n.id}`), ...w.origins.flatMap((o) => Object.values(o.assets ?? {})), ...w.npcs.map((n) => `spr_npc_${n.id}`)];
   const figures = [...new Set(keys.map(ok).filter((f): f is string => !!f))].slice(0, 4);
   return scene || figures.length ? { scene, figures } : undefined;
 }
@@ -197,9 +197,9 @@ function worldSummary(w: WorldDefinition) {
     public: w.public,
     status: job ? 'generating' : w.status,
     createdAt: w.createdAt,
-    input: { size: w.input.size, length: w.input.length, combatMode: w.input.combatMode, communication: w.input.communication, difficulty: w.input.difficulty ?? 'normal' },
+    input: { size: w.input.size, length: w.input.length, combatMode: w.input.combatMode, communication: w.input.communication, difficulty: w.input.difficulty ?? 'normal', fastTravel: !!w.input.rules?.fastTravel },
     rules: w.ruleset ? { name: w.ruleset.name, classes: w.ruleset.classes.map((c) => c.name), balance: w.ruleset.balance ? { at: w.ruleset.balance.at, ok: w.ruleset.balance.scenarios.filter((x) => x.ok).length, total: w.ruleset.balance.scenarios.length, durationMs: w.ruleset.balance.durationMs } : undefined } : undefined,
-    zones: w.zones.filter((z) => z.kind !== 'interior').length,
+    zones: w.zones.length,
     npcs: w.npcs.length,
     quests: w.quests.length,
     palette: w.concept.palette,
@@ -216,15 +216,13 @@ app.get('/api/worlds', auth, (req, res) => {
 });
 
 const WorldInputSchema = z.object({
-  setting: z.string().trim().min(10, 'Describe the setting in at least a sentence.').max(4000),
-  story: z.string().max(4000).optional(),
-  notes: z.string().max(4000).optional(),
+  theme: z.string().trim().min(10, 'Describe the theme in at least a sentence.').max(4000),
+  prompts: z.array(z.object({ topic: z.enum(PROMPT_TOPICS), text: z.string().trim().min(1).max(2000) })).max(12).optional(),
   size: z.enum(WORLD_SIZES),
   length: z.enum(GAME_LENGTHS),
   communication: z.coerce.number().int().min(0).max(3).transform((n) => n as 0 | 1 | 2 | 3),
   combatMode: z.enum(COMBAT_MODES),
   seed: z.string().max(40).optional(),
-  art: z.enum(['none', 'essential', 'full']).default('essential'),
   difficulty: z.enum(DIFFICULTIES as [string, ...string[]]).optional() as z.ZodOptional<z.ZodType<'story' | 'easy' | 'normal' | 'hard' | 'brutal'>>,
   rules: z
     .object({
@@ -241,9 +239,11 @@ const WorldInputSchema = z.object({
       upgrades: z.boolean().optional(),
       enchanting: z.boolean().optional(),
       classes: z.number().int().min(2).max(6).optional(),
+      fastTravel: z.boolean().optional(),
     })
+    .strict()
     .optional(),
-});
+}).strict();
 
 app.post('/api/worlds', auth, (req, res) => {
   const u = (req as AuthedRequest).user;
@@ -426,6 +426,7 @@ app.get('/api/worlds/:id/setup', auth, (req, res) => {
     combatMode: w.input.combatMode,
     difficulty: w.input.difficulty ?? 'normal',
     origins: w.origins,
+    companions: w.npcs.filter((n) => n.companion).map((n) => ({ id: n.id, name: n.name, title: n.title, classId: n.companion!.classId, kinId: n.companion!.kinId, asset: n.asset, colors: n.colors })),
     assets: Object.fromEntries(Object.values(w.assets).filter((a) => a.status === 'ok').map((a) => [a.key, a.file])),
   });
 });

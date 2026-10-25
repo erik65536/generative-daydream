@@ -2,7 +2,7 @@
  * Zod schemas for each world-generation LLM call.
  */
 import { z } from 'zod';
-import { MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES } from '@gd/shared';
+import { MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES, type Ruleset } from '@gd/shared';
 
 const str = (max: number, min = 1) => z.string().trim().min(min).max(max);
 /** Lenient color: models may answer '#a1b2c3', 'a1b2c3', '#abc' or a color name; normalized later by normColor(). */
@@ -45,7 +45,7 @@ export const ConceptSchema = z.object({
 });
 export type ConceptOut = z.infer<typeof ConceptSchema>;
 
-/** One entry per region and per place (exact counts, so a strict model cannot leave one out). */
+/** The world plan: one entry per region and per place (exact counts, so a strict model cannot leave one out). */
 export function atlasSchema(slotIds: string[], regionCount?: number) {
   const regions = z.array(z.object({ index: z.coerce.number().int(), name: str(60), description: str(400) }));
   return z.object({
@@ -57,13 +57,15 @@ export function atlasSchema(slotIds: string[], regionCount?: number) {
         description: str(500, 10),
         indoor: z.boolean().describe('Inside a structure (under a roof or ceiling), not under the open sky'),
         lore: str(600).optional(),
+        role: str(400).describe("The place's part in the story"),
+        tiles: z.object({ cols: z.number().int().min(1).max(4), rows: z.number().int().min(1).max(4) }).describe('Size of its map in tiles'),
       }),
     ).min(slotIds.length).max(slotIds.length),
   });
 }
 export type AtlasOut = z.infer<ReturnType<typeof atlasSchema>>;
 
-export function storySchema(townSlots: string[], dungeonSlots: string[], allSlots: string[]) {
+export function storySchema(townSlots: string[], lairSlots: string[], allSlots: string[]) {
   const objective = z.object({
     type: z.enum(OBJECTIVE_TYPES),
     description: str(240),
@@ -100,7 +102,7 @@ export function storySchema(townSlots: string[], dungeonSlots: string[], allSlot
           title: str(80),
           description: str(400),
           appearance: str(300),
-          dungeonSlot: z.enum(dungeonSlots as [string, ...string[]]),
+          lairSlot: z.enum(lairSlots as [string, ...string[]]).describe('The dungeon or wild place where it makes its lair'),
           archetype: z.enum(MONSTER_ARCHETYPES),
           taunt: str(240).optional(),
         }),
@@ -164,10 +166,29 @@ const npcSchema = z.object({
   voice: str(160).optional(),
   greeting: str(300),
   barks: z.array(str(140)).max(4),
-  canJoinParty: z.boolean().optional(),
   friends: z.array(z.string()).max(4).optional(),
 });
 export type NpcOut = z.infer<typeof npcSchema>;
+
+/** The three companions of a world played with companions: classes and kins by name, from this world's rules. */
+export function companionsSchema(r: Ruleset) {
+  return z.object({
+    companions: z.array(z.object({
+      name: str(60),
+      title: str(80),
+      className: z.enum(r.classes.map((c) => c.name) as [string, ...string[]]),
+      kinName: z.enum(r.kins.map((k) => k.name) as [string, ...string[]]),
+      personality: str(300),
+      appearance: str(300),
+      backstory: str(500),
+      knowledge: z.array(str(300)).max(3),
+      voice: str(160),
+      greeting: str(300),
+      barks: z.array(str(140)).max(3),
+    })).length(3),
+  });
+}
+export type CompanionsOut = z.infer<ReturnType<typeof companionsSchema>>;
 
 const sideObjective = z.object({
   type: z.enum(OBJECTIVE_TYPES),

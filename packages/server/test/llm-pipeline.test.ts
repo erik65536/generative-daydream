@@ -31,7 +31,7 @@ afterAll(() => {
 
 describe('LLM pipeline against a mock OpenAI-compatible server', () => {
   it('generates a valid world from model output (including a junk response)', async () => {
-    const job = new WorldGenJob(`w_llm_${Date.now()}`, { setting: 'A test world of mock content', size: 'small', length: 'short', communication: 3, combatMode: 'party_npc', seed: 'llm' }, { id: 'u1', name: 'T' });
+    const job = new WorldGenJob(`w_llm_${Date.now()}`, { theme: 'A test world of mock content', prompts: [{ topic: 'monsters' as const, text: 'No undead.' }], size: 'small', length: 'short', communication: 3, combatMode: 'party_npc', seed: 'llm' }, { id: 'u1', name: 'T' });
     await runGeneration(job);
     const w = loadWorld(job.worldId)!;
     expect(w.status).toBe('ready');

@@ -17,7 +17,7 @@ const here = markAt >= 0 ? args[markAt + 1]!.split(',').map(Number) : undefined;
 const [worldId, ...only] = args.filter((a, i) => !a.startsWith('--') && args[i - 1] !== '--out' && args[i - 1] !== '--mark');
 const w = loadWorld(worldId!);
 if (!w) throw new Error(`no world ${worldId}`);
-const COLOR: Record<string, string> = { door: '#ffb040', exit: '#40c8ff', chest: '#ffe040', sign: '#ffffff', lore: '#c0a0ff', waypoint: '#40ffd0', bed: '#a0d0ff', craft_station: '#ff9060', object: '#ffe28c', trap: '#ff3030' };
+const COLOR: Record<string, string> = { exit: '#40c8ff', chest: '#ffe040', sign: '#ffffff', lore: '#c0a0ff', waypoint: '#40ffd0', craft_station: '#ff9060', object: '#ffe28c', trap: '#ff3030' };
 fs.mkdirSync(out, { recursive: true });
 for (const z of w.zones) {
   if ((only.length && !only.includes(z.id)) || !z.painting || !z.nav) continue;
@@ -40,7 +40,7 @@ for (const z of w.zones) {
   };
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}">
 <path d="${cells.join('')}" fill="rgba(40,230,80,0.28)"/>
-${z.features.map((f) => mark(f.x, f.y, COLOR[f.kind] ?? '#fff', 10, f.kind === 'exit' || f.kind === 'door' ? f.name ?? '' : '')).join('')}
+${z.features.map((f) => mark(f.x, f.y, COLOR[f.kind] ?? '#fff', 10, f.kind === 'exit' ? f.name ?? '' : '')).join('')}
 ${w.npcs.filter((n) => n.zoneId === z.id).map((n) => mark(n.x, n.y, '#ffffff', 8, n.name)).join('')}
 ${z.spawns.map((s) => mark(s.x, s.y, s.bossId ? '#ff0000' : '#e06040', s.bossId ? 12 : 6)).join('')}
 ${mark(z.entry.x, z.entry.y, '#00ff00', 14, 'entry')}

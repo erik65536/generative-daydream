@@ -4,9 +4,9 @@
  * balanced by construction; the balance loop then fine-tunes a few knobs.
  */
 import {
-  MONSTER_ROLES, RULESET_VERSION,
+  MONSTER_ROLES, kinPresentations,
   type AffixDef, type AttributeDef, type BranchDef, type ClassDef, type ClassRole, type DamageTypeDef, type DifficultyId, type Effect, type ItemBaseDef,
-  type KinDef, type Knots, type Modifier, type MonsterRole, type MonsterRoleDef, type PoolDef, type RarityDef, type RecipeDef, type Ruleset, type SkillDef,
+  type KinDef, type Knots, type Modifier, type MonsterRole, type MonsterRoleDef, type PoolDef, type RarityDef, type Ruleset, type SkillDef,
   type SlotDef, type SlotKind, type StatId, type StatusDef, type SubtypeDef, type SurfaceDef, type TrapDef, type TreeNode, type WeaponDef,
 } from '@gd/shared';
 import type { Genre } from './genre';
@@ -518,7 +518,7 @@ function compileItems(r: Ruleset, ctx: Ctx, gear: GearIntent) {
   // Tools
   if (r.systems.traps) items.push({ id: 'tool_disarm', name: gear.tools.disarm || 'Trap Kit', description: '', category: 'tool', use: { effects: [], ap: 1, targeting: 'ground', outOfCombat: true, tool: 'disarm' }, stackable: true, price: 20, dropWeight: 4, icon: 'tools', tags: ['tool'] });
   if (r.systems.locks) items.push({ id: 'tool_unlock', name: gear.tools.unlock || 'Lockpick', description: '', category: 'tool', use: { effects: [], ap: 1, targeting: 'ground', outOfCombat: true, tool: 'unlock' }, stackable: true, price: 12, dropWeight: 4, icon: 'lockpick', tags: ['tool'] });
-  items.push({ id: 'tool_recall', name: gear.tools.recall || 'Recall Scroll', description: '', category: 'tool', use: { effects: [], ap: 0, targeting: 'self', outOfCombat: true, tool: 'recall' }, stackable: true, price: 25, dropWeight: 3, icon: 'scroll', tags: ['tool'] });
+  if (r.systems.fastTravel) items.push({ id: 'tool_recall', name: gear.tools.recall || 'Recall Scroll', description: '', category: 'tool', use: { effects: [], ap: 0, targeting: 'self', outOfCombat: true, tool: 'recall' }, stackable: true, price: 25, dropWeight: 3, icon: 'scroll', tags: ['tool'] });
   // Materials & valuables
   const mats = gear.materials.length ? gear.materials : [{ name: 'Scrap', description: '', tier: 1 }, { name: 'Reagent', description: '', tier: 2 }, { name: 'Essence', description: '', tier: 3 }];
   if (r.crafting.enabled || r.crafting.upgrades.enabled || r.crafting.enchanting.enabled) for (const m of mats.slice(0, 6)) items.push({ id: ctx.ids.make('m_', m.name), name: m.name, description: m.description, category: 'material', stackable: true, price: 4 + m.tier * 5, dropWeight: 9 - m.tier * 2, icon: ['ore', 'herb', 'essence'][m.tier - 1] ?? 'ore', tier: m.tier, tags: ['material'] });
@@ -659,9 +659,13 @@ function compileClasses(r: Ruleset, ctx: Ctx, classes: ClassesIntent, trees: Cla
   r.attributeNodes = r.attributes.map((a) => ({ id: `n_attr_${a.id}`, name: a.name, description: a.description, kind: 'attribute' as const, branch: 'attributes', tier: 0, maxRank: 99, attributeId: a.id }));
 }
 
+/** Every class is painted once per kin, so kins are few. */
+export const MAX_KINS = 4;
+
 function compileKins(r: Ruleset, ctx: Ctx, gear: GearIntent) {
-  const kins = gear.kins.length ? gear.kins : [{ name: 'Human', description: '', attributes: [], perk: undefined }];
-  r.kins = kins.slice(0, 6).map((k): KinDef => {
+  const kins = (gear.kins.length ? gear.kins : [{ name: 'Human', description: '', look: 'an ordinary person', attributes: [], perk: undefined }]).slice(0, MAX_KINS);
+  const genders = kinPresentations(kins.length, r.id);
+  r.kins = kins.map((k, i): KinDef => {
     const attributes: Record<string, number> = {};
     let total = 0;
     for (const a of k.attributes) {
@@ -671,7 +675,7 @@ function compileKins(r: Ruleset, ctx: Ctx, gear: GearIntent) {
       attributes[id] = (attributes[id] ?? 0) + pts;
       total += pts;
     }
-    return { id: ctx.ids.make('k_', k.name), name: k.name, description: k.description, attributes, modifiers: k.perk ? priced(ctx, [k.perk], B_PERK) : [] };
+    return { id: ctx.ids.make('k_', k.name), name: k.name, description: k.description, appearance: k.look, presentation: genders[i]!, attributes, modifiers: k.perk ? priced(ctx, [k.perk], B_PERK) : [] };
   });
 }
 
@@ -751,7 +755,6 @@ function blank(opts: CompileOptions, core: CoreIntent): Ruleset {
   const o = opts.overrides ?? {};
   const sys = core.systems;
   return {
-    version: RULESET_VERSION,
     id: opts.id ?? 'rules',
     name: '',
     intro: '',
@@ -773,9 +776,9 @@ function blank(opts: CompileOptions, core: CoreIntent): Ruleset {
     economy: { currency: 'Gold', sellRatio: 0.3, priceMult: 1, goldPerKill: { base: 3, lin: 0.5, quad: 0 } },
     inventory: { slots: 40, upgrades: 4, slotsPerUpgrade: 8, upgradeCost: 150 },
     crafting: { enabled: o.crafting ?? sys.crafting, upgrades: { enabled: o.upgrades ?? sys.upgrades, maxLevel: 5, perLevel: 0.08, gold: 30 }, enchanting: { enabled: o.enchanting ?? sys.enchanting, gold: 50 } },
-    systems: { traps: o.traps ?? sys.traps, locks: o.locks ?? sys.locks, surfaces: o.surfaces ?? sys.surfaces, subtypes: core.subtypes.length > 0, statuses: true, buffPotions: sys.buffPotions, damagePotions: sys.damagePotions, dynamicQuests: true },
+    systems: { traps: o.traps ?? sys.traps, locks: o.locks ?? sys.locks, surfaces: o.surfaces ?? sys.surfaces, subtypes: core.subtypes.length > 0, statuses: true, buffPotions: sys.buffPotions, damagePotions: sys.damagePotions, dynamicQuests: true, fastTravel: o.fastTravel ?? false },
     difficulty: defaultDifficulty(opts.maxLevel),
-    terminology: { xp: 'Experience', level: 'Level', actionPoints: 'AP', party: 'Party', town: 'Town', dungeon: 'Dungeon', wilderness: 'Wilds', quest: 'Quest', currency: 'Gold' },
+    terminology: { xp: 'Experience', level: 'Level', actionPoints: 'AP', party: 'Party', town: 'Town', dungeon: 'Dungeon', wilderness: 'Wilds', quest: 'Quest', currency: 'Gold', calling: 'Class', kin: 'Kin' },
     ui: { material: 'parchment', ornament: 'filigree', grading: { tint: '#ffffff', saturation: 1, contrast: 1, vignette: 0.35, grain: 0.02 } },
   };
 }

@@ -1,9 +1,9 @@
-/** Engine-decided world skeleton: regions, zone slots, level bands and connectivity. */
+/** Engine-decided world skeleton: regions (one per town), place slots, level bands and connectivity. */
 import { LENGTH_PROFILES, SIZE_PROFILES, Rng, type WorldInput, type ZoneKind } from '@gd/shared';
 
 export interface ZoneSlot {
   slotId: string;
-  kind: Exclude<ZoneKind, 'interior'>;
+  kind: ZoneKind;
   regionIndex: number;
   levelRange: [number, number];
   links: string[];
@@ -18,12 +18,14 @@ export interface WorldSkeleton {
   slots: ZoneSlot[];
   arcs: number;
   startSlot: string;
+  /** Played with three companions made with the world. */
+  companions: boolean;
 }
 
 export function buildSkeleton(input: WorldInput, rng: Rng): WorldSkeleton {
   const size = SIZE_PROFILES[input.size];
   const len = LENGTH_PROFILES[input.length];
-  const R = size.regions;
+  const R = size.towns;
   const maxLevel = len.maxLevel;
   const regions = Array.from({ length: R }, (_, i) => {
     const lo = Math.max(1, Math.round(1 + (i * (maxLevel - 1)) / R));
@@ -91,7 +93,7 @@ export function buildSkeleton(input: WorldInput, rng: Rng): WorldSkeleton {
     }
     prevExitSlot = regionWilds[regionWilds.length - 1] ?? regionTowns[regionTowns.length - 1] ?? null;
   }
-  return { maxLevel, regions, slots, arcs: len.arcs, startSlot: slots.find((s) => s.kind === 'town')!.slotId };
+  return { maxLevel, regions, slots, arcs: len.arcs, startSlot: slots.find((s) => s.kind === 'town')!.slotId, companions: input.combatMode === 'party_npc' };
 }
 
 function distribute(total: number, buckets: number, atLeastOne: boolean): number[] {

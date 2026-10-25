@@ -41,7 +41,7 @@ const TYPEFACES: Record<string, Fonts> = {
   technical: { display: "'Exo 2', 'Inter', sans-serif", serif: "'Inter', system-ui, sans-serif" },
 };
 
-/** Older worlds without a chosen lettering style: a guess from the concept's wording. */
+/** A world still being dreamed has no rules (and no chosen lettering) yet: a guess from the concept's wording. */
 function fontsFor(text: string): Fonts {
   const t = text.toLowerCase();
   if (/sci|space|cyber|star|android|robot|galac|future|mech/.test(t)) return { display: "'Exo 2', 'Inter', sans-serif", serif: "'Inter', system-ui, sans-serif" };

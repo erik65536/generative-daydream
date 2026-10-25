@@ -1,14 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { BARRIER_DEPTH_M, EXIT_GAP_M, PAINT_PXM, mapPixels } from '../src/worldgen/mapdraw';
+import { BARRIER_DEPTH_M, EXIT_GAP_M, PAINT_PXM, TILE_RANGE, fitTiles, mapPixels } from '../src/worldgen/mapdraw';
 import { fixMap } from '../src/worldgen/mapfix';
 import { CELL, type Grid } from '../src/worldgen/mapgrid';
 import { fuseDoors, ontoWalk } from '../src/worldgen/mapspots';
 
 describe('painted maps', () => {
   it('are sized in tiles and read at PAINT_PXM pixels per metre', () => {
-    const m = mapPixels('town');
+    const m = mapPixels([3, 2]);
     expect([m.W, m.H]).toEqual([3072, 2048]);
     expect(m.X).toBeCloseTo(3072 / PAINT_PXM);
+  });
+
+  it('keep each kind of place within its sizes, never over 4 × 4 tiles', () => {
+    expect(fitTiles('town', [9, 1])).toEqual([3, 2]);
+    expect(fitTiles('wilderness', [5, 4])).toEqual([4, 4]);
+    expect(fitTiles('dungeon', [1, 1])).toEqual([2, 1]);
+    expect(fitTiles('dungeon')).toEqual(TILE_RANGE.dungeon.usual);
+    for (const r of Object.values(TILE_RANGE)) expect(Math.max(...r.max)).toBeLessThanOrEqual(4);
   });
 });
 

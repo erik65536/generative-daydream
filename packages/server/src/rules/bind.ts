@@ -74,20 +74,20 @@ export function uniqueBase(r: Ruleset, kind: 'weapon' | 'armor' | 'trinket' | 'r
   return 'quest_item';
 }
 
-function legacyBaseKind(baseId: string): string {
+/** What kind of item a base was under the rules a unique was made with (ids start with their kind's letter). */
+function baseKindOf(baseId: string): string {
   if (baseId.startsWith('w_')) return 'weapon';
   if (baseId.startsWith('a_') || baseId.startsWith('s_')) return 'armor';
   if (baseId.startsWith('t_') || baseId.startsWith('j_')) return 'trinket';
   return 'relic';
 }
 
-function bindUnique(r: Ruleset, u: UniqueItemDef & { rarity?: string; affixes?: unknown }, level: number) {
+function bindUnique(r: Ruleset, u: UniqueItemDef, level: number) {
   const ix = rx(r);
-  if (!ix.item.has(u.baseId)) u.baseId = uniqueBase(r, legacyBaseKind(u.baseId), new Rng(`ub:${u.id}`));
+  // Rules made anew (the world's rules regenerated) have other item bases: a unique takes one of the same kind.
+  if (!ix.item.has(u.baseId)) u.baseId = uniqueBase(r, baseKindOf(u.baseId), new Rng(`ub:${u.id}`));
   u.rarityId = ix.rarity.has(u.rarityId) ? u.rarityId : u.questItem && u.baseId === 'quest_item' ? r.rarities[2]!.id : r.rarities[4]!.id;
   u.mods = u.baseId === 'quest_item' ? [] : uniqueMods(r, u.baseId, u.id, level);
-  delete u.rarity;
-  delete u.affixes;
 }
 
 /** Experience per kill. */
@@ -134,14 +134,14 @@ export function bindWorld(w: WorldDefinition, r: Ruleset, classes?: ClassesInten
   const looks = new Map((classes?.classes ?? []).map((c) => [norm(c.name), (c as { appearance?: string }).appearance]));
   w.origins = r.classes.map((c) => {
     const prev = w.origins.find((o) => o.id === c.id) ?? w.origins.find((o) => norm(o.name) === norm(c.name));
-    return { id: c.id, name: c.name, description: c.description, appearance: looks.get(norm(c.name)) ?? prev?.appearance ?? `${c.name}, ${c.description}`, asset: prev?.id === c.id ? prev.asset : undefined, assets: prev?.id === c.id ? prev.assets : undefined };
+    return { id: c.id, name: c.name, description: c.description, appearance: looks.get(norm(c.name)) ?? prev?.appearance ?? `${c.name}, ${c.description}`, assets: prev?.id === c.id ? prev.assets : undefined };
   });
   // Uniques: find level from where they appear (boss / chest), default mid.
   const levelOf = new Map<string, number>();
   for (const b of w.bosses) for (const u of b.drops) levelOf.set(u, b.level);
   for (const z of w.zones) for (const f of z.features) for (const u of f.items ?? []) levelOf.set(u, f.lootTier ?? z.levelRange[1]);
   for (const u of Object.values(w.uniqueItems)) bindUnique(r, u, levelOf.get(u.id) ?? Math.ceil(r.progression.maxLevel / 2));
-  // Traps: legacy kinds map to the ruleset's traps.
+  // Traps: kinds of earlier rules (the world's rules regenerated) map to these rules' traps.
   if (!r.systems.traps || !r.traps.length) for (const z of w.zones) z.features = z.features.filter((f) => f.kind !== 'trap');
   for (const z of w.zones) for (const f of z.features) {
     if (f.kind !== 'trap') continue;

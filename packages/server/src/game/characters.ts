@@ -1,18 +1,19 @@
 /** Character creation and progression on the world's ruleset: class, kin, upgrade tree, levels. */
 import {
-  PRONOUNS, branchSpent, canAllocate, characterStats, kinPresentation, knownSkills, levelForXp, rx, treePointsAt, uid,
+  branchSpent, canAllocate, characterStats, knownSkills, levelForXp, rx, treePointsAt, uid,
   type CharacterSpec, type CharacterState, type ItemInstance, type Rng, type Ruleset, type TreeNode, type WorldDefinition,
 } from '@gd/shared';
 import { makeItem } from './loot';
 
 export type { CharacterSpec };
 
+/** The sprite of a hero of this class and kin (each class is painted once per kin). */
+export const heroSprite = (classId: string, kinId: string) => `spr_hero_${classId}_${kinId}`;
+
 export function createCharacter(r: Ruleset, w: WorldDefinition | null, spec: CharacterSpec, rng: Rng): { ch: CharacterState; inventory: ItemInstance[] } {
   const ix = rx(r);
   const cls = ix.cls.get(spec.classId) ?? r.classes[0]!;
   const kin = ix.kin.get(spec.kinId) ?? r.kins[0]!;
-  // A player's hero is as their kin is (each kin of a world has one presentation); a companion keeps their own.
-  const presentation = spec.presentation ?? kinPresentation(r.kins, kin.id);
   const equipment: CharacterState['equipment'] = {};
   for (const [slotId, baseId] of Object.entries(cls.startingGear)) if (ix.item.get(baseId)) equipment[slotId] = makeItem(r, rng, baseId, 1, r.rarities[0]!.id);
   const ch: CharacterState = {
@@ -20,9 +21,8 @@ export function createCharacter(r: Ruleset, w: WorldDefinition | null, spec: Cha
     name: spec.name.trim().slice(0, 24) || 'Wanderer',
     classId: cls.id,
     kinId: kin.id,
-    presentation,
-    pronouns: (spec.pronouns ?? PRONOUNS[presentation]).slice(0, 24),
-    sprite: spec.sprite ?? `spr_origin_${cls.id}_${presentation}`,
+    presentation: kin.presentation,
+    sprite: spec.sprite ?? heroSprite(cls.id, kin.id),
     colors: spec.colors ?? [],
     level: 1,
     xp: 0,

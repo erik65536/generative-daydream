@@ -5,7 +5,7 @@
  * Mutates the ruleset in place and returns a report. Deterministic for a given seed.
  */
 import {
-  DIFFICULTIES, RULESET_VERSION, Rng, invalidateRuleset, knot, rx,
+  DIFFICULTIES, Rng, invalidateRuleset, knot, rx,
   type BalanceReport, type BalanceScenarioResult, type CombatMode, type DifficultyId, type Knots, type MonsterRole, type Ruleset,
 } from '@gd/shared';
 import { buildPack, withDifficulty, type EncounterKind } from './encounters';
@@ -279,7 +279,7 @@ export function balanceRuleset(r: Ruleset, opts: BalanceOptions): BalanceReport 
   const okCount = scenarios.filter((s) => s.ok).length;
   notes.push(`${okCount}/${scenarios.length} scenarios on target after ${iterations} tuning iterations and ${fights} simulated fights.`);
   invalidateRuleset(r);
-  const report: BalanceReport = { at: Date.now(), engineVersion: RULESET_VERSION, iterations, durationMs: Date.now() - t0, fights, scenarios, classes: classResults, skillUsage: usage, outliers, notes };
+  const report: BalanceReport = { at: Date.now(), iterations, durationMs: Date.now() - t0, fights, scenarios, classes: classResults, skillUsage: usage, outliers, notes };
   r.balance = report;
   progress('Balanced', 1);
   return report;

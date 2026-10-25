@@ -7,19 +7,15 @@
  *                                  can be inspected, hand-edited and copied; its generated art sits in the same folder
  *   data/instances/<id>.sqlite     one per instance (save): state split into sections so an autosave writes only
  *                                  what changed, transactionally (see instancestore.ts)
- *
- * Older layouts (JSON files everywhere, or SQLite blobs) are migrated on start.
  */
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import zlib from 'node:zlib';
 import { DatabaseSync } from 'node:sqlite';
 import type { InstanceState, WorldDefinition } from '@gd/shared';
 import { DATA_DIR } from './paths';
 import { InstanceFile } from './instancestore';
 
-const SCHEMA_VERSION = 3;
 const worldsDir = path.join(DATA_DIR, 'worlds');
 const instancesDir = path.join(DATA_DIR, 'instances');
 const trashDir = path.join(DATA_DIR, 'trash');
@@ -41,8 +37,6 @@ function readJson<T>(file: string): T | null {
   }
 }
 
-const unpack = <T>(b: Uint8Array): T => JSON.parse(zlib.inflateSync(b).toString('utf8')) as T;
-
 // ------------------------------------------------------------------------------------ global database
 
 const db = new DatabaseSync(path.join(DATA_DIR, 'gd.sqlite'), { timeout: 10_000 });
@@ -51,22 +45,27 @@ db.exec('PRAGMA busy_timeout = 10000');
 db.exec(`
   PRAGMA journal_mode = WAL;
   PRAGMA synchronous = NORMAL;
-  CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  -- must_change_password: made or reset by an administrator, with a one-time password the user must replace.
+  -- daily_limit_usd: the user's own daily AI budget (null: the server default).
   CREATE TABLE IF NOT EXISTS users (
     id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE COLLATE NOCASE, password_hash TEXT NOT NULL, salt TEXT NOT NULL,
-    created_at INTEGER NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0
+    created_at INTEGER NOT NULL, is_admin INTEGER NOT NULL DEFAULT 0, must_change_password INTEGER NOT NULL DEFAULT 0, daily_limit_usd REAL
   );
   CREATE TABLE IF NOT EXISTS sessions (token TEXT PRIMARY KEY, user_id TEXT NOT NULL, expires INTEGER NOT NULL);
+  -- Spending on paid models, per user and day.
+  CREATE TABLE IF NOT EXISTS spend (user_id TEXT NOT NULL, day TEXT NOT NULL, usd REAL NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day));
+  CREATE TABLE IF NOT EXISTS worlds (
+    id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, status TEXT NOT NULL, public INTEGER NOT NULL, title TEXT NOT NULL,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS instances (
+    id TEXT PRIMARY KEY, world_id TEXT NOT NULL, owner_id TEXT NOT NULL, name TEXT NOT NULL, snapshot_of TEXT,
+    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS instances_world ON instances (world_id, updated_at DESC);
 `);
-// Accounts made or reset by an administrator carry a one-time password the user must replace.
-if (!(db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).some((c) => c.name === 'must_change_password'))
-  db.exec('ALTER TABLE users ADD COLUMN must_change_password INTEGER NOT NULL DEFAULT 0');
-// Spending on paid models: a user's own daily budget (null: the server default), and a ledger per user and day.
-if (!(db.prepare('PRAGMA table_info(users)').all() as { name: string }[]).some((c) => c.name === 'daily_limit_usd'))
-  db.exec('ALTER TABLE users ADD COLUMN daily_limit_usd REAL');
-db.exec('CREATE TABLE IF NOT EXISTS spend (user_id TEXT NOT NULL, day TEXT NOT NULL, usd REAL NOT NULL DEFAULT 0, calls INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (user_id, day))');
 
-/** The shared database (jobs and GPU leases live here too, so every process sees them). */
+/** The shared database (jobs and the GPU page's process reports live here too, so every process sees them). */
 export const globalDb = () => db;
 
 export function tx<T>(fn: () => T): T {
@@ -99,63 +98,6 @@ function instanceDb(id: string, create: boolean): InstanceFile | null {
 function removeSqlite(file: string) {
   for (const f of [file, `${file}-wal`, `${file}-shm`, `${file}-journal`]) fs.rmSync(f, { force: true });
 }
-
-// ------------------------------------------------------------------------------------ migrations
-
-/** Earlier layouts stored worlds/instances as compressed blobs in SQLite; turn them into the current files. */
-function migrateBlobs(writeWorld: (w: WorldDefinition) => void, writeInstance: (s: InstanceState) => void) {
-  const cols = (t: string) => (db.prepare(`PRAGMA table_info(${t})`).all() as { name: string }[]).map((c) => c.name);
-  // v1: blobs inside the global database.
-  if (cols('worlds').includes('data')) {
-    for (const r of db.prepare('SELECT data FROM worlds').all() as { data: Uint8Array }[]) writeWorld(unpack<WorldDefinition>(r.data));
-    db.exec('DROP TABLE worlds');
-  }
-  if (cols('instances').includes('data')) {
-    for (const r of db.prepare('SELECT data FROM instances').all() as { data: Uint8Array }[]) writeInstance(unpack<InstanceState>(r.data));
-    db.exec('DROP TABLE instances');
-  }
-  // v2: world.sqlite per world, and a single-blob `state` table per instance.
-  for (const id of fs.readdirSync(worldsDir)) {
-    const f = path.join(worldsDir, id, 'world.sqlite');
-    if (!fs.existsSync(f)) continue;
-    const d = new DatabaseSync(f);
-    const row = d.prepare("SELECT data FROM doc WHERE name = 'definition'").get() as { data: Uint8Array } | undefined;
-    d.close();
-    if (row) writeWorld(unpack<WorldDefinition>(row.data));
-    removeSqlite(f);
-  }
-  for (const name of fs.readdirSync(instancesDir)) {
-    if (!name.endsWith('.sqlite')) continue;
-    const f = path.join(instancesDir, name);
-    const d = new DatabaseSync(f);
-    const hasState = d.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'state'").get();
-    const row = hasState ? (d.prepare('SELECT data FROM state WHERE id = 1').get() as { data: Uint8Array } | undefined) : undefined;
-    if (hasState) d.exec('DROP TABLE state');
-    d.close();
-    if (row) writeInstance(unpack<InstanceState>(row.data));
-  }
-}
-
-// ------------------------------------------------------------------------------------ catalog
-
-const catalogSql = `
-  CREATE TABLE IF NOT EXISTS worlds (
-    id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, status TEXT NOT NULL, public INTEGER NOT NULL, title TEXT NOT NULL,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  );
-  CREATE TABLE IF NOT EXISTS instances (
-    id TEXT PRIMARY KEY, world_id TEXT NOT NULL, owner_id TEXT NOT NULL, name TEXT NOT NULL, snapshot_of TEXT,
-    created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS instances_world ON instances (world_id, updated_at DESC);
-`;
-
-// Blob migration needs the old tables, so it runs before the catalog is (re)created; writes are collected first.
-const pendingWorlds: WorldDefinition[] = [];
-const pendingInstances: InstanceState[] = [];
-migrateBlobs((w) => pendingWorlds.push(w), (s) => pendingInstances.push(s));
-db.exec(catalogSql);
-db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema_version', String(SCHEMA_VERSION));
 
 const q = {
   insertUser: db.prepare('INSERT INTO users (id, username, password_hash, salt, created_at, is_admin, must_change_password) VALUES (?, ?, ?, ?, ?, ?, ?)'),
@@ -208,8 +150,8 @@ interface UserRow {
   salt: string;
   created_at: number;
   is_admin: number;
-  must_change_password?: number;
-  daily_limit_usd?: number | null;
+  must_change_password: number;
+  daily_limit_usd: number | null;
 }
 
 const toUser = (r: UserRow | undefined): User | undefined =>
@@ -396,10 +338,6 @@ export function loadWorld(id: string): WorldDefinition | null {
   if (c && c.stamp === stamp) return c.world;
   const world = readJson<WorldDefinition>(worldFile(id));
   if (!world) return null;
-  // Rulesets compiled before armour affixes had proper names called them "<Mitigation>ed".
-  world.ruleset?.affixes.forEach((a, i) => {
-    if (a.stat.startsWith('mit:') && / of /.test(a.suffix) && a.prefix === `${a.suffix.replace(/^of /, '')}ed`) a.prefix = ['Reinforced', 'Hardened', 'Warded', 'Braced', 'Tempered'][i % 5]!;
-  });
   worldCache.set(id, { stamp, world });
   return world;
 }
@@ -532,54 +470,7 @@ export function deleteInstance(id: string) {
   removeSqlite(instanceFile(id));
 }
 
-// ------------------------------------------------------------------------------------ startup: migrate and adopt
-
-function importLegacyJson() {
-  const legacy = path.join(DATA_DIR, 'legacy-json');
-  const moveAside = (file: string) => {
-    const dest = path.join(legacy, path.relative(DATA_DIR, file));
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.renameSync(file, dest);
-  };
-  let n = 0;
-  const usersFile = path.join(DATA_DIR, 'users.json');
-  const sessionsFile = path.join(DATA_DIR, 'sessions.json');
-  for (const u of Object.values(readJson<Record<string, User>>(usersFile) ?? {}))
-    if (!q.userById.get(u.id) && !q.userByName.get(u.username)) {
-      insertUser(u);
-      n++;
-    }
-  for (const [token, s] of Object.entries(readJson<Record<string, { userId: string; expires: number }>>(sessionsFile) ?? {}))
-    if (s.expires > Date.now()) q.insertSession.run(token, s.userId, s.expires);
-  for (const f of [usersFile, sessionsFile]) if (fs.existsSync(f)) moveAside(f);
-  for (const f of fs.readdirSync(instancesDir)) {
-    if (!f.endsWith('.json')) continue;
-    const s = readJson<InstanceState>(path.join(instancesDir, f));
-    if (s) pendingInstances.push(s);
-    moveAside(path.join(instancesDir, f));
-  }
-  if (n) console.log(`[storage] imported ${n} users from JSON files (originals in ${legacy})`);
-}
-
-/** Bring the catalog in line with the files: migrated records, and world folders copied in or written elsewhere. */
-function adopt() {
-  for (const w of pendingWorlds) {
-    writeJsonAtomic(worldFile(w.id), w);
-    catalogWorld(w);
-  }
-  for (const s of pendingInstances) {
-    instanceDb(s.id, true)!.save(s);
-    catalogInstance(s);
-  }
-  for (const id of fs.readdirSync(worldsDir)) {
-    if (!fs.existsSync(worldFile(id))) continue;
-    const stamp = (q.worldStamp.get(id) as { updated_at: number } | undefined)?.updated_at;
-    const w = readJson<WorldDefinition>(worldFile(id));
-    if (w && (stamp === undefined || w.updatedAt > stamp)) catalogWorld(w);
-  }
-}
-
-/** World folders that appeared without a catalog entry (copied in, or written by an older process). */
+/** World folders that appeared without a catalog entry (copied in from another machine). */
 function adoptWorldFolders() {
   for (const id of fs.readdirSync(worldsDir)) {
     if (q.worldStamp.get(id) || !fs.existsSync(worldFile(id))) continue;
@@ -588,5 +479,5 @@ function adoptWorldFolders() {
   }
 }
 
-importLegacyJson();
-adopt();
+
+adoptWorldFolders();

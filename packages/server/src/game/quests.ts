@@ -105,18 +105,16 @@ export class QuestEngine {
   }
 
   onKill(p: PlayerState, info: { familyId?: string; archetype?: string; bossId?: string; npcId?: string; zoneId: string }) {
-    const outer = this.h.ctx.outerZone(info.zoneId);
     return this.forActive(p, (q) =>
       this.advanceObjective(p, q, (o) =>
-        (o.type === 'kill' && !!info.familyId && o.familyId === info.familyId && (!o.zoneId || o.zoneId === info.zoneId || o.zoneId === outer) && (!o.archetype || o.archetype === info.archetype)) ||
+        (o.type === 'kill' && !!info.familyId && o.familyId === info.familyId && (!o.zoneId || o.zoneId === info.zoneId) && (!o.archetype || o.archetype === info.archetype)) ||
         (o.type === 'kill_unique' && (o.targetId === info.bossId || o.targetId === info.npcId)),
       ),
     );
   }
 
   onEnterZone(p: PlayerState, zoneId: string) {
-    const outer = this.h.ctx.outerZone(zoneId);
-    return this.forActive(p, (q) => this.advanceObjective(p, q, (o) => o.type === 'reach' && (o.zoneId === zoneId || o.zoneId === outer)));
+    return this.forActive(p, (q) => this.advanceObjective(p, q, (o) => o.type === 'reach' && o.zoneId === zoneId));
   }
 
   onInteract(p: PlayerState, featureId: string) {
@@ -141,7 +139,7 @@ export class QuestEngine {
       const cur = currentObjectiveIndex(def, prog);
       const o = objs[cur];
       if (!o) continue;
-      if (o.type === 'collect' || (o.type === 'reach' && o.zoneId && this.h.ctx.outerZone(p.zoneId) === o.zoneId)) {
+      if (o.type === 'collect' || (o.type === 'reach' && o.zoneId && p.zoneId === o.zoneId)) {
         if (o.type === 'reach') {
           this.advanceObjective(p, qid, (x) => x === o);
           continue;

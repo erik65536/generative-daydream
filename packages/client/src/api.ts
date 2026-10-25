@@ -157,19 +157,20 @@ export interface WorldSetup {
   ruleset: import('@gd/shared').Ruleset;
   combatMode: 'solo' | 'party_manual' | 'party_npc';
   difficulty: import('@gd/shared').DifficultyId;
-  /** Look of each class (id = class id). */
-  origins: { id: string; name: string; description: string; appearance: string; asset?: string; assets?: Partial<Record<'feminine' | 'masculine' | 'androgynous', string>> }[];
+  /** Look of each class (id = class id), and its heroes' sprites by kin id. */
+  origins: { id: string; name: string; description: string; appearance: string; assets?: Record<string, string> }[];
+  /** The three heroes who travel with the player (a world played with companions). */
+  companions: { id: string; name: string; title: string; classId: string; kinId: string; asset?: string; colors: string[] }[];
   assets: Record<string, string>;
 }
 
 /** One image the world uses, with the brief derived from the world and the one in use. */
 export interface ArtEntry {
   key: string;
-  kind: 'texture' | 'sprite' | 'object' | 'icon' | 'portrait';
+  kind: 'painting' | 'texture' | 'sprite' | 'sheet' | 'object' | 'icon';
   brief: string;
   defaultBrief: string;
   ref?: string;
-  variant?: string;
   stale: boolean;
 }
 

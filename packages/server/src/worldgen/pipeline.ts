@@ -30,9 +30,10 @@ import type { RulesetIntent } from '../rules/intent';
 import { buildSkeleton, type WorldSkeleton, type ZoneSlot } from './structure';
 import * as S from './schemas';
 import * as P from './prompts';
-import { assembleWorld, missingRoles, townRoles, type Draft } from './assemble';
+import { addCompanions, assembleWorld, missingRoles, townRoles, type Draft } from './assemble';
 import { generateArt, linkAssets } from './art';
 import { GpuQueue } from './gpu';
+import { fitTiles } from './mapdraw';
 import { paintAndRead, settlePlace, sideToward, sketchOf, type Painted, type PlaceContext, type PlaceSketch } from './zones';
 export { WorldGenJob };
 export type { JobPhase, GenLogEntry } from '../jobs/job';
@@ -61,8 +62,8 @@ export function resumeWorldGeneration(w: WorldDefinition): void {
 
 export function placeholderWorld(id: string, input: WorldInput, owner: { id: string; name: string }): WorldDefinition {
   return {
-    id, formatVersion: 2, ownerId: owner.id, ownerName: owner.name, public: true, createdAt: Date.now(), updatedAt: Date.now(), status: 'generating', seed: '', input,
-    concept: { title: 'A world is being dreamed…', pitch: input.setting.slice(0, 200), genre: '', tone: '', artStyle: '', intro: '', secret: '', playerRole: '', palette: { primary: '#c8a24a', secondary: '#3a4a6a', accent: '#e0603a', ui: '#1a1a22' } },
+    id, ownerId: owner.id, ownerName: owner.name, public: true, createdAt: Date.now(), updatedAt: Date.now(), status: 'generating', seed: '', input,
+    concept: { title: 'A world is being dreamed…', pitch: input.theme.slice(0, 200), genre: '', tone: '', artStyle: '', intro: '', secret: '', playerRole: '', palette: { primary: '#c8a24a', secondary: '#3a4a6a', accent: '#e0603a', ui: '#1a1a22' } },
     ruleset: undefined as unknown as Ruleset, maxLevel: 1, origins: [], uniqueItems: {}, families: [], bosses: [], zones: [], npcs: [], quests: [], arcs: [], finalQuestId: '', ending: '', lore: [], assets: {}, startZoneId: '', worldFacts: [], factions: [],
   };
 }
@@ -172,8 +173,13 @@ export const places = { paint: paintAndRead, settle: settlePlace };
 
 const zid = (slot: string) => `z_${slot}`;
 const hash = (s: string) => crypto.createHash('sha1').update(s).digest().readUInt32LE(0) % 1_000_000;
+/** The seed a place is painted with (its saved steps belong to it, so a resumed build or a resettle finds them). */
+export const placeSeed = (worldSeed: string, zoneId: string) => hash(`${worldSeed}:${zoneId}`);
 
-/** A wild place or dungeon as the atlas describes it: enough to paint it before the world is assembled. */
+/** The words a build reads to tell the world's genre: the theme and every prompt. */
+const genreText = (input: WorldInput) => [input.theme, ...(input.prompts ?? []).map((p) => p.text)].join(' ');
+
+/** A wild place or dungeon as the world plan describes it: enough to paint it before the world is assembled. */
 function slotSketch(sk: WorldSkeleton, atlas: S.AtlasOut, s: ZoneSlot): PlaceSketch {
   const info = (slot: string) => atlas.zones.find((z) => z.slotId === slot)!;
   const kindOf = (slot: string) => sk.slots.find((x) => x.slotId === slot)?.kind;
@@ -181,6 +187,7 @@ function slotSketch(sk: WorldSkeleton, atlas: S.AtlasOut, s: ZoneSlot): PlaceSke
     id: zid(s.slotId),
     name: info(s.slotId).name,
     kind: s.kind,
+    tiles: fitTiles(s.kind, [info(s.slotId).tiles.cols, info(s.slotId).tiles.rows]),
     indoor: info(s.slotId).indoor,
     description: info(s.slotId).description,
     lore: info(s.slotId).lore,
@@ -196,12 +203,13 @@ function phases(sk: WorldSkeleton): Omit<JobPhase, 'status'>[] {
   return [
     { id: 'concept', label: 'World concept', detail: 'Title, tone, art style and who you are' },
     { id: 'rules', label: 'Rules', detail: 'Resources, classes, skill trees and gear' },
-    { id: 'atlas', label: 'Map', detail: 'Regions, towns, wilds and dungeons' },
+    { id: 'atlas', label: 'World plan', detail: 'Regions, towns, wilds and dungeons: their size and part in the story' },
     { id: 'families', label: 'Creatures', detail: 'Monster families and their roles' },
     { id: 'story', label: 'Main story', detail: `${sk.arcs} story arcs, key characters and bosses` },
     { id: 'content', label: 'People and lore', detail: 'Who lives in every town, their side quests, what the wilds remember', total: sk.slots.length, done: 0 },
     { id: 'places', label: 'Painting places', detail: 'Every place designed, painted, read for where people can walk, and furnished', total: sk.slots.length, done: 0 },
     { id: 'balance', label: 'Balancing', detail: 'Simulated fights tune every number' },
+    ...(sk.companions ? [{ id: 'companions', label: 'Companions', detail: 'The three heroes who travel with you' }] : []),
     { id: 'art', label: 'Characters and items', detail: 'Heroes, people, creatures, bosses and item icons' },
   ];
 }
@@ -214,9 +222,8 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
   const cp = new Checkpoints(job.worldId);
   const resumed = (what: string) => () => job.push(`${what}: kept from before the restart`);
   const rng = new Rng(seed);
-  const genre = detectGenre(`${input.setting} ${input.story ?? ''} ${input.notes ?? ''}`);
+  const genre = detectGenre(genreText(input));
   const sk = buildSkeleton(input, rng.fork('skeleton'));
-  const companions = input.combatMode === 'party_npc';
   const progress = new Progress(job);
   let failed = false;
   const gpu = new GpuQueue(() => failed || job.cancelled || workerState.yieldRequested, { jobId: job.id, worldId: job.worldId, kind: 'world' });
@@ -254,7 +261,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
     const look = { id: job.worldId, story: `${concept.title}. ${concept.pitch}`, artStyle: concept.artStyle };
 
     const rules = track(stage('rules', 'Designing the rules', async () => {
-      const world = `${P.conceptSummary(concept)}\n\n${P.userBrief(input)}`;
+      const world = `${P.conceptSummary(concept)}\n\n${P.brief(input, ['rules'])}`;
       const intent = await cp.get('rules', () => designRules(runner(job), world, input, (done, total) => {
         job.count('rules', done, total);
         progress.set('rules', done / total);
@@ -267,12 +274,19 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
 
     const atlas = track(stage('atlas', 'Charting regions and places', async () => {
       const slotIds = sk.slots.map((s) => s.slotId);
-      const check = (a: { regions: { index: number }[]; zones: { slotId: string }[] }) => {
+      const budget = SIZE_PROFILES[input.size].tiles;
+      const check = (a: S.AtlasOut) => {
         const missing = sk.slots.filter((s) => !a.zones.some((z) => z.slotId === s.slotId)).map((s) => s.slotId);
         const regions = sk.regions.filter((r) => !a.regions.some((x) => x.index === r.index)).map((r) => r.index);
-        return missing.length || regions.length ? `missing ${[missing.length ? `places for slots ${missing.join(', ')}` : '', regions.length ? `regions ${regions.join(', ')}` : ''].filter(Boolean).join(' and ')}; every slot and region needs an entry` : null;
+        if (missing.length || regions.length) return `missing ${[missing.length ? `places for slots ${missing.join(', ')}` : '', regions.length ? `regions ${regions.join(', ')}` : ''].filter(Boolean).join(' and ')}; every slot and region needs an entry`;
+        const used = sk.slots.reduce((n, s) => {
+          const t = a.zones.find((z) => z.slotId === s.slotId)!.tiles;
+          const [c, r] = fitTiles(s.kind, [t.cols, t.rows]);
+          return n + c * r;
+        }, 0);
+        return used > budget ? `the places use ${used} tiles together; at most ${budget} are allowed, so make some smaller` : null;
       };
-      const raw = await cp.get('atlas', () => step(job, 'world.design', 'Atlas', { prompt: P.atlasPrompt(input, concept, sk), schema: S.atlasSchema(slotIds, sk.regions.length), name: 'world_atlas', maxTokens: 5000, check }), resumed('Places'));
+      const raw = await cp.get('atlas', () => step(job, 'world.design', 'World plan', { prompt: P.atlasPrompt(input, concept, sk), schema: S.atlasSchema(slotIds, sk.regions.length), name: 'world_atlas', maxTokens: 5000, check }), resumed('Places'));
       // Every place gets a name of its own.
       const seen = new Set<string>();
       const out: S.AtlasOut = {
@@ -287,7 +301,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
       };
       progress.set('atlas', 1);
       job.preview.zones = out.zones.map((z) => z.name);
-      job.push(`Places: ${out.zones.map((z) => z.name).join(', ')}`, 'preview');
+      job.push(`Places: ${out.zones.map((z) => `${z.name} (${z.tiles.cols}×${z.tiles.rows})`).join(', ')}`, 'preview');
       return out;
     }));
 
@@ -295,7 +309,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
     const placeCtx = (z: { id: string; kind: ZoneDef['kind']; name: string; regionIndex: number }, priority: number): PlaceContext => ({
       gpu,
       priority,
-      seed: hash(`${seed}:${z.id}`),
+      seed: placeSeed(seed, z.id),
       report: (m) => job.push(m),
       onPart: (done, total) => progress.set(`place:${z.id}`, (done / total) * (COST.map / placeCost(z.kind))),
     });
@@ -327,8 +341,8 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
     })));
 
     const story = track(Promise.all([atlas, families]).then(([a, f]) => stage('story', 'Writing the main story', async () => {
-      const slots = (kind: string) => sk.slots.filter((s) => s.kind === kind).map((s) => s.slotId);
-      const out = await cp.get('story', () => step(job, 'world.design', 'Main story', { prompt: P.storyPrompt(input, concept, a, sk, f.families.map((x) => x.name)), schema: S.storySchema(slots('town'), slots('dungeon'), sk.slots.map((s) => s.slotId)), name: 'main_story', maxTokens: 8000, check: (st) => (st.arcs.length < sk.arcs ? `the story has ${st.arcs.length} arcs; it needs ${sk.arcs}` : null) }), resumed('Main story'));
+      const slots = (keep: (kind: string) => boolean) => sk.slots.filter((s) => keep(s.kind)).map((s) => s.slotId);
+      const out = await cp.get('story', () => step(job, 'world.design', 'Main story', { prompt: P.storyPrompt(input, concept, a, sk, f.families.map((x) => x.name)), schema: S.storySchema(slots((k) => k === 'town'), slots((k) => k !== 'town'), sk.slots.map((s) => s.slotId)), name: 'main_story', maxTokens: 8000, check: (st) => (st.arcs.length < sk.arcs ? `the story has ${st.arcs.length} arcs; it needs ${sk.arcs}` : null) }), resumed('Main story'));
       progress.set('story', 1);
       job.preview.arcs = out.arcs.map((x) => x.title);
       job.preview.npcs = out.keyNpcs.map((n) => `${n.name}, ${n.title}`);
@@ -344,24 +358,25 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
       if (contentDone === sk.slots.length) job.end('content');
     };
     const size = SIZE_PROFILES[input.size];
-    const towns = Promise.all(sk.slots.filter((s) => s.kind === 'town').map((s) => track(Promise.all([atlas, families, story]).then(async ([a, f, st]) => {
+    const towns = Promise.all(sk.slots.filter((s) => s.kind === 'town').map((s) => track(Promise.all([atlas, families, story, rules]).then(async ([a, f, st, r]) => {
       job.begin('content');
       const zi = a.zones.find((z) => z.slotId === s.slotId)!;
       const zr = rng.fork(`content:${s.slotId}`);
       const keyHere = st.keyNpcs.filter((k) => k.townSlot === s.slotId);
-      // Room for every service the town needs (and a companion) plus a few ordinary people.
-      const npcCount = Math.max(companions ? 8 : 7, zr.int(size.npcsPerTown[0], size.npcsPerTown[1]) - keyHere.length);
+      const crafting = r.ruleset.crafting.enabled;
+      // Room for every service the town needs plus a few ordinary people.
+      const npcCount = Math.max(townRoles(crafting).length + 2, zr.int(size.npcsPerTown[0], size.npcsPerTown[1]) - keyHere.length);
       const sideQuests = zr.int(size.sideQuestsPerTown[0], size.sideQuestsPerTown[1]);
       const out = await cp.get(`zone_${s.slotId}`, () => step(job, 'world.content', `Town: ${zi.name}`, {
-        prompt: P.townPrompt(input, concept, { name: zi.name, description: zi.description, lore: zi.lore, level: s.levelRange[0], region: a.regions[s.regionIndex]?.name ?? String(s.regionIndex) }, {
-          npcCount, sideQuests, keyNpcs: keyHere.map((k) => `${k.name} (${k.title})`), nearbyZones: s.links.map((l) => a.zones.find((z) => z.slotId === l)!.name), families: f.families.slice(0, 3).map((x) => x.name), companions,
-          requiredRoles: townRoles(false).map((r) => r.label),
+        prompt: P.townPrompt(input, concept, { name: zi.name, description: zi.description, lore: zi.lore, role: zi.role, level: s.levelRange[0], region: a.regions[s.regionIndex]?.name ?? String(s.regionIndex) }, {
+          npcCount, sideQuests, keyNpcs: keyHere.map((k) => `${k.name} (${k.title})`), nearbyZones: s.links.map((l) => a.zones.find((z) => z.slotId === l)!.name), families: f.families.slice(0, 3).map((x) => x.name),
+          requiredRoles: townRoles(crafting).map((x) => x.label),
         }),
         schema: S.TownContentSchema,
         name: 'town_content',
         maxTokens: 9000,
         check: (t) => {
-          const missing = missingRoles([...t.npcs, ...keyHere], companions);
+          const missing = missingRoles([...t.npcs, ...keyHere], crafting);
           return missing.length ? `the town has no ${missing.join(', ')}; every town needs these among its people, one person per role` : null;
         },
       }));
@@ -372,7 +387,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
     const areas = Promise.all(sk.slots.filter((s) => s.kind !== 'town').map((s) => track(Promise.all([atlas, families]).then(async ([a, f]) => {
       job.begin('content');
       const zi = a.zones.find((z) => z.slotId === s.slotId)!;
-      const out = await cp.get(`zone_${s.slotId}`, () => step(job, 'world.content', `${s.kind === 'dungeon' ? 'Dungeon' : 'Wilds'}: ${zi.name}`, { prompt: P.areaPrompt(input, concept, { name: zi.name, kind: s.kind, description: zi.description, lore: zi.lore, level: s.levelRange, families: f.families.slice(0, 4).map((x) => x.name) }, s.kind === 'dungeon' ? 2 : 1), schema: S.AreaContentSchema, name: 'area_content', maxTokens: 5000 }));
+      const out = await cp.get(`zone_${s.slotId}`, () => step(job, 'world.content', `${s.kind === 'dungeon' ? 'Dungeon' : 'Wilds'}: ${zi.name}`, { prompt: P.areaPrompt(input, concept, { name: zi.name, kind: s.kind, description: zi.description, lore: zi.lore, role: zi.role, level: s.levelRange, families: f.families.slice(0, 4).map((x) => x.name) }, s.kind === 'dungeon' ? 2 : 1), schema: S.AreaContentSchema, name: 'area_content', maxTokens: 5000 }));
       contentFinished(s.slotId);
       return [s.slotId, out] as const;
     }))));
@@ -397,10 +412,23 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
     job.count('places', placesDone, world.zones.length);
     job.push(`Assembled ${world.zones.length} places, ${world.npcs.length} people, ${world.quests.length} quests (${world.quests.filter((q) => q.main).length} main), ${world.bosses.length} bosses.`);
 
-    const balance = track(stage('balance', 'Balancing the rules by simulation', () => cp.get('balance', () => balanceWorldRules(job, world, r.intent, genre, r.world, (frac) => progress.set('balance', frac)), resumed('Balance'))).then((b) => {
+    const balance = track(stage('balance', 'Balancing the rules by simulation', () => cp.get('balance', () => balanceWorldRules(job, world, r.intent, genre, r.world, (frac) => progress.set('balance', frac)), resumed('Balance'))).then(async (b) => {
       bindWorld(world, b.ruleset, b.intent.classes);
       world.rulesIntent = b.intent;
       progress.set('balance', 1);
+      // The companions are made with the final rules: their classes and kins.
+      if (!sk.companions) return;
+      const start = world.zones.find((z) => z.id === world.startZoneId)!;
+      const out = await stage('companions', 'Meeting the companions', () => cp.get('companions', () => step(job, 'world.content', 'Companions', {
+        prompt: P.companionsPrompt(input, concept, world.ruleset, start),
+        schema: S.companionsSchema(world.ruleset),
+        name: 'companions',
+        maxTokens: 5000,
+        check: (c) => (world.ruleset.classes.length >= 3 && new Set(c.companions.map((x) => x.className)).size < 3 ? 'the three companions need three different classes' : null),
+      }), resumed('Companions')));
+      addCompanions(world, out);
+      job.push(`Companions: ${out.companions.map((c) => `${c.name} (${c.className})`).join(', ')}`, 'preview');
+      save(true);
     }));
 
     // Places: wild places and dungeons as their maps come in, then towns.
@@ -429,8 +457,10 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
         gpu: (work) => gpu.run('krea', priority, work),
       }));
     job.begin('art');
-    const people = art((x) => !x.key.startsWith('spr_origin_') && x.kind !== 'icon', 10);
-    const heroes = balance.then(() => art((x) => x.key.startsWith('spr_origin_') || x.kind === 'icon', 20));
+    // Heroes, companions and icons need the final rules (classes, kins, items): they are painted once balancing is done.
+    const afterRules = (x: { key: string; kind: string }) => x.key.startsWith('spr_hero_') || x.kind === 'icon' || world.npcs.some((n) => n.companion && x.key === `spr_npc_${n.id}`);
+    const people = art((x) => !afterRules(x), 10);
+    const heroes = balance.then(() => art(afterRules, 20));
 
     await Promise.all([...settled, balance, people, heroes]);
     job.end('places');
@@ -495,9 +525,9 @@ export async function runRulesJob(job: WorldGenJob, world: WorldDefinition, mode
     ...(mode === 'regenerate' ? [{ id: 'rules', label: 'Rules', detail: 'Resources, classes, skill trees and gear' }] : []),
     { id: 'balance', label: 'Balancing', detail: 'Simulated fights tune every number, then a designer review' },
   ]);
-  const genre = detectGenre(`${world.input.setting} ${world.input.story ?? ''} ${world.input.notes ?? ''}`);
+  const genre = detectGenre(genreText(world.input));
   const maxLevel = LENGTH_PROFILES[world.input.length].maxLevel;
-  const conceptText = [`WORLD: "${world.concept.title}" — ${world.concept.pitch}`, `Genre: ${world.concept.genre}. Tone: ${world.concept.tone}. The player is ${world.concept.playerRole}.`].join('\n') + '\n\n' + P.userBrief(world.input);
+  const conceptText = [`WORLD: "${world.concept.title}" — ${world.concept.pitch}`, `Genre: ${world.concept.genre}. Tone: ${world.concept.tone}. The player is ${world.concept.playerRole}.`].join('\n') + '\n\n' + P.brief(world.input, ['rules']);
   let intent: RulesetIntent;
   if (mode === 'rebalance' && world.rulesIntent) intent = world.rulesIntent as RulesetIntent;
   else {

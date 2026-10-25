@@ -141,7 +141,7 @@ export interface PartyOptions {
 
 export function makeParty(r: Ruleset, o: PartyOptions): CharacterState[] {
   return o.classes.map((classId, i) => {
-    const { ch } = createCharacter(r, null, { name: `Sim${i}`, classId, kinId: r.kins[i % r.kins.length]!.id, presentation: 'androgynous', pronouns: 'they/them' }, o.rng);
+    const { ch } = createCharacter(r, null, { name: `Sim${i}`, classId, kinId: r.kins[i % r.kins.length]!.id }, o.rng);
     ch.npcId = 'sim';
     if (o.tree) {
       ch.level = o.level;

@@ -2,6 +2,7 @@ import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { MIST_SIZE, flatten, measureLight, mendWrap, paintMist, roll, seamMask, seamless, type Draft, type MistPainter } from '../src/worldgen/atmosphere';
 import { GpuQueue } from '../src/worldgen/gpu';
+import { mockModels } from './helpers';
 
 const N = MIST_SIZE;
 
@@ -113,14 +114,19 @@ describe('mist tiles', () => {
     const draft = memoryDraft();
     const brief = { name: 'Saltglass Flats', kind: 'wilderness', indoor: false, description: 'salt flats by the sea', weather: 'none', fogColor: '#34474a', lightColor: '#c6d1cc' };
     const gpu = new GpuQueue();
-    const a = await paintMist(brief, draft, gpu, 0, 5, fakePainter(calls));
-    expect(calls).toEqual([`paint ${N}x${N}`, 'continue']);
-    expect((draft.json<{ prompt: string }>('mist')?.prompt ?? '').length).toBeGreaterThan(40);
-    const meta = await sharp(a).metadata();
-    expect([meta.format, meta.width, meta.height]).toEqual(['webp', N, N]);
-    const b = await paintMist(brief, draft, gpu, 0, 5, fakePainter(calls));
-    expect(calls.length).toBe(2);
-    expect(b.equals(a)).toBe(true);
+    const models = await mockModels();
+    try {
+      const a = await paintMist(brief, draft, gpu, 0, 5, fakePainter(calls));
+      expect(calls).toEqual([`paint ${N}x${N}`, 'continue']);
+      expect((draft.json<{ prompt: string }>('mist')?.prompt ?? '').length).toBeGreaterThan(40);
+      const meta = await sharp(a).metadata();
+      expect([meta.format, meta.width, meta.height]).toEqual(['webp', N, N]);
+      const b = await paintMist(brief, draft, gpu, 0, 5, fakePainter(calls));
+      expect(calls.length).toBe(2);
+      expect(b.equals(a)).toBe(true);
+    } finally {
+      models.stop();
+    }
   });
 });
 

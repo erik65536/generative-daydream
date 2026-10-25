@@ -78,7 +78,7 @@ export interface QuestProgress {
 /** The closed set of NPC actions. The LLM chooses among these; the engine executes them. */
 export const NPC_ACTIONS = [
   'none', 'give_item', 'give_gold', 'accept_gift', 'refuse_gift', 'offer_quest', 'complete_objective', 'modify_objective',
-  'add_objective', 'complete_quest', 'fail_quest', 'open_trade', 'attack', 'join_party', 'leave_party', 'change_disposition',
+  'add_objective', 'complete_quest', 'fail_quest', 'open_trade', 'attack', 'change_disposition',
   'remember', 'reveal_location', 'teach_skill', 'create_quest', 'end_conversation', 'flee', 'call_guards',
   'give_gift', 'share_secret', 'share_lead',
 ] as const;
@@ -98,8 +98,6 @@ export const NPC_ACTION_INFO: Record<NpcActionType, string> = {
   fail_quest: 'Fail an active quest because of what the player did or said (questId).',
   open_trade: 'Open your shop so the player can buy and sell.',
   attack: 'Become hostile and start a fight.',
-  join_party: 'Join the player\'s party as a companion.',
-  leave_party: 'Leave the player\'s party.',
   change_disposition: 'Change how much you like the player (amount from -25 to 25).',
   remember: 'Remember a fact for later (memory). Optionally due in N days and whether it spreads to others (spread).',
   reveal_location: 'Tell the player where a place is so it appears on their map (zoneId).',

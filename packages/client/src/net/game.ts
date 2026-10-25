@@ -384,10 +384,7 @@ export class GameClient {
 
   assetUrl(key?: string): string | undefined {
     if (!key || !this.state.world) return undefined;
-    let rec = this.state.world.assets[key];
-    // Heroes made before per-presentation art (or while it is being painted) use the class sprite.
-    const legacy = /^(spr_origin_.+)_(feminine|masculine|androgynous)$/.exec(key);
-    if ((!rec || rec.status !== 'ok') && legacy) rec = this.state.world.assets[legacy[1]!];
+    const rec = this.state.world.assets[key];
     if (!rec || rec.status !== 'ok' || !rec.file) return undefined;
     return `/api/worlds/${this.state.world.id}/assets/${rec.file}`;
   }

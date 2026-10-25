@@ -1,6 +1,6 @@
 /** Loads, runs, saves and unloads game instances. */
 import crypto from 'node:crypto';
-import { RULESET_VERSION, type DifficultyId, type InstanceState, type InstanceSummary, type PlayerState, type WorldDefinition } from '@gd/shared';
+import { type DifficultyId, type InstanceState, type InstanceSummary, type PlayerState, type WorldDefinition } from '@gd/shared';
 import { GameInstance } from './instance';
 import { listInstances, loadInstance, loadWorld, saveInstance, getUser } from '../storage';
 import type { CharacterSpec } from './characters';
@@ -11,8 +11,8 @@ const UNLOAD_AFTER_MS = 30_000;
 export function incompatibility(state: InstanceState, world: WorldDefinition | null): string | null {
   if (!world) return 'Its daydream no longer exists.';
   if (!world.ruleset) return 'Its daydream was made before rules were made per daydream. Regenerate the daydream’s rules on its page, then start a new journey.';
-  if ((state.rulesVersion ?? 0) !== RULESET_VERSION || Object.values(state.players).some((p) => p.party.some((c) => !c.classId || !world.ruleset.classes.some((k) => k.id === c.classId))))
-    return 'This reverie began under an older rules engine (or before the daydream’s rules were regenerated). Start a new reverie.';
+  if (Object.values(state.players).some((p) => p.party.some((c) => !world.ruleset.classes.some((k) => k.id === c.classId))))
+    return 'This reverie began before the daydream’s rules were regenerated. Start a new reverie.';
   return null;
 }
 
@@ -96,7 +96,6 @@ class InstanceManager {
       rumors: [],
       lastActiveAt: Date.now(),
       difficulty: difficulty ?? world.input.difficulty ?? 'normal',
-      rulesVersion: RULESET_VERSION,
     };
     const inst = this.wire(new GameInstance(state, world));
     inst.addPlayer(ownerId, ownerName, party);

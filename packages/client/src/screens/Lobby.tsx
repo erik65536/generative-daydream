@@ -24,9 +24,9 @@ export function TopBar({ me, onLogout }: { me: Me; onLogout?: () => void }) {
   );
 }
 
-export const SIZE_LABEL: Record<string, string> = { small: 'Small', medium: 'Medium', large: 'Large', huge: 'Huge' };
+export const SIZE_LABEL: Record<string, string> = { small: 'Small', medium: 'Medium', large: 'Large' };
 export const LENGTH_LABEL: Record<string, string> = { short: 'Short', medium: 'Medium', long: 'Long', epic: 'Epic' };
-export const MODE_LABEL: Record<string, string> = { solo: 'Solo hero', party_manual: 'Party (you control all)', party_npc: 'Recruit companions' };
+export const MODE_LABEL: Record<string, string> = { solo: 'Solo', party_manual: 'Four heroes', party_npc: 'You and three companions' };
 
 export function Lobby({ me, onLogout }: { me: Me; onLogout: () => void }) {
   const [worlds, setWorlds] = useState<WorldSummary[] | null>(null);

@@ -8,7 +8,7 @@ import { runGeneration, startWorldGeneration } from '../src/worldgen/pipeline';
 import { mockModels, plainPlaces, validateWorld, type MockModels } from './helpers';
 
 const owner = { id: 'u_jobs', name: 'Jobs' };
-const input = { setting: 'A drowned city of bell towers and lantern boats.', size: 'small' as const, length: 'short' as const, communication: 2 as const, combatMode: 'solo' as const };
+const input = { theme: 'A drowned city of bell towers and lantern boats.', size: 'small' as const, length: 'short' as const, communication: 2 as const, combatMode: 'solo' as const };
 const wid = () => `w_jt_${crypto.randomBytes(4).toString('hex')}`;
 const expireLease = (id: string) => globalDb().prepare('UPDATE jobs SET lease_until = 1 WHERE id = ?').run(id);
 

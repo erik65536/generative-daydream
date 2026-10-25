@@ -49,13 +49,14 @@ export function animationQueue(w: WorldDefinition): AssetRecord[] {
   if (!cfg) return [];
   const zoneOrder = new Map(w.zones.map((z, i) => [z.id, z.id === w.startZoneId ? -1 : i]));
   const where = new Map<string, number>();
-  for (const n of w.npcs) where.set(`spr_npc_${n.id}`, zoneOrder.get(n.zoneId) ?? 99);
+  // Companions travel in the party: they come first, with the heroes.
+  for (const n of w.npcs) where.set(`spr_npc_${n.id}`, n.companion ? -15 : zoneOrder.get(n.zoneId) ?? 99);
   for (const z of w.zones) for (const f of z.familyIds ?? []) for (const m of w.families.find((x) => x.id === f)?.members ?? []) {
     const k = `spr_mon_${f}_${m.archetype}`;
     where.set(k, Math.min(where.get(k) ?? 99, zoneOrder.get(z.id) ?? 99));
   }
-  // What the owner asked for in the studio first, then the heroes, the first place, the rest by place, bosses last.
-  const rank = (k: string) => (redoOf(w.id, k) ? -20 : k.startsWith('spr_origin_') ? -10 : k.startsWith('spr_boss_') ? 1000 : where.get(k) ?? 500);
+  // What the owner asked for in the studio first, then the companions and heroes, the first place, the rest by place, bosses last.
+  const rank = (k: string) => (redoOf(w.id, k) ? -20 : k.startsWith('spr_hero_') ? -10 : k.startsWith('spr_boss_') ? 1000 : where.get(k) ?? 500);
   return actorSprites(w)
     .filter((a) => (needsAnimation(a) && !failedFor(w.id, a)) || !!redoOf(w.id, a.key))
     .filter((a) => bodyPlan(a) === 'humanoid' || !!cfg.skintokens)

@@ -18,13 +18,8 @@ export function currentObjective(player: PlayerView, d: QuestDef): QuestObjectiv
 
 /** Where an objective leads, in words ("Mara Venn · Switchyard"). */
 export function objectiveWhere(world: ClientWorld, player: PlayerView, o: QuestObjective): string | undefined {
-  const zoneName = (id?: string) => {
-    const z = world.zones.find((x) => x.id === id);
-    if (!z) return undefined;
-    const outer = z.parentZoneId ? world.zones.find((x) => x.id === z.parentZoneId) : undefined;
-    return outer ? `${z.name}, ${outer.name}` : z.name;
-  };
-  const known = (id?: string) => !!id && (player.knownZones.includes(id) || player.knownZones.includes(world.zones.find((x) => x.id === id)?.parentZoneId ?? ''));
+  const zoneName = (id?: string) => world.zones.find((x) => x.id === id)?.name;
+  const known = (id?: string) => !!id && player.knownZones.includes(id);
   if (o.npcId) {
     const n = world.npcs.find((x) => x.id === o.npcId);
     return n ? `${n.name}${known(n.zoneId) ? ` · ${zoneName(n.zoneId)}` : ''}` : undefined;

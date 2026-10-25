@@ -172,13 +172,6 @@ export function addToInventory(r: Ruleset, inv: ItemInstance[], items: ItemInsta
   }
 }
 
-/** Re-pack an inventory (older saves stacked by level, or had no stack limits). */
-export function normalizeInventory(r: Ruleset, inv: ItemInstance[]): ItemInstance[] {
-  const out: ItemInstance[] = [];
-  addToInventory(r, out, inv.map((i) => ({ ...i })));
-  return out;
-}
-
 export function removeFromInventory(inv: ItemInstance[], itemId: string, qty = 1): ItemInstance | null {
   const i = inv.findIndex((x) => x.id === itemId);
   if (i < 0) return null;

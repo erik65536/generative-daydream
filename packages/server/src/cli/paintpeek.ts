@@ -12,7 +12,6 @@ import { loadWorld } from '../storage';
 import { planAssets, writeImagePrompts } from '../worldgen/art';
 import { produceAssets, type Attempt, type ImageRecord } from '../genai/images';
 import { KEY_COLOURS } from '../genai/cutout';
-import { genai } from '../genai/service';
 
 const args = process.argv.slice(2);
 const opt = (name: string) => (args.includes(`--${name}`) ? args[args.indexOf(`--${name}`) + 1] : undefined);

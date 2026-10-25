@@ -4,7 +4,7 @@
  *
  *   tsx src/cli/npctalk.ts <worldId> [npc name filter]
  */
-import { RULESET_VERSION, type InstanceState } from '@gd/shared';
+import type { InstanceState } from '@gd/shared';
 import { loadWorld } from '../storage';
 import { GameInstance } from '../game/instance';
 import { openaiCost, openaiUsage } from '../genai/providers';
@@ -14,11 +14,11 @@ const w = worldId ? loadWorld(worldId) : null;
 if (!w) throw new Error('usage: npctalk <worldId> [npc name filter]');
 const state: InstanceState = {
   id: 'i_npctalk', worldId: w.id, ownerId: 'u1', name: 'npc tuning', createdAt: Date.now(), updatedAt: Date.now(), clock: 9 * 60, open: false,
-  players: {}, npcs: {}, zones: {}, dynamicQuests: [], events: [], rumors: [], lastActiveAt: Date.now(), difficulty: 'normal', rulesVersion: RULESET_VERSION,
+  players: {}, npcs: {}, zones: {}, dynamicQuests: [], events: [], rumors: [], lastActiveAt: Date.now(), difficulty: 'normal',
 };
 const inst = new GameInstance(state, w);
 const cls = w.ruleset.classes[0]!;
-inst.addPlayer('u1', 'Tester', [{ name: 'Ash', classId: cls.id, kinId: w.ruleset.kins[0]!.id, presentation: 'androgynous', pronouns: 'they/them' }]);
+inst.addPlayer('u1', 'Tester', [{ name: 'Ash', classId: cls.id, kinId: w.ruleset.kins[0]!.id }]);
 const p = inst.state.players.u1!;
 let last = 0;
 inst.join({
@@ -31,8 +31,8 @@ inst.join({
 });
 
 const town = w.zones.find((z) => z.id === p.zoneId);
-const people = w.npcs.filter((n) => (filter ? n.name.toLowerCase().includes(filter.toLowerCase()) : n.zoneId === town?.id || w.zones.find((z) => z.id === n.zoneId)?.parentZoneId === town?.id));
-const pick = filter ? people.slice(0, 1) : [people.find((n) => n.essential), people.find((n) => n.role === 'merchant'), people.find((n) => n.canJoinParty), people.find((n) => !n.essential && n.role === 'commoner') ?? people.find((n) => !n.essential && n.role !== 'merchant')].filter((n, i, a): n is NonNullable<typeof n> => !!n && a.indexOf(n) === i);
+const people = w.npcs.filter((n) => (filter ? n.name.toLowerCase().includes(filter.toLowerCase()) : n.zoneId === town?.id));
+const pick = filter ? people.slice(0, 1) : [people.find((n) => n.essential), people.find((n) => n.role === 'merchant'), w.npcs.find((n) => n.companion), people.find((n) => !n.essential && n.role === 'commoner') ?? people.find((n) => !n.essential && n.role !== 'merchant')].filter((n, i, a): n is NonNullable<typeof n> => !!n && a.indexOf(n) === i);
 
 const SCRIPT = [
   'Hello. I am new here — who are you, and what is going on in this place?',
@@ -41,7 +41,7 @@ const SCRIPT = [
   'Thank you. I trust you — is there anything you have not told anyone?',
 ];
 for (const npc of pick) {
-  console.log(`\n=== ${npc.name}, ${npc.title} (${npc.role}${npc.essential ? ', story' : ''}${npc.canJoinParty ? ', can join' : ''})`);
+  console.log(`\n=== ${npc.name}, ${npc.title} (${npc.role}${npc.essential ? ', story' : ''}${npc.companion ? ', companion' : ''})`);
   last = 0;
   const before = p.journal.length;
   const quests = Object.keys(p.quests).length;

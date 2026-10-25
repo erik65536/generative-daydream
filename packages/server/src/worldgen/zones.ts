@@ -16,7 +16,7 @@ import { buildPack } from '../rules/encounters';
 import { worldAssetDir, worldDir, writeJsonAtomic } from '../storage';
 import { upscale } from './comfy';
 import type { GpuQueue } from './gpu';
-import { BARRIER_DEPTH_M, EXIT_GAP_M, MAP_STEPS, PAINT_PXM, makeMap, mapPixels, planMap, type MapBrief, type MapExit, type MapPlan } from './mapdraw';
+import { BARRIER_DEPTH_M, EXIT_GAP_M, MAP_STEPS, PAINT_PXM, makeMap, mapPixels, planMap, type MapBrief, type MapExit, type MapPlan, type Tiles } from './mapdraw';
 import { CELL, type Grid, type Side } from './mapgrid';
 import { fixMap } from './mapfix';
 import { BUILDING_PLAN, judgeArea, judgeWater, landmarks, readPlan, settle, WALK_READINGS, type PlanCells } from './mapread';
@@ -30,12 +30,14 @@ const PACK_SPACING = 13;
 /** A pack's centre keeps this far (m) from anything blocked where the map has room: in a room or clearing, not a passage. */
 const PACK_CLEARANCE = 2;
 
-const THING_KINDS = new Set(['chest', 'sign', 'lore', 'waypoint', 'craft_station', 'bed', 'object']);
+const THING_KINDS = new Set(['chest', 'sign', 'lore', 'waypoint', 'craft_station', 'object']);
 
 /** A place as far as painting and reading it go: what it is, its buildings and its ways out (ids are the world's). */
 export interface PlaceSketch extends Pick<PlaceNeeds, 'name' | 'description' | 'buildings'> {
   id: string;
   kind: ZoneKind;
+  /** The map's size (chosen when the world is planned). */
+  tiles: Tiles;
   indoor: boolean;
   lore?: string;
   /** Ways out. Those across the edge (not `into`) leave on a side of the map, toward where they lead on the world map. */
@@ -61,61 +63,21 @@ export function sideToward(from: { x: number; y: number }, to: { x: number; y: n
 
 export function sketchOf(w: WorldDefinition, z: ZoneDef): PlaceSketch {
   const target = (f: FeatureDef) => w.zones.find((x) => x.id === f.targetZoneId);
-  const inside = (f: FeatureDef) => f.kind === 'door' && target(f)?.parentZoneId === z.id;
   return {
     id: z.id,
     name: z.name,
     kind: z.kind,
+    tiles: z.tiles,
     indoor: !!z.indoor,
     description: z.description,
     lore: z.lore,
     buildings: (z.buildings ?? []).map((b) => ({ id: b.id, name: b.name, purpose: b.purpose })),
-    exits: z.features.filter((f) => f.kind === 'exit' || (f.kind === 'door' && !inside(f))).map((f) => {
-      const into = z.kind !== 'interior' && target(f)?.kind === 'dungeon' && z.kind !== 'dungeon';
-      // A room's door out is at the bottom of its map; other ways out face where they lead.
-      const side = into ? undefined : z.kind === 'interior' ? 'bottom' : sideToward(z.mapPos, target(f)?.mapPos);
-      return { id: f.id, to: target(f)?.name ?? 'elsewhere', into, side };
+    exits: z.features.filter((f) => f.kind === 'exit').map((f) => {
+      // A way down into a dungeon is drawn inside the map; other ways out face where they lead.
+      const into = target(f)?.kind === 'dungeon' && z.kind !== 'dungeon';
+      return { id: f.id, to: target(f)?.name ?? 'elsewhere', into, side: into ? undefined : sideToward(z.mapPos, target(f)?.mapPos) };
     }),
   };
-}
-
-/**
- * Bring a world from before buildings were only painted up to date: each building interior becomes a building of
- * its town (painted, not entered; whoever worked inside stands outside it), its people move to the town, a
- * workbench inside moves out, beds go (health comes back outside combat), and everything that named the room (quest
- * steps, people, doors) names the town instead. Returns how many rooms were removed.
- */
-export function removeInteriors(w: WorldDefinition): number {
-  const rooms = w.zones.filter((z) => z.kind === 'interior' && z.parentZoneId);
-  const townOf = new Map(rooms.map((r) => [r.id, r.parentZoneId!]));
-  for (const room of rooms) {
-    const town = w.zones.find((z) => z.id === room.parentZoneId);
-    if (!town) continue;
-    const people = w.npcs.filter((n) => n.zoneId === room.id);
-    const worker = people.find((n) => ['innkeeper', 'merchant', 'trainer', 'crafter'].includes(n.role)) ?? people[0];
-    town.buildings ??= [];
-    if (worker) {
-      town.buildings.push({ id: room.id, name: room.name, purpose: room.buildingPurpose ?? 'house', npcId: worker.id });
-      worker.wanders = false;
-    }
-    for (const n of people) n.zoneId = town.id;
-    for (const f of room.features) if (f.kind === 'craft_station') town.features.push({ ...f, id: `${town.id}_craft_${room.id}` });
-    town.features = town.features.filter((f) => !(f.kind === 'door' && f.targetZoneId === room.id));
-    town.links = town.links.filter((l) => l !== room.id);
-  }
-  w.zones = w.zones.filter((z) => !townOf.has(z.id));
-  for (const z of w.zones) z.features = z.features.filter((f) => f.kind !== 'bed');
-  // Anything else naming a room (quest steps, lore, the start) names its town.
-  const swap = (v: unknown): unknown => {
-    if (typeof v === 'string') return townOf.get(v) ?? v;
-    if (Array.isArray(v)) return v.map(swap);
-    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, swap(x)]));
-    return v;
-  };
-  const rec = w as unknown as Record<string, unknown>;
-  for (const k of Object.keys(rec)) if (k !== 'zones' && k !== 'assets' && k !== 'ruleset') rec[k] = swap(rec[k]);
-  for (const k of Object.keys(w.assets)) if ([...townOf.keys()].some((id) => k === `place_${id}` || k === `mist_${id}`)) delete w.assets[k];
-  return rooms.length;
 }
 
 /** What the place must hold: its entrances, ways out, people and things (by world id). */
@@ -135,7 +97,6 @@ function thingText(f: FeatureDef): string {
     case 'lore': return `a note or inscription: "${f.name}"`;
     case 'waypoint': return 'the waypoint travellers use (central, easy to find)';
     case 'craft_station': return 'a workbench for crafting';
-    case 'bed': return 'a bed to rest in';
     default: return f.name ?? 'something to look at';
   }
 }
@@ -149,6 +110,7 @@ function mapBrief(w: WorldLook, s: PlaceSketch): MapBrief {
     artStyle: w.artStyle,
     name: s.name,
     kind: s.kind,
+    tiles: s.tiles,
     indoor: s.indoor,
     description: s.description,
     lore: s.lore,
@@ -246,7 +208,7 @@ export async function paintAndRead(w: WorldLook, s: PlaceSketch, ctx: PlaceConte
  * map, so a resumed build picks up where it stopped.
  */
 export async function readPlace(draft: PlaceDraft, map: Buffer, s: PlaceSketch, exits: MapExit[], ctx: PlaceContext): Promise<MapReading> {
-  const { W, H, X, Y } = mapPixels(s.kind);
+  const { W, H, X, Y } = mapPixels(s.tiles);
   const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
   const tag = `${ctx.seed}`, place = { name: s.name, description: s.description };
   const band = Math.ceil(BARRIER_DEPTH_M / CELL), gap = EXIT_GAP_M / CELL;
@@ -324,7 +286,7 @@ export async function buildPlace(w: WorldDefinition, z: ZoneDef, ctx: PlaceConte
 
 /**
  * Put everything in a made place (Luna decides where), bring the map to game scale and turn it into game data:
- * mutates the zone, the world's NPCs (and drops interiors whose building has no entrance) and its assets.
+ * mutates the zone, the world's NPCs and its assets.
  */
 export async function settlePlace(w: WorldDefinition, z: ZoneDef, { plan, seed, canvas, reading }: Painted, ctx: PlaceContext): Promise<void> {
   const draft = new PlaceDraft(w.id, z.id);
@@ -373,14 +335,6 @@ export const mistBrief = (z: ZoneDef): MistBrief => ({
 export async function setAir(w: WorldDefinition, z: ZoneDef, painting: Buffer, mist: Buffer): Promise<void> {
   z.look.mist = saveAsset(w, `mist_${z.id}`, mist, { kind: 'texture', prompt: `mist of ${z.name}`, width: MIST_SIZE, height: MIST_SIZE });
   z.look.painted = await measureLight(painting);
-}
-
-/** Paint and set a place's air afterwards (a world built before places had it), from its saved map. */
-export async function addAir(w: WorldDefinition, z: ZoneDef, ctx: Pick<PlaceContext, 'gpu' | 'priority' | 'seed'>): Promise<void> {
-  const file = z.painting && w.assets[z.painting.image]?.file;
-  if (!file) return;
-  const mist = await paintMist(mistBrief(z), new PlaceDraft(w.id, z.id), ctx.gpu, ctx.priority, ctx.seed);
-  await setAir(w, z, fs.readFileSync(path.join(worldAssetDir(w.id), file)), mist);
 }
 
 /** Game scale: the map is resized by this so a metre is PX_PER_METRE pixels, the scale figures are drawn at. */
@@ -441,41 +395,23 @@ function furnish(w: WorldDefinition, z: ZoneDef, r: MapReading, spots: Map<strin
   const allOpen = candidates(r).filter((c) => c.id[0] === 'P' || c.id[0] === 'L');
   const fallbackSpot = () => at(rng.pick(allOpen.length ? allOpen : openSpots.length ? openSpots : candidates(r)));
 
-  // Doors and ways out stand where the map has them (on the walkable ground at the door's foot). A way out at the
-  // map's edge stands 1.5 m in from it, so people arriving by it stand on ground the mist at the edge leaves clear.
+  // Ways out stand where the map has them. A way out at the map's edge stands 1.5 m in from it, so people arriving
+  // by it stand on ground the mist at the edge leaves clear; a way down drawn inside the map stands at its foot.
   const IN = 1.5;
   const inward = (c: Candidate) => {
     const p = at(c);
     if (c.id[0] !== 'E') return p;
     return { x: p.x < IN ? p.x + IN : p.x > r.X - IN ? p.x - IN : p.x, y: p.y < IN ? p.y + IN : p.y > r.Y - IN ? p.y - IN : p.y };
   };
-  const unplacedDoors: FeatureDef[] = [];
   for (const f of z.features) {
-    if (f.kind !== 'door' && f.kind !== 'exit') continue;
+    if (f.kind !== 'exit') continue;
     const c = spots.get(f.id);
-    if (!c) {
-      unplacedDoors.push(f);
-      continue;
-    }
-    // (A spot the reading left off the walkable ground still gets the nearest point people can reach.)
-    const p = nav.nearestWalkable(inward(c), 6) ?? nav.nearestWalkable(at(c), 400) ?? at(c);
+    // (A spot the reading left off the walkable ground still gets the nearest point people can reach; placement
+    // insists on every way out, so a missing one only guards a resumed draft.)
+    const p = c ? nav.nearestWalkable(inward(c), 6) ?? nav.nearestWalkable(at(c), 400) ?? at(c) : settle(fallbackSpot());
     f.x = p.x;
     f.y = p.y;
     taken.push(p);
-  }
-  // A building the map has no entrance for is left out: its people move outdoors, its interior goes.
-  for (const f of unplacedDoors) {
-    const inner = w.zones.find((x) => x.id === f.targetZoneId);
-    if (inner?.parentZoneId === z.id) {
-      for (const n of w.npcs) if (n.zoneId === inner.id) n.zoneId = z.id;
-      w.zones = w.zones.filter((x) => x.id !== inner.id);
-      z.features = z.features.filter((x) => x !== f);
-    } else {
-      // A way out must exist (placement insists on every one; this only guards a resumed draft).
-      const p = settle(fallbackSpot());
-      f.x = p.x;
-      f.y = p.y;
-    }
   }
   // People who work in a building stand outside its entrance; everyone else where Luna put them.
   for (const n of w.npcs.filter((x) => x.zoneId === z.id)) {
@@ -493,7 +429,7 @@ function furnish(w: WorldDefinition, z: ZoneDef, r: MapReading, spots: Map<strin
   }
 
   // Arrival: the main way in (the first exit, or the waypoint in towns).
-  const entryFeature = z.features.find((f) => f.kind === 'waypoint') ?? z.features.find((f) => f.kind === 'exit' || f.kind === 'door');
+  const entryFeature = z.features.find((f) => f.kind === 'waypoint') ?? z.features.find((f) => f.kind === 'exit');
   z.entry = entryFeature ? { x: entryFeature.x, y: entryFeature.y } : settle(fallbackSpot());
 
   // A boss waits in the lair Luna chose for it (its spot), else deepest in.
@@ -512,7 +448,7 @@ export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, are
   const far = Math.max(...costs.values());
   const cells = [...costs.keys()].map((i) => ({ i, p: nav.centre(i % nav.cols, Math.floor(i / nav.cols)), depth: costs.get(i)! / far }));
   rng.shuffle(cells);
-  const doors = z.features.filter((f) => f.kind === 'exit' || f.kind === 'door');
+  const doors = z.features.filter((f) => f.kind === 'exit');
   const nearDoor = (p: Vec2, d: number) => doors.some((f) => Math.hypot(f.x - p.x, f.y - p.y) < d) || Math.hypot(p.x - z.entry.x, p.y - z.entry.y) < d;
   const families = z.familyIds.map((id) => w.families.find((f) => f.id === id)!).filter(Boolean);
   const around = (centre: Vec2, radius: number, n: number): Vec2[] => {
@@ -537,7 +473,6 @@ export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, are
   const deepest = cells.reduce((a, b) => (b.depth > a.depth ? b : a)).p;
   const reached = (p: Vec2) => costs.has(nav.cellOf(p.x, p.y)[1] * nav.cols + nav.cellOf(p.x, p.y)[0]);
   const lairOf = (id: string) => (lairs.has(id) && reached(lairs.get(id)!) ? lairs.get(id)! : deepest);
-  const lair = bosses.length ? lairOf(bosses[0]!.id) : deepest;
   for (const b of bosses) {
     const fam = w.families.find((f) => f.id === b.familyId) ?? families[0];
     if (!fam) continue;

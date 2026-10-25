@@ -39,9 +39,10 @@ export function fake(schema: Json, root: Json, key = 'value'): unknown {
     }
     case 'string': {
       if (schema.pattern && String(schema.pattern).includes('0-9a-fA-F')) return '#7a6a5a';
-      const max = Number(schema.maxLength ?? 60);
+      // (Strict schemas reach the model without their length limits: prose fields long enough for their minimums.)
+      const max = Number(schema.maxLength ?? 400);
       const base = `${key} ${++counter} of the mock world, written plainly`;
-      const min = Number(schema.minLength ?? 1);
+      const min = Number(schema.minLength ?? (/prompt|text|description|intro|summary|plan|ground/i.test(key) ? 120 : 1));
       return base.padEnd(min, ' x').slice(0, Math.max(min, Math.min(max, base.length)));
     }
     case 'integer':
@@ -85,8 +86,13 @@ export async function mockModels(opts: { junkOnce?: string[]; npc?: (prompt: str
         if (name === 'world_atlas') {
           const zones = ((format.schema as Json).properties as Record<string, Json>).zones!.items as Json;
           const slots = (zones.properties as Record<string, Json>).slotId!.enum as string[];
-          out.zones = slots.map((slotId, i) => ({ ...((out.zones as Json[])[i % (out.zones as Json[]).length] as Json), slotId }));
+          // Small maps, within any world's tile budget.
+          out.zones = slots.map((slotId, i) => ({ ...((out.zones as Json[])[i % (out.zones as Json[]).length] as Json), slotId, tiles: { cols: 2, rows: 2 } }));
           (out.regions as Json[]).forEach((r, i) => (r.index = i));
+        }
+        if (name === 'companions') {
+          const classes = (((((format.schema as Json).properties as Record<string, Json>).companions!.items as Json).properties as Record<string, Json>).className!.enum as string[]);
+          (out.companions as Json[]).forEach((c, i) => (c.className = classes[i % classes.length]));
         }
         if (name === 'town_content') {
           const npcs = out.npcs as Json[];
@@ -123,7 +129,7 @@ export async function mockModels(opts: { junkOnce?: string[]; npc?: (prompt: str
 }
 
 /**
- * Places as plain open ground (a walled square, interiors smaller), with the ways out around its edge and everyone
+ * Places as plain open ground (a walled square), with the ways out around its edge and everyone
  * spread over the middle; monsters and traps by the real rules. Returns a function that restores painting.
  */
 export function plainPlaces(): () => void {
@@ -134,13 +140,13 @@ export function plainPlaces(): () => void {
 }
 
 function layOut(w: WorldDefinition, z: ZoneDef) {
-  const S = z.kind === 'interior' ? 14 : 44;
+  const S = 44;
   const nav = makeNav(S, S, (x, y) => x > 1.4 && y > 1.4 && x < S - 1.4 && y < S - 1.4);
   z.nav = nav;
   z.width = z.height = S;
   z.painting = { image: `place_${z.id}`, width: Math.round(S * PX_PER_METRE), height: Math.round(S * PX_PER_METRE), ox: 0, oy: 0 };
   z.look = { ...z.look, weather: 'none' };
-  const ways = z.features.filter((f) => f.kind === 'exit' || f.kind === 'door');
+  const ways = z.features.filter((f) => f.kind === 'exit');
   ways.forEach((f, i) => {
     const a = (i / Math.max(1, ways.length)) * Math.PI * 2;
     [f.x, f.y] = [S / 2 + Math.cos(a) * (S / 2 - 3), S / 2 + Math.sin(a) * (S / 2 - 3)];
@@ -154,7 +160,7 @@ function layOut(w: WorldDefinition, z: ZoneDef) {
     taken.push(p);
     return p;
   };
-  for (const f of z.features) if (f.kind !== 'exit' && f.kind !== 'door') Object.assign(f, spot());
+  for (const f of z.features) if (f.kind !== 'exit') Object.assign(f, spot());
   for (const p of w.npcs) if (p.zoneId === z.id) Object.assign(p, spot());
   z.entry = { x: S / 2, y: S / 2 };
   if (z.kind === 'wilderness' || z.kind === 'dungeon') populate(w, z, new Nav(nav), new Rng(`${w.seed}:${z.id}`), S * S * 0.8, taken);
@@ -171,7 +177,7 @@ export async function genWorld(setting: string, size: 'small' | 'medium' = 'smal
     await models;
     const restore = plainPlaces();
     try {
-      const job = new WorldGenJob(`w_test_${Math.random().toString(36).slice(2, 8)}`, { setting, size, length: 'short', communication: 2, combatMode, seed: 'test-seed' }, { id: 'u1', name: 'Tester' });
+      const job = new WorldGenJob(`w_test_${Math.random().toString(36).slice(2, 8)}`, { theme: setting, size, length: 'short', communication: 2, combatMode, seed: 'test-seed' }, { id: 'u1', name: 'Tester' });
       await runGeneration(job);
       built.set(key, loadWorld(job.worldId)!);
     } finally {
@@ -193,14 +199,14 @@ export function validateWorld(w: WorldDefinition) {
     }
     const nav = new Nav(z.nav);
     for (const f of z.features) {
-      if ((f.kind === 'exit' || f.kind === 'door') && (!f.targetZoneId || !zoneIds.has(f.targetZoneId))) errors.push(`${z.id}: bad exit ${f.id} -> ${f.targetZoneId}`);
+      if ((f.kind === 'exit') && (!f.targetZoneId || !zoneIds.has(f.targetZoneId))) errors.push(`${z.id}: bad exit ${f.id} -> ${f.targetZoneId}`);
       if (f.targetFeatureId) {
         const tz = w.zones.find((x) => x.id === f.targetZoneId);
         if (!tz?.features.some((x) => x.id === f.targetFeatureId)) errors.push(`${z.id}: exit ${f.id} target feature ${f.targetFeatureId} missing`);
       }
     }
     // Every way out can be walked to from the entry.
-    for (const f of z.features.filter((x) => x.kind === 'exit' || x.kind === 'door'))
+    for (const f of z.features.filter((x) => x.kind === 'exit'))
       if (!nav.path(z.entry, f, { stopWithin: 1.5, allowBlockedGoal: true })) errors.push(`${z.id} (${z.kind}): exit ${f.id} unreachable from entry`);
   }
   for (const n of w.npcs) if (!zoneIds.has(n.zoneId)) errors.push(`npc ${n.id} zone ${n.zoneId} missing`);
@@ -225,5 +231,5 @@ export function validateWorld(w: WorldDefinition) {
 /** A character spec for the world's class with the given role (or the first class). */
 export function hero(w: WorldDefinition, name: string, role: ClassRole = 'tank'): CharacterSpec {
   const cls = w.ruleset.classes.find((c) => c.role === role) ?? w.ruleset.classes[0]!;
-  return { name, classId: cls.id, kinId: w.ruleset.kins[0]!.id, presentation: 'androgynous', pronouns: 'they/them' };
+  return { name, classId: cls.id, kinId: w.ruleset.kins[0]!.id };
 }

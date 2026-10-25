@@ -244,7 +244,7 @@ export function defaultGear(genre: Genre): GearIntent {
     valuables: t.valuables.map((name) => ({ name })),
     tools: { disarm: t.tools[0], unlock: t.tools[1], recall: t.tools[2] },
     affixNames: [],
-    kins: t.kins.map(([name, description], i) => ({ name, description, attributes: [{ attribute: t.attrs[i % t.attrs.length]![0], points: 2 }], perk: i === 0 ? { effect: 'barter', weight: 2 } : i === 1 ? { effect: 'dodge', weight: 2 } : { effect: 'health', weight: 2 } })),
+    kins: t.kins.map(([name, description], i) => ({ name, description, look: `a ${name.toLowerCase()}: ${description}`, attributes: [{ attribute: t.attrs[i % t.attrs.length]![0], points: 2 }], perk: i === 0 ? { effect: 'barter', weight: 2 } : i === 1 ? { effect: 'dodge', weight: 2 } : { effect: 'health', weight: 2 } })),
   };
 }
 

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { itemDisplayName, itemLines, itemPrice, maxStack, rx, skillCostLine, skillLines, type ItemInstance, type Ruleset, type StatBlock } from '@gd/shared';
 import { drawItemIcon, drawSkillIcon } from '../render/icons';
-import { drawFigure, drawShadow, imageState, loadImage, onImageSettled } from '../render/sprites';
+import { drawPlaceholder, drawShadow, imageState, loadImage, onImageSettled } from '../render/sprites';
 
 export function CanvasDraw({ size, draw, deps, className }: { size: number; draw: (ctx: CanvasRenderingContext2D, s: number) => void; deps: unknown[]; className?: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
@@ -30,21 +30,15 @@ export function ItemIcon({ item, size = 40, url }: { item: { baseId: string; rar
 }
 
 export interface PortraitProps {
+  /** The figure's painting. */
   sprite?: string;
-  colors: string[];
-  shape?: 'humanoid' | 'beast' | 'blob' | 'flyer' | 'hulk';
-  archetype?: string;
-  weapon?: string;
-  seed: string;
   size: number;
-  kind?: string;
   /** Show the whole figure instead of head and shoulders. */
   full?: boolean;
-  presentation?: string;
 }
 
-/** Head-and-shoulders view of a figure (procedural or generated). */
-export function Portrait({ sprite, colors, shape = 'humanoid', archetype, weapon, seed, size, kind, full, presentation }: PortraitProps) {
+/** Head-and-shoulders (or whole) view of a painted figure; a plain silhouette while it loads or when it has none. */
+export function Portrait({ sprite, size, full }: PortraitProps) {
   const ref = useRef<HTMLCanvasElement>(null);
   const [tick, setTick] = useState(0);
   useEffect(() => {
@@ -57,7 +51,6 @@ export function Portrait({ sprite, colors, shape = 'humanoid', archetype, weapon
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, size, size);
     const state = imageState(sprite);
-    // Wait for generated art instead of flashing the procedural figure first.
     if (state === 'loading') {
       let live = true;
       onImageSettled(sprite!, () => live && setTick((x) => x + 1));
@@ -69,17 +62,15 @@ export function Portrait({ sprite, colors, shape = 'humanoid', archetype, weapon
     if (img) {
       const h = full ? size * 0.92 : size * 2.1;
       const w = (img.naturalWidth / img.naturalHeight) * h;
-      ctx.drawImage(img, size / 2 - w / 2, full ? size * 0.04 : size * 0.04, w, h);
+      ctx.drawImage(img, size / 2 - w / 2, size * 0.04, w, h);
     } else {
       ctx.save();
-      const humanoid = shape === 'humanoid' || shape === 'hulk';
-      const k = full ? size / 75 : size / (humanoid ? 40 : 44);
-      ctx.translate(size / 2, full ? size * 0.9 : size * (humanoid ? 1.3 : 0.95));
-      drawShadow(ctx, 12 * k);
-      drawFigure(ctx, { shape, colors: colors.length ? colors : ['#4a6a9a', '#2a3448', '#e0c060'], scale: k, dir: 1, back: false, walk: NaN, t: 0.4, weapon, archetype, seed, kind, presentation });
+      ctx.translate(size / 2, full ? size * 0.94 : size * 1.5);
+      drawShadow(ctx, size * 0.2);
+      drawPlaceholder(ctx, full ? size * 0.85 : size * 1.6);
       ctx.restore();
     }
-  }, [sprite, colors.join(','), shape, size, seed, tick, archetype, weapon, kind, full, presentation]);
+  }, [sprite, size, tick, full]);
   return <canvas ref={ref} style={{ width: size, height: size }} />;
 }
 

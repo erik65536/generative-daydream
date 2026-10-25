@@ -36,17 +36,15 @@ export type Presentation = 'feminine' | 'masculine' | 'androgynous';
 export const PRONOUNS: Record<Presentation, string> = { feminine: 'she/her', masculine: 'he/him', androgynous: 'they/them' };
 
 /**
- * Each kin of a world is one presentation, picked at random for the world (from its kins' ids, so the game and the
- * client agree) but balanced: about a quarter androgynous (at least one of three or more kins), the rest split
- * between feminine and masculine.
+ * The genders of a world's kins (each kin is one), in order: picked at random from the world's seed but balanced,
+ * about a quarter androgynous (at least one of three or more kins), the rest split between feminine and masculine.
  */
-export function kinPresentation(kins: readonly { id: string }[], kinId: string): Presentation {
-  const rng = new Rng(`kins:${kins.map((k) => k.id).join('|')}`);
-  const n = kins.length, a = n >= 3 ? Math.max(1, Math.round(n / 4)) : 0;
+export function kinPresentations(n: number, seed: string): Presentation[] {
+  const rng = new Rng(`kins:${seed}`);
+  const a = n >= 3 ? Math.max(1, Math.round(n / 4)) : 0;
   const first: Presentation = rng.chance(0.5) ? 'feminine' : 'masculine', second: Presentation = first === 'feminine' ? 'masculine' : 'feminine';
   const all: Presentation[] = [...Array<Presentation>(a).fill('androgynous'), ...Array.from({ length: n - a }, (_, i) => (i % 2 ? second : first))];
-  rng.shuffle(all);
-  return all[Math.max(0, kins.findIndex((k) => k.id === kinId))] ?? 'androgynous';
+  return rng.shuffle(all);
 }
 
 export interface CharacterState {
@@ -54,8 +52,8 @@ export interface CharacterState {
   name: string;
   classId: string;
   kinId: string;
+  /** As the character's kin is (each kin is one gender). */
   presentation: Presentation;
-  pronouns: string;
   /** Asset key for the sprite. */
   sprite: string;
   colors: string[];
@@ -84,8 +82,6 @@ export interface CharacterState {
   aiControlled?: boolean;
   /** Combat role used when AI driven. */
   archetype?: MonsterArchetype;
-  /** Legacy (pre-ruleset) characters. */
-  originId?: string;
 }
 
 export interface JournalEntry {
@@ -166,7 +162,6 @@ export interface NpcRuntime {
   stockDay: number;
   /** Unique items held (quest items). */
   inventory: ItemInstance[];
-  partyOf?: string;
   gold: number;
   /** Gathering: NPC goes to a place at a time. */
   gathering?: { zoneId: string; x: number; y: number; day: number; reason: string };
@@ -184,8 +179,6 @@ export interface MonsterRuntime {
   x: number;
   y: number;
   diedAt?: number;
-  /** Legacy: day on which it respawns (non-boss). */
-  respawnDay?: number;
   /** Game-clock minute after which it may respawn (non-boss); packs return together once all are due. */
   respawnAt?: number;
   looted?: boolean;
@@ -278,8 +271,6 @@ export interface InstanceState {
   /** Unique items created during play. */
   dynamicItems?: Record<string, import('./types').UniqueItemDef>;
   difficulty: DifficultyId;
-  /** Engine/ruleset version the save was created with. */
-  rulesVersion?: number;
 }
 
 export interface InstanceSummary {

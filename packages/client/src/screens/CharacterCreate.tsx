@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { DIFFICULTIES, PRONOUNS, characterStats, kinPresentation, modifierLabel, rx, type DifficultyId, type ItemInstance, type Presentation, type Ruleset } from '@gd/shared';
+import { DIFFICULTIES, MAX_PARTY_SIZE, characterStats, modifierLabel, rx, type DifficultyId, type ItemInstance, type Ruleset } from '@gd/shared';
 import { api, type CharSpec, type Me, type WorldSetup } from '../api';
 import { Backdrop } from '../ui/Backdrop';
 import { TopBar } from './Lobby';
 import { navigate } from '../App';
 import { Portrait, SkillIcon, SkillTooltip, tip } from '../ui/common';
-import { setRules, weaponVisual } from '../rules';
+import { setRules } from '../rules';
 import { loadImage } from '../render/sprites';
 import { applyWorldTheme } from '../ui/theme';
 
@@ -19,7 +19,6 @@ const PALETTES = [
 ];
 
 const NAMES = ['Arin', 'Sela', 'Corvin', 'Mira', 'Tobin', 'Ysolde', 'Kael', 'Wren', 'Juno', 'Rook'];
-const PRESENTATION_NAME: Record<Presentation, string> = { feminine: 'Female', masculine: 'Male', androgynous: 'Androgynous' };
 
 interface Draft extends CharSpec {
   colors: string[];
@@ -45,17 +44,17 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
     let clear = () => {};
     api.setup(worldId).then((s) => {
       setRules(s.ruleset);
-      // Warm the image cache so switching class or presentation shows art at once.
-      for (const o of s.origins) for (const k of [o.asset, ...Object.values(o.assets ?? {})]) if (k && s.assets[k]) loadImage(`/api/worlds/${worldId}/assets/${s.assets[k]}`);
+      // Warm the image cache so switching class or kin shows art at once.
+      for (const o of s.origins) for (const k of Object.values(o.assets ?? {})) if (k && s.assets[k]) loadImage(`/api/worlds/${worldId}/assets/${s.assets[k]}`);
       clear = applyWorldTheme({ concept: s.concept, ruleset: s.ruleset });
       setSetup(s);
       setDifficulty(s.difficulty);
-      setParty([newDraft(s, 0)]);
+      // A party the player controls is four heroes; otherwise one (with the world's companions, if it has them).
+      setParty(Array.from({ length: s.combatMode === 'party_manual' ? MAX_PARTY_SIZE : 1 }, (_, i) => newDraft(s, i)));
     }, (e) => setError(e.message));
     return () => clear();
   }, [worldId]);
 
-  const maxParty = setup?.combatMode === 'party_manual' ? 4 : 1;
   const d = party[idx];
   const r = setup?.ruleset;
 
@@ -72,11 +71,9 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
   const t = r.terminology;
   const cls = ix.cls.get(d.classId)!;
   const kin = ix.kin.get(d.kinId);
-  // Each kin of a world is one presentation (shared/world/instance.ts): the hero is as their kin is.
-  const presentation = kinPresentation(r.kins, d.kinId);
-  const look = setup.origins.find((o) => o.id === d.classId);
-  const lookAsset = look?.assets?.[presentation] ?? look?.asset;
-  const sprite = lookAsset && setup.assets[lookAsset] ? `/api/worlds/${worldId}/assets/${setup.assets[lookAsset]}` : undefined;
+  // A hero is painted for every class and kin (each kin is one gender).
+  const art = (key?: string) => (key && setup.assets[key] ? `/api/worlds/${worldId}/assets/${setup.assets[key]}` : undefined);
+  const sprite = art(setup.origins.find((o) => o.id === d.classId)?.assets?.[d.kinId]);
   const st = preview.stats;
   const start = async () => {
     setBusy(true);
@@ -106,15 +103,25 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
         <p className="lede">{setup.concept.pitch}</p>
         <p className="serif muted" style={{ fontSize: 16, marginTop: -6 }}>You are {setup.concept.playerRole.replace(/^you are\s+/i, '').replace(/^(A|An|The) /, (m) => m.toLowerCase()).replace(/\.$/, '')}.</p>
 
-        {maxParty > 1 && (
-          <div className="row" style={{ marginTop: 14 }}>
+        {party.length > 1 && (
+          <div className="row wrap" style={{ marginTop: 14 }}>
             {party.map((p, i) => (
               <button key={i} className={`btn ${i === idx ? 'primary' : ''}`} onClick={() => setIdx(i)}>{p.name || `Hero ${i + 1}`}<span className="tiny" style={{ opacity: 0.7, marginLeft: 6 }}>{ix.cls.get(p.classId)?.name}</span></button>
             ))}
-            {party.length < maxParty && (
-              <button className="btn" onClick={() => { setParty((p) => [...p, newDraft(setup, p.length)]); setIdx(party.length); }}>+ Add {t.party.toLowerCase()} member</button>
-            )}
-            {party.length > 1 && <button className="btn ghost sm" onClick={() => { setParty((p) => p.filter((_, i) => i !== idx)); setIdx(0); }}>Remove</button>}
+          </div>
+        )}
+        {!!setup.companions.length && (
+          <div className="panel panel-body row wrap" style={{ marginTop: 14, gap: 14 }}>
+            <div className="label" style={{ width: '100%' }}>Travelling with you</div>
+            {setup.companions.map((c) => (
+              <div key={c.id} className="row" style={{ gap: 10 }}>
+                <Portrait size={56} sprite={art(c.asset)} />
+                <div className="col" style={{ gap: 2 }}>
+                  <b>{c.name}</b>
+                  <span className="tiny muted">{c.title} · {ix.kin.get(c.kinId)?.name} {ix.cls.get(c.classId)?.name}</span>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
@@ -122,13 +129,13 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
           <div className="panel ornate" style={{ width: 300, flex: 'none' }}>
             <div className="panel-body col" style={{ alignItems: 'center' }}>
               <div className="hero-stage">
-                <Portrait full size={210} sprite={sprite} colors={d.colors} archetype={cls.aiRole} weapon={weaponVisual({ equipment: preview.equipment })} seed={d.name + d.classId} presentation={presentation} />
+                <Portrait full size={210} sprite={sprite} />
               </div>
               <div className="field" style={{ width: '100%' }}>
                 <label>{idx === 0 ? 'Your name' : 'Their name'}</label>
                 <input className="input" style={{ width: '100%', textAlign: 'center', fontSize: 18 }} value={d.name} maxLength={24} placeholder="Type a name" autoFocus={idx === 0} onChange={(e) => update({ name: e.target.value })} />
               </div>
-              <div className="tiny muted">{kin ? `${kin.name}, ` : ''}{PRESENTATION_NAME[presentation].toLowerCase()} ({PRONOUNS[presentation]})</div>
+              <div className="tiny muted">{kin?.name} {cls.name}</div>
               {!sprite && (
                 <div className="row" style={{ gap: 6 }}>
                   {PALETTES.map((p) => (
@@ -157,7 +164,7 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
 
           <div className="col grow" style={{ gap: 18, minWidth: 0 }}>
             <div className="panel ornate">
-              <div className="panel-head"><h3>{r.terminology.calling ?? 'Role'}</h3><span className="muted small">{r.classes.length} classes</span></div>
+              <div className="panel-head"><h3>{t.calling}</h3><span className="muted small">{r.classes.length} classes</span></div>
               <div className="panel-body">
                 <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
                   {r.classes.map((c) => (
@@ -189,12 +196,12 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
             </div>
             {r.kins.length > 1 && (
               <div className="panel ornate">
-                <div className="panel-head"><h3>{r.terminology.kin ?? 'Background'}</h3></div>
+                <div className="panel-head"><h3>{t.kin}</h3></div>
                 <div className="panel-body">
                   <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
                     {r.kins.map((k) => (
                       <div key={k.id} className={`choice ${d.kinId === k.id ? 'on' : ''}`} onClick={() => update({ kinId: k.id })}>
-                        <div className="t">{k.name} <span className="badge gray">{PRESENTATION_NAME[kinPresentation(r.kins, k.id)]}</span></div>
+                        <div className="t">{k.name}</div>
                         <div className="d">{k.description}</div>
                         <div className="tiny dim" style={{ marginTop: 4 }}>
                           {[...Object.entries(k.attributes).filter(([, v]) => v).map(([a, v]) => `${v > 0 ? '+' : ''}${v} ${ix.attr.get(a)?.name ?? a}`), ...k.modifiers.map((m) => modifierLabel(r, m, 1))].join(' · ')}
@@ -248,7 +255,7 @@ const DIFFICULTY_TEXT: Record<DifficultyId, string> = {
 function newDraft(s: WorldSetup, i: number): Draft {
   const r = s.ruleset;
   return {
-    // The player names their own hero; companions in a party they control start with a name to change.
+    // The player names their own hero; the others of a party they control start with a name to change.
     name: i === 0 ? '' : NAMES[(i * 3 + s.id.length) % NAMES.length]!,
     classId: r.classes[i % r.classes.length]!.id,
     kinId: r.kins[i % r.kins.length]!.id,

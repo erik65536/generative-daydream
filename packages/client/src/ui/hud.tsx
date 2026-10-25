@@ -4,7 +4,7 @@ import { PX_PER_METRE, fogSize, rx, skillAp, skillRank, xpForLevel, type EntityV
 import { client, tryClient, useGame } from '../net/game';
 import { QuestTracker } from './tracker';
 import { Glyph } from './pad';
-import { statusName, weaponVisual } from '../rules';
+import { statusName } from '../rules';
 import { Bar, Portrait, SkillIcon, SkillTooltip, tip } from './common';
 import { Icon } from './svgicons';
 import { loadImage } from '../render/sprites';
@@ -47,7 +47,7 @@ export function PartyFrames() {
             )}
           >
             <div className="portrait">
-              <Portrait size={52} sprite={c.assetUrl(ch.sprite)} colors={ch.colors} seed={ch.id} archetype={ch.archetype} weapon={weaponVisual(ch)} presentation={ch.presentation} />
+              <Portrait size={52} sprite={c.assetUrl(ch.sprite)} />
             </div>
             <div className="grow" style={{ minWidth: 0 }}>
               <div className="name">
@@ -141,7 +141,7 @@ export function Minimap({ onOpen }: { onOpen: () => void }) {
       ctx.restore();
       for (const f of z.features) {
         if (!c.seen(f.x, f.y)) continue;
-        if (f.kind !== 'exit' && f.kind !== 'door' && f.kind !== 'waypoint') continue;
+        if (f.kind !== 'exit' && f.kind !== 'waypoint') continue;
         const p = mapP(f.x, f.y);
         ctx.fillStyle = f.kind === 'waypoint' ? '#8fd8ff' : '#ffe08a';
         ctx.beginPath();
@@ -332,7 +332,7 @@ export function TurnBar() {
         const downed = !!e && e.hp <= 0;
         return (
           <div key={o.id} className={`tp ${o.team} ${o.id === combat.activeId ? 'active' : ''} ${downed ? 'dead' : ''}`} {...tip(<div><b>{o.name}</b>{e ? <div className="tsub">{e.hp}/{e.maxHp} · {o.controllerUserId === userId ? 'you' : o.team === 'players' ? 'ally' : 'enemy'}</div> : <div className="tsub">out of sight</div>}</div>)}>
-            {e ? <Portrait size={42} sprite={c.assetUrl(e.sprite)} colors={e.colors} shape={e.shape} archetype={e.archetype} weapon={e.weapon} seed={e.id} kind={e.kind} /> : <span className="tp-unseen">{o.name.slice(0, 1)}</span>}
+            {e ? <Portrait size={42} sprite={c.assetUrl(e.sprite)} /> : <span className="tp-unseen">{o.name.slice(0, 1)}</span>}
           </div>
         );
       })}

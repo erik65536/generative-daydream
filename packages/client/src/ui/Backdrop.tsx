@@ -10,7 +10,6 @@ export function Backdrop({ palette }: { palette?: { primary: string; secondary: 
     let raf = 0;
     // A little drifting dust, barely there.
     const motes = Array.from({ length: 26 }, () => ({ x: Math.random(), y: Math.random(), s: Math.random(), p: Math.random() * 10 }));
-    const accent = hexToRgb(palette?.accent ?? '#d9b56a');
     const second = hexToRgb(palette?.secondary ?? '#2a2440');
     const draw = (t: number) => {
       const w = (c.width = window.innerWidth);

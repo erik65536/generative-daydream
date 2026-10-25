@@ -21,12 +21,19 @@ export interface RulesChoices {
   upgrades?: boolean;
   enchanting?: boolean;
   classes?: number;
+  /** Travel between visited cities from their waypoints (and items that take the party back): off unless chosen. */
+  fastTravel?: boolean;
 }
 
+/** The parts of a build an extra prompt can be aimed at. */
+export const PROMPT_TOPICS = ['story', 'places', 'people', 'monsters', 'rules', 'art'] as const;
+export type PromptTopic = (typeof PROMPT_TOPICS)[number];
+
 export interface WorldInput {
-  setting: string;
-  story?: string;
-  notes?: string;
+  /** What the daydream is: its setting and feel. */
+  theme: string;
+  /** Extra prompts, each read only by the steps of the build it is aimed at. */
+  prompts?: { topic: PromptTopic; text: string }[];
   size: WorldSize;
   length: GameLength;
   communication: CommunicationLevel;
@@ -82,9 +89,9 @@ export interface Painting {
   oy: number;
 }
 
-export type ZoneKind = 'town' | 'wilderness' | 'dungeon' | 'interior';
+export type ZoneKind = 'town' | 'wilderness' | 'dungeon';
 
-export type FeatureKind = 'door' | 'exit' | 'chest' | 'trap' | 'sign' | 'lore' | 'bed' | 'craft_station' | 'waypoint' | 'object';
+export type FeatureKind = 'exit' | 'chest' | 'trap' | 'sign' | 'lore' | 'craft_station' | 'waypoint' | 'object';
 
 /** Something in a place people interact with. Positions are ground metres. */
 export interface FeatureDef {
@@ -93,7 +100,7 @@ export interface FeatureDef {
   x: number;
   y: number;
   name?: string;
-  /** door/exit target. */
+  /** exit: where it leads. */
   targetZoneId?: string;
   targetFeatureId?: string;
   /** chest */
@@ -130,6 +137,8 @@ export interface ZoneDef {
   regionIndex: number;
   levelRange: [number, number];
   look: ZoneLook;
+  /** The painted map's size in tiles of 1024 px (columns, rows; at most 4 × 4). */
+  tiles: [number, number];
   /** Ground size in metres (set when painted). */
   width: number;
   height: number;
@@ -140,18 +149,14 @@ export interface ZoneDef {
   design?: { style: string; layout: string };
   features: FeatureDef[];
   spawns: SpawnDef[];
-  /** Interior parent (for buildings). */
-  parentZoneId?: string;
-  /** Inside a structure. */
+  /** Inside a structure (a cave, a hall): no sky, no weather. */
   indoor?: boolean;
-  /** Position on the world map (0..1). Interiors share their parent's. */
+  /** Position on the world map (0..1). */
   mapPos: { x: number; y: number };
   /** Zones directly connected (for the world map). */
   links: string[];
   /** Arrival point when entering without a specific exit (ground metres). */
   entry: { x: number; y: number };
-  /** Town building interiors list their purpose (worlds from before buildings were only painted). */
-  buildingPurpose?: string;
   /** A town's buildings: painted on its map, not entered; the people who work in one stand outside its entrance. */
   buildings?: { id: string; name: string; purpose: string; npcId: string }[];
   /** Hidden flavor used in NPC/LLM context. */
@@ -221,7 +226,8 @@ export interface NpcDef {
   barks: string[];
   level: number;
   archetype: MonsterArchetype;
-  canJoinParty: boolean;
+  /** One of the three heroes who travel with the player from the start (a world played with companions). */
+  companion?: { classId: string; kinId: string };
   essential: boolean;
   /** Quest ids this NPC can hand out. */
   questIds: string[];
@@ -269,7 +275,9 @@ export interface ArcDef {
 
 export interface AssetRecord {
   key: string;
-  kind: 'painting' | 'texture' | 'sprite' | 'object' | 'icon' | 'portrait';
+  /** painting: a place's map; texture: a place's mist; sprite: a character or creature's standing view; sheet: one
+   *  animation clip of a sprite (`ref`); object: something drawn over the maps; icon: an item's. */
+  kind: 'painting' | 'texture' | 'sprite' | 'sheet' | 'object' | 'icon';
   file?: string;
   /** Short brief of what to depict. */
   prompt: string;
@@ -283,20 +291,12 @@ export interface AssetRecord {
   /** Anchor (0..1) of the feet within the image for sprites. */
   anchorY?: number;
   error?: string;
-  /** Variants (pose frames, an open chest) are painted from this base asset's image. */
+  /** A sheet: the sprite it animates. */
   ref?: string;
-  /** Which variant this is (walk_a, walk_b, attack, open). */
-  variant?: string;
-  /** Variant height relative to its base (a lunge is shorter than a standing pose). */
-  relHeight?: number;
-  /** Animation strips (the walk cycle): number of equal frames side by side. */
-  frames?: number;
   /** Actors: the base view painted (front for people and upright figures, side for animals and other body plans), the one the 3D animation step builds from. */
   view?: 'front' | 'side';
   /** The chroma-key backdrop it was painted on (picked by the prompt writer; another one when the colours clash). */
   backdrop?: 'green' | 'blue' | 'magenta';
-  /** Art pipeline version that painted it (older art is repainted when the pipeline improves). */
-  gen?: number;
   /** Re-roll count: each owner-requested repaint uses fresh seeds. */
   roll?: number;
   /** A character or creature's animation: its clip sheets are the assets `<key>@anim-<clip>` (see world/anim.ts). */
@@ -310,20 +310,18 @@ export interface ArtOverride {
   roll?: number;
 }
 
+/** A class's look, and its heroes' sprites: one per kin (`spr_hero_<classId>_<kinId>`). */
 export interface OriginFlavor {
   id: string;
   name: string;
   description: string;
-  /** Legacy single sprite (used when no per-presentation sprite exists). */
-  asset?: string;
-  /** Sprite per chosen presentation. */
-  assets?: Partial<Record<'feminine' | 'masculine' | 'androgynous', string>>;
+  /** Sprite per kin id. */
+  assets?: Record<string, string>;
   appearance: string;
 }
 
 export interface WorldDefinition {
   id: string;
-  formatVersion: number;
   ownerId: string;
   ownerName: string;
   public: boolean;

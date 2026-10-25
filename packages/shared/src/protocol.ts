@@ -1,5 +1,5 @@
 /** WebSocket protocol between the browser and the authoritative game server. */
-import type { ActiveStatus, CharacterState, ItemInstance, JournalEntry, LootPile, PlayerState, Surface, DamageEvent, Presentation } from './world/instance';
+import type { ActiveStatus, CharacterState, ItemInstance, JournalEntry, LootPile, PlayerState, Surface, DamageEvent } from './world/instance';
 import type { ClientWorld, FeatureDef, ZoneDef } from './world/types';
 import type { QuestDef, Emotion } from './rules/quests';
 import type { MonsterArchetype, NpcRole } from './rules/actors';
@@ -230,7 +230,6 @@ export type ClientMessage =
   | { t: 'set_difficulty'; difficulty: DifficultyId }
   | { t: 'set_hotbar'; charId: string; hotbar: (string | null)[] }
   | { t: 'set_leader'; charId: string }
-  | { t: 'rest' }
   | { t: 'fast_travel'; zoneId: string }
   | { t: 'hard_save'; name: string }
   | { t: 'set_options'; open?: boolean; commandCompanions?: boolean }
@@ -241,7 +240,6 @@ export type ClientMessage =
    * screen has the leader: the server takes it (the walker's view decides), so stopping never snaps back.
    */
   | { t: 'steer'; dx: number; dy: number; x?: number; y?: number }
-  | { t: 'dismiss_companion'; charId: string }
   /** Developer options (admins only): go anywhere, see the whole map, reload the daydream after editing it. */
   | { t: 'dev'; action: 'goto'; zoneId: string; x?: number; y?: number }
   | { t: 'dev'; action: 'reveal' }
@@ -254,9 +252,6 @@ export interface CharacterSpec {
   name: string;
   classId: string;
   kinId: string;
-  /** Set only for people who are not players (a companion keeps their own); a player's follows their kin. */
-  presentation?: Presentation;
-  pronouns?: string;
   sprite?: string;
   colors?: string[];
 }

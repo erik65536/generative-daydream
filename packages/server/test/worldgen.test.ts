@@ -14,7 +14,16 @@ describe('world generation', () => {
   it('builds a valid medium world with companions', async () => {
     const w = await genWorld('A derelict space station orbiting a dying star, robots and aliens', 'medium', 'party_npc');
     expect(validateWorld(w)).toEqual([]);
-    expect(w.npcs.some((n) => n.canJoinParty)).toBe(true);
+    expect(w.npcs.filter((n) => n.companion).length).toBe(3);
+    // A crafter (and the crafting station at their workshop) in every town of a world with crafting.
+    if (w.ruleset.crafting.enabled) for (const t of w.zones.filter((z) => z.kind === 'town')) expect(t.features.some((f) => f.kind === 'craft_station')).toBe(true);
+    // Fast travel is off unless chosen: no waypoints, no way home in a bottle.
+    expect(w.zones.some((z) => z.features.some((f) => f.kind === 'waypoint'))).toBe(false);
+    expect(w.ruleset.items.some((i) => i.use?.tool === 'recall')).toBe(false);
+    // Every place sized within its kind, the world within its tile budget.
+    expect(w.zones.reduce((n, z) => n + z.tiles[0] * z.tiles[1], 0)).toBeLessThanOrEqual(55);
+    // Heroes are painted per class and kin; each kin is one gender.
+    expect(w.ruleset.kins.every((k) => ['feminine', 'masculine', 'androgynous'].includes(k.presentation) && k.appearance)).toBe(true);
   });
 });
 
@@ -26,7 +35,7 @@ describe('populating a place', () => {
     const room = (x: number, y: number) => (x > 1 && x < 15 && y > 1 && y < 15) || (x > 45 && x < 59 && y > 1 && y < 15);
     const nav = new Nav(makeNav(60, 16, (x, y) => room(x, y) || (x >= 15 && x <= 45 && y > 7 && y < 9)));
     z.spawns = [];
-    z.features = z.features.filter((f) => f.kind !== 'trap' && f.kind !== 'exit' && f.kind !== 'door');
+    z.features = z.features.filter((f) => f.kind !== 'trap' && f.kind !== 'exit');
     z.entry = { x: 4, y: 8 };
     const boss = w.bosses.find((b) => b.zoneId === z.id) ?? { ...w.bosses[0]!, zoneId: z.id };
     if (!w.bosses.includes(boss)) w.bosses.push(boss);

@@ -34,7 +34,7 @@ export function relation(a: Actor, b: Actor): 'ally' | 'enemy' | 'neutral' {
   if (a === b) return 'ally';
   const ta = a.team(), tb = b.team();
   if (a instanceof CharActor && b instanceof CharActor) return 'ally';
-  if (a instanceof CharActor && b instanceof NpcActor) return b.rt.hostileTo.includes(a.userId) ? 'enemy' : b.rt.partyOf === a.userId ? 'ally' : 'neutral';
+  if (a instanceof CharActor && b instanceof NpcActor) return b.rt.hostileTo.includes(a.userId) ? 'enemy' : 'neutral';
   if (a instanceof NpcActor && b instanceof CharActor) return a.rt.hostileTo.includes(b.userId) ? 'enemy' : 'neutral';
   if (ta === 'enemies' && tb === 'enemies') return 'ally';
   if ((ta === 'players' && tb === 'enemies') || (ta === 'enemies' && tb === 'players')) {

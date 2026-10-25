@@ -12,6 +12,7 @@
     "forceConsistentCasingInFileNames": true,
     "noFallthroughCasesInSwitch": true,
     "noImplicitOverride": true,
+    "noUnusedLocals": true,
     "lib": ["ES2023"],
     "types": []
   }

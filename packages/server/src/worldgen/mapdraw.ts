@@ -27,8 +27,20 @@ import type { Side } from './mapgrid';
 export const TILE = 1024;
 /** Painted pixels per ground metre. */
 export const PAINT_PXM = 40;
-/** Size of each kind of place, in tiles. */
-const TILES: Record<ZoneKind, [number, number]> = { town: [3, 2], wilderness: [4, 4], dungeon: [4, 2], interior: [1, 1] };
+/** A map's size in tiles (columns, rows). */
+export type Tiles = [number, number];
+/** The sizes each kind of place may have, in tiles (never more than 4 × 4), and its usual size. */
+export const TILE_RANGE: Record<ZoneKind, { min: Tiles; max: Tiles; usual: Tiles }> = {
+  town: { min: [2, 2], max: [3, 3], usual: [3, 2] },
+  wilderness: { min: [2, 2], max: [4, 4], usual: [3, 3] },
+  dungeon: { min: [2, 1], max: [4, 3], usual: [3, 2] },
+};
+/** A size held to its kind's range. */
+export function fitTiles(kind: ZoneKind, t?: readonly number[]): Tiles {
+  const r = TILE_RANGE[kind];
+  if (!t || t.length < 2) return [...r.usual];
+  return [0, 1].map((i) => Math.max(r.min[i]!, Math.min(r.max[i]!, Math.round(t[i]!)))) as Tiles;
+}
 /** How many whole-place paintings Sol chooses between. */
 const WHOLE_SEEDS = 8;
 /** Strength of the detail pass over the enlarged painting (0.5 let rooms drift; 0.3 keeps the plan exactly). */
@@ -40,9 +52,8 @@ const FADE_IN = 96, FADE_ALONG = 128;
 /** Rounds of Sol's review and road-closing repairs. */
 const CLOSE_ROUNDS = 3;
 
-/** Picture size and ground (m) of a place's map. */
-export function mapPixels(kind: ZoneKind): { W: number; H: number; X: number; Y: number; cols: number; rows: number } {
-  const [cols, rows] = TILES[kind];
+/** Picture size and ground (m) of a map of this many tiles. */
+export function mapPixels([cols, rows]: Tiles): { W: number; H: number; X: number; Y: number; cols: number; rows: number } {
   const W = cols * TILE, H = rows * TILE;
   return { W, H, X: W / PAINT_PXM, Y: H / PAINT_PXM, cols, rows };
 }
@@ -58,6 +69,8 @@ export interface MapBrief {
   artStyle: string;
   name: string;
   kind: ZoneKind;
+  /** The map's size. */
+  tiles: Tiles;
   indoor: boolean;
   description: string;
   lore?: string;
@@ -96,11 +109,11 @@ const PlanSchema = z.object({
 });
 export type MapPlan = z.infer<typeof PlanSchema>;
 
-const KIND_WORDS: Record<ZoneKind, string> = { town: 'a town or settlement', wilderness: 'a stretch of wild country', dungeon: 'a dungeon, cave or other dangerous inner place', interior: 'the inside of one building' };
+const KIND_WORDS: Record<ZoneKind, string> = { town: 'a town or settlement', wilderness: 'a stretch of wild country', dungeon: 'a dungeon, cave or other dangerous inner place' };
 
 /** Luna plans the map, knowing how it will be painted. */
 export async function planMap(b: MapBrief): Promise<MapPlan> {
-  const { cols, rows, X, Y } = mapPixels(b.kind);
+  const { cols, rows, X, Y } = mapPixels(b.tiles);
   const n = cols * rows;
   return genai().structured('world.design', {
     system: 'You are the level designer and art director of a 2D top-down RPG. Its places are painted by an image model (Krea 2) as big top-down maps, like tabletop battle maps, and players explore them on foot. Every place should be a memorable, fun level, not a generic one.',
@@ -139,12 +152,11 @@ const LEAD: Record<ZoneKind, string> = {
   town: 'A top-down game map seen from high above, looking almost straight down like a tabletop battle map: roofs, treetops and the ground between them are in plain view, and every street, path and open space is clearly visible. No horizon.',
   wilderness: 'A top-down game map seen from high above, looking almost straight down like a tabletop battle map: the ground, the tops of trees and rocks are in plain view, and every path and clearing is clearly visible. No horizon.',
   dungeon: 'A top-down dungeon map seen from high above, looking almost straight down like a tabletop battle map: floors and the tops of walls, pillars and objects are in plain view, and every room and passage floor is clearly visible. No horizon.',
-  interior: 'A top-down floor plan of the inside of one building seen from high above with the roof taken away, like a tabletop battle map: floors, furniture and the tops of the walls between rooms. No horizon.',
 };
 const TAIL = 'No grid, no text, no labels, no people, no creatures.';
 
 const wholePrompt = (b: MapBrief, p: MapPlan) => {
-  const { X, Y } = mapPixels(b.kind);
+  const { X, Y } = mapPixels(b.tiles);
   return `${LEAD[b.kind]} The whole of ${b.name} in one picture, the entire place seen at once from high above, about ${Math.round(X)} by ${Math.round(Y)} metres across, so everything in it is small and there are many of each thing: ${p.plan} ${p.ground} Every area is joined to the others by open paths, streets or corridors: one connected network with no cut-off rooms or areas. The painting fills the whole picture edge to edge. Art style: ${p.style}. ${TAIL}`;
 };
 const detailPrompt = (b: MapBrief, p: MapPlan, note: string) =>
@@ -328,23 +340,38 @@ export async function makeMap(b: MapBrief, p: MapPlan, seed: number, io: MapRun)
   return { png: checked.png, exits, review: checked.review, sound: whole.sound };
 }
 
-/** Eight whole-place paintings from noise; the best connected, top-down, on-theme one. */
+/**
+ * Eight whole-place paintings from noise; the best connected, top-down, on-theme one. The GPU paints them one after
+ * another while Luna and Sol judge those already painted.
+ */
 async function chooseWhole(b: MapBrief, p: MapPlan, theme: string, seed: number, io: MapRun): Promise<{ png: Buffer; sound: boolean }> {
-  const { W, H } = mapPixels(b.kind);
+  const { W, H } = mapPixels(b.tiles);
   const tw = Math.round(Math.sqrt((1.5e6 * W) / H) / 16) * 16, th = Math.round(tw / (W / H) / 16) * 16;
   const prompt = wholePrompt(b, p);
-  let best: { s: number; png: Buffer; sound: boolean } | undefined;
-  const tries: unknown[] = [];
+  type Judged = Awaited<ReturnType<typeof viewCheck>> & z.infer<typeof Connect>;
+  const judge = async (name: string, png: Buffer): Promise<Judged> => {
+    const saved = io.draft.json<Judged>(name);
+    if (saved) return saved;
+    const [view, connect] = await Promise.all([
+      viewCheck(png, theme),
+      sol(`A small painting of a whole top-down RPG level, ${theme}, seen from high above. Players walk on its open floors, streets, paths and corridors. Can a person walk from every room or area to every other one along open ground, without crossing walls, solid rock, buildings or deep water? Count the rooms or areas that are cut off from the main connected part.`, png, Connect, 'connected'),
+    ]);
+    const j = { ...view, ...connect };
+    io.draft.saveJson(name, j);
+    return j;
+  };
+  const judged: Promise<{ t: number; png: Buffer; j: Judged }>[] = [];
   for (let t = 0; t < WHOLE_SEEDS; t++) {
     const name = `whole_${seed + t}`;
     const png = io.draft.png(name) ?? (await io.gpu('krea', () => kreaPaint(prompt, tw, th, seed + t)));
     io.draft.savePng(name, png);
-    type Judged = Awaited<ReturnType<typeof viewCheck>> & z.infer<typeof Connect>;
-    const j = io.draft.json<Judged>(name) ?? {
-      ...(await viewCheck(png, theme)),
-      ...(await sol(`A small painting of a whole top-down RPG level, ${theme}, seen from high above. Players walk on its open floors, streets, paths and corridors. Can a person walk from every room or area to every other one along open ground, without crossing walls, solid rock, buildings or deep water? Count the rooms or areas that are cut off from the main connected part.`, png, Connect, 'connected')),
-    };
-    io.draft.saveJson(name, j);
+    const out = judge(name, png).then((j) => ({ t, png, j }));
+    out.catch(() => undefined);
+    judged.push(out);
+  }
+  let best: { s: number; png: Buffer; sound: boolean } | undefined;
+  const tries: unknown[] = [];
+  for (const { t, png, j } of await Promise.all(judged)) {
     const sound = j.connected && !j.steep && j.detailed;
     const s = (sound ? 10 : 0) + (j.connected ? 5 : -2 * j.cutOff) + 2 * j.theme - (j.steep ? 5 : 0);
     tries.push({ seed: seed + t, connected: j.connected, cutOff: j.cutOff, steep: j.steep, theme: j.theme });
@@ -358,7 +385,7 @@ async function chooseWhole(b: MapBrief, p: MapPlan, theme: string, seed: number,
 async function enlarge(b: MapBrief, whole: Buffer, seed: number, io: MapRun): Promise<Buffer> {
   const saved = io.draft.png('enlarged');
   if (saved) return saved;
-  const { W, H } = mapPixels(b.kind);
+  const { W, H } = mapPixels(b.tiles);
   const meta = await sharp(whole).metadata();
   const factor = Math.max(2, Math.round(Math.max(W / meta.width!, H / meta.height!)));
   const big = await io.gpu('seedvr2', () => upscale(whole, factor, seed));
@@ -375,7 +402,7 @@ const NotesSchema = z.object({ tiles: z.array(z.string().min(40).max(400)) });
  * of the painting shows.
  */
 async function detail(b: MapBrief, p: MapPlan, guide: Buffer, seed: number, io: MapRun): Promise<Buffer> {
-  const { W, H, cols, rows } = mapPixels(b.kind);
+  const { W, H, cols, rows } = mapPixels(b.tiles);
   const notes = io.draft.json<string[]>('notes') ?? (await partNotes(b, p, guide, cols, rows));
   io.draft.saveJson('notes', notes);
   const S = TILE, ST = 768, R = (S - ST) / 2;
@@ -440,10 +467,9 @@ const plannedExits = (sides: Side[]): MapExit[] => {
 async function placeExits(b: MapBrief, p: MapPlan, map: Buffer, io: MapRun): Promise<MapExit[]> {
   const saved = io.draft.json<MapExit[]>('exitspots');
   if (saved) return saved;
-  const { W, H } = mapPixels(b.kind);
+  const { W, H } = mapPixels(b.tiles);
   const cv = await Raster.of(map);
-  const out: MapExit[] = [];
-  for (const e of plannedExits(b.sides)) {
+  const out = await Promise.all(plannedExits(b.sides).map(async (e): Promise<MapExit> => {
     const n = along(e.side, W, H);
     const cands = Array.from({ length: 7 }, (_, j) => Math.max(0.1, Math.min(0.9, e.at + (j - 3) * 0.067)));
     const a0 = Math.max(0, Math.round(cands[0]! * n - 256)), a1 = Math.min(n, Math.round(cands[6]! * n + 256)), D = 448;
@@ -455,8 +481,8 @@ async function placeExits(b: MapBrief, p: MapPlan, map: Buffer, io: MapRun): Pro
     const marks = fr.map((t, j) => `<circle cx="${t * cw}" cy="34" r="22" fill="white" fill-opacity="0.9" stroke="black" stroke-width="3"/><text x="${t * cw}" y="45" font-size="30" font-family="Arial" font-weight="bold" text-anchor="middle" fill="black">${j + 1}</text>`).join('');
     const img = await sharp(crop).composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${cw}" height="${meta.height}">${marks}</svg>`), left: 0, top: 0 }]).png().toBuffer();
     const pick = await sol(`A strip along the edge of a top-down game map of ${b.name}; the top edge of this picture is the outer edge of the map. A way out of the map will be made at one of the numbered spots (1–7): a path about 4 m wide from that spot straight down into the place for about 8 m, then joining it. Pick the number where such a path would join the place most naturally and need the least change: where a street, path, clearing or open floor already reaches closest to the edge, with no building, water, wall or large object in the way.`, img, z.object({ spot: z.number().int().min(1).max(7), reason: z.string().max(300) }), 'exit_spot');
-    out.push({ side: e.side, at: +cands[pick.spot - 1]!.toFixed(3) });
-  }
+    return { side: e.side, at: +cands[pick.spot - 1]!.toFixed(3) };
+  }));
   io.draft.saveJson('exitspots', out);
   return out;
 }
@@ -584,12 +610,16 @@ async function checkAndClose(b: MapBrief, p: MapPlan, map: Buffer, exits: MapExi
     const r = exitRect(e, W, H, GAP, BAND), cx = (r.x0 + r.x1) / 2, cy = (r.y0 + r.y1) / 2;
     return cv.crop(Math.max(0, Math.min(W - CROP, Math.round(cx - CROP / 2))), Math.max(0, Math.min(H - CROP, Math.round(cy - CROP / 2))), CROP, CROP).then((c) => edgeUp(c, e.side));
   };
+  const isOpen = async (e: MapExit, t: number) => {
+    const open = await sol(`A piece of a top-down game map of ${theme}, seen from high above. The top edge of this picture is the outer edge of the map, closed off by ${p.barrier}. Near the middle of the top edge there must be a way out: can a person walk on open ground from the place (the lower part of the picture) up through the barrier and off the top edge, without crossing ${p.barrier}, buildings, water, walls or other obstacles? Answer true only if they clearly can.`, await exitCrop(e), z.object({ answer: z.boolean(), reason: z.string().max(400) }), 'exit_open');
+    log.push({ exit: e, try: t, open: open.answer, why: open.reason });
+    return open.answer;
+  };
+  const first = await Promise.all(exits.map((e) => isOpen(e, 0)));
   for (const [k, e] of exits.entries())
-    for (let t = 0; t <= 2; t++) {
-      const open = await sol(`A piece of a top-down game map of ${theme}, seen from high above. The top edge of this picture is the outer edge of the map, closed off by ${p.barrier}. Near the middle of the top edge there must be a way out: can a person walk on open ground from the place (the lower part of the picture) up through the barrier and off the top edge, without crossing ${p.barrier}, buildings, water, walls or other obstacles? Answer true only if they clearly can.`, await exitCrop(e), z.object({ answer: z.boolean(), reason: z.string().max(400) }), 'exit_open');
-      log.push({ exit: e, try: t, open: open.answer, why: open.reason });
-      if (open.answer || t === 2) break;
-      await wayOut(cv, b, p, e, BAND + 14 * 32, seed + 900 + 10 * k + t, io);
+    for (let t = 1, open = first[k]; !open && t <= 2; t++) {
+      await wayOut(cv, b, p, e, BAND + 14 * 32, seed + 900 + 10 * k + t - 1, io);
+      open = await isOpen(e, t);
     }
   const tex = await barrierTexture(p, seed, io);
   const review = async () => sol(`You are a senior level designer reviewing an AI-painted top-down RPG level: ${theme}. It is closed round its edge by ${p.barrier} with ways out only at: ${exits.map((e) => `${e.side} edge at ${Math.round(e.at * 100)}%`).join('; ')}. A slight viewing angle is fine as long as no walkable ground is hidden behind tall things. Judge it as a playable level: usable (true if a game could ship it as is: coherent, seamless, closed except at the planned exits, walkable ground in view), and score 1–10 how fun and interesting it would be to explore, how coherent its overall layout is, and how strongly it shows its theme. In "problems", name the worst problems and where they are. In "extraOpenings", list every place OTHER than the planned exits where a person could walk off the map through or around the barrier (a road, street, passage, path or gap reaching the edge): its side, and its position along that side from 0 (left or top end) to 1 (right or bottom end).`, await cv.png(), ReviewSchema, 'level_review');

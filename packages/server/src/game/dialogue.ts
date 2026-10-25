@@ -16,11 +16,8 @@ import { NotConfigured } from '../genai/types';
 import { currentObjectiveIndex, objectivesOf, type QuestEngine } from './quests';
 import type { WorldCtx } from './worldctx';
 
-/** A recruitable person's starting feeling toward the player ("friendly"), and the feeling at which they agree to come along. */
-const RECRUIT_START = 30;
-const JOIN_AT = 15;
-/** The player asks someone to come along. */
-const ASKS_TO_JOIN = /\b(join (me|us|my|our)|travel with|come with (me|us)|come along|be my companion|companion|join (the|my|our) (party|team|group|crew|squad)|team up|adventure together|tag along|fight (with|alongside) (me|us))/i;
+/** A companion's starting feeling toward the player: they set out together. */
+const COMPANION_START = 40;
 
 export interface DialogueHost {
   ctx: WorldCtx;
@@ -34,8 +31,6 @@ export interface DialogueHost {
   npcAttack(npcId: string, userId: string): void;
   callGuards(npcId: string, userId: string): void;
   npcFlee(npcId: string, userId: string): void;
-  joinParty(userId: string, npcId: string): string | null;
-  leaveParty(userId: string, npcId: string): void;
   giveItemsToPlayer(userId: string, items: ItemInstance[]): void;
   takeItemFromPlayer(userId: string, itemId: string): ItemInstance | null;
   revealZone(userId: string, zoneId: string): boolean;
@@ -86,8 +81,7 @@ export class DialogueEngine {
   }
 
   disposition(rt: NpcRuntime, userId: string) {
-    // People who could travel with the player were written as companions: they start out well disposed.
-    return rt.disposition[userId] ?? (this.recruitable(rt) ? RECRUIT_START : 0);
+    return rt.disposition[userId] ?? (this.npc(rt.npcId)?.companion ? COMPANION_START : 0);
   }
 
   private send(userId: string) {
@@ -169,8 +163,6 @@ export class DialogueEngine {
     if (persuade[0]) out.push(`About ${persuade[0].description.toLowerCase().replace(/^persuade\s+\S+\s+(to\s+)?/, '')}...`.slice(0, 80));
     if (def.role === 'innkeeper') out.push('I need a room for the night.');
     if (this.teachList(def, p).length) out.push('Can you teach me something?');
-    if (def.canJoinParty && !rt.partyOf) out.push('Would you travel with me?');
-    if (rt.partyOf === userId) out.push('It is time we parted ways.');
     out.push(`What's the news around here?`);
     out.push('Farewell.');
     return out.slice(0, 5);
@@ -185,9 +177,6 @@ export class DialogueEngine {
     if (!p || !def || !rt) return;
     const s: Session = { npcId, messages: [], thinking: false, ended: false };
     this.sessions.set(userId, s);
-    // Older saves kept every "hello again"; drop them so history holds what was actually said.
-    const stock = new Set(Object.values(DialogueEngine.greetings(p.name)).flat());
-    if (p.conversations[npcId]) p.conversations[npcId] = p.conversations[npcId]!.filter((t) => !(t.speaker === 'npc' && stock.has(t.text)));
     // Recent history so the conversation feels continuous.
     for (const t of (p.conversations[npcId] ?? []).slice(-6)) s.messages.push({ speaker: t.speaker, text: t.text, emotion: t.emotion });
     const events: string[] = [];
@@ -323,26 +312,11 @@ export class DialogueEngine {
     this.h.playerChanged(p);
   }
 
-  /** Could join the player's party now (a companion in a world played with recruited companions). */
-  private recruitable(rt: NpcRuntime): boolean {
-    const def = this.h.ctx.npcs.get(rt.npcId);
-    return !!def?.canJoinParty && !rt.partyOf && this.h.ctx.world.input.combatMode === 'party_npc';
-  }
-
-  /**
-   * The player asks a recruitable person who likes them to come along: they say yes. The decision is made here
-   * so the spoken reply (written to match the decision) and the outcome agree.
-   */
-  private acceptsJoin(p: PlayerState, def: NpcDef, rt: NpcRuntime, text: string): boolean {
-    return !!text && this.recruitable(rt) && def.canJoinParty && ASKS_TO_JOIN.test(text) && this.disposition(rt, p.userId) >= JOIN_AT;
-  }
-
   // ------------------------------------------------------------------ LLM decision
 
   private persona(p: PlayerState, def: NpcDef, rt: NpcRuntime): string {
     const w = this.h.ctx.world;
     const zone: ZoneDef | undefined = this.h.ctx.zones.get(rt.zoneId);
-    const outer = zone?.parentZoneId ? this.h.ctx.zones.get(zone.parentZoneId) : zone;
     const disp = this.disposition(rt, p.userId);
     const mems = rt.memories.filter((m) => m.about === p.userId || m.about === 'world').slice(-12);
     const label = disp > 60 ? 'deep trust and affection' : disp > 25 ? 'friendly' : disp > -10 ? 'neutral, still forming an opinion' : disp > -40 ? 'wary and unfriendly' : 'hostile and contemptuous';
@@ -350,7 +324,8 @@ export class DialogueEngine {
       `You are ${def.name}, ${def.title}, a character in "${w.concept.title}". ${w.concept.pitch}`,
       `Tone of the world: ${w.concept.tone}.`,
       `YOU (${def.pronouns}): personality — ${def.personality}. Voice — ${def.voice}. Backstory — ${def.backstory}${def.faction ? ` Faction: ${def.faction}.` : ''}`,
-      `You are in ${zone?.name ?? 'town'}${outer && outer !== zone ? `, in ${outer.name}` : ''}: ${outer?.description ?? ''} It is ${this.h.timeOfDay()} on day ${this.h.day()}.`,
+      def.companion ? `You are one of ${p.name}'s companions: you set out together and travel and fight beside them. You talk as a friend on the road, about the journey, what lies ahead and your own reasons for coming.` : '',
+      `You are in ${zone?.name ?? 'town'}: ${zone?.description ?? ''} It is ${this.h.timeOfDay()} on day ${this.h.day()}.`,
       def.knowledge.length ? `Things you know and may share when relevant:\n${def.knowledge.map((k) => `- ${k}`).join('\n')}` : '',
       def.secrets.length ? `Secrets you keep (reveal only if the player earns real trust or truly persuades you):\n${def.secrets.map((k) => `- ${k}`).join('\n')}` : '',
       `World facts you might know:\n${w.worldFacts.slice(0, 6).map((f) => `- ${f}`).join('\n')}`,
@@ -387,8 +362,6 @@ export class DialogueEngine {
     if (rt.gold > 0) allowed.push('give_gold');
     if (def.role === 'merchant' || def.role === 'innkeeper' || def.role === 'crafter') allowed.push('open_trade');
     if (this.teachList(def, p).length) allowed.push('teach_skill');
-    if (def.canJoinParty && !rt.partyOf) allowed.push('join_party');
-    if (rt.partyOf === userId) allowed.push('leave_party');
     if (knownZones.length) allowed.push('reveal_location');
     if (this.h.ctx.r.systems.dynamicQuests) allowed.push('create_quest');
     if (def.role !== 'guard' && this.h.ctx.townOf(rt.zoneId)) allowed.push('call_guards');
@@ -409,12 +382,6 @@ export class DialogueEngine {
     if (npcItems.length) lines.push(`ITEMS YOU HAVE (give_item with itemRef):\n${npcItems.map((it, i) => `- item${i}: ${this.h.ctx.itemName(it)} — ${this.h.ctx.itemDescription(it)}`).join('\n')}`);
     if (this.teachList(def, p).length) lines.push(`SKILLS YOU CAN TEACH for ${this.teachPrice(p)} ${this.h.ctx.r.terminology.currency} (teach_skill with skillId):\n${this.teachList(def, p).map((sk) => `- ${sk}: ${this.h.ctx.skillName(sk)} — ${rx(this.h.ctx.r).skill.get(sk)?.description ?? ''}`).join('\n')}`);
     if (allowed.includes('open_trade')) lines.push('You run a shop: use open_trade when the player wants to buy or sell.');
-    if (allowed.includes('join_party'))
-      lines.push(
-        this.acceptsJoin(p, def, rt, input.text)
-          ? `The player is asking you to travel with them, and you like them: you accept and join (join_party), in your own voice and manner.`
-          : `You are ready to travel with the player as a companion (join_party) — part of why you are here. If they ask and have not mistreated you, say yes, perhaps with a condition or a remark in character; do not string them along.`,
-      );
     if (knownZones.length) lines.push(`PLACES YOU KNOW (reveal_location with zoneId when you tell them how to get there): ${knownZones.map((zz) => `${zz.id}=${zz.name}`).join(', ')}`);
     if (gift) lines.push(`GIFTS: you could give ${p.name} something you can spare (give_gift with gift = supplies: remedies and consumables; gear: a piece of equipment; material: crafting stock; keepsake: something of small value) — as thanks, out of friendship, or to help with a danger you talked about. ${gift === 'generous' ? 'You feel generous toward them.' : 'Something modest.'} Not every conversation.`);
     if (untold.length) lines.push(`SECRETS YOU COULD CONFIDE (share_secret with secretRef, only when trust is earned or you are truly persuaded): ${untold.map((i) => `secret${i}`).join(', ')} — the secrets listed above, in order (secret0 is the first).`);
@@ -488,16 +455,15 @@ export class DialogueEngine {
       secretRef: a.secretRef === 'none' ? undefined : a.secretRef ?? undefined,
       lead: a.lead ?? undefined,
     }));
-    if (this.acceptsJoin(p, def, rt, input.text) && !actions.some((a) => a.type === 'join_party')) actions.push({ type: 'join_party' });
     return { actions, emotion: out.emotion as Emotion, speech: out.speech };
   }
 
   private knownZones(def: NpcDef, rt: NpcRuntime): ZoneDef[] {
-    const home = this.h.ctx.zones.get(this.h.ctx.outerZone(rt.zoneId));
+    const home = this.h.ctx.zones.get(rt.zoneId);
     if (!home) return [];
     const near = new Set<string>([home.id, ...home.links]);
     for (const l of home.links) for (const l2 of this.h.ctx.zones.get(l)?.links ?? []) near.add(l2);
-    return [...near].map((id) => this.h.ctx.zones.get(id)!).filter((z) => z && z.kind !== 'interior' && z.regionIndex <= home.regionIndex + 1).slice(0, 10);
+    return [...near].map((id) => this.h.ctx.zones.get(id)!).filter((z) => z && z.regionIndex <= home.regionIndex + 1).slice(0, 10);
     void def;
   }
 
@@ -524,7 +490,6 @@ export class DialogueEngine {
 
   private execute(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, actions: NpcAction[], input: { offered?: ItemInstance; gold?: number }): string[] {
     const notes: string[] = [];
-    const w = this.h.ctx.world;
     let disp = 0;
     let giftHandled = false;
     let leads = 0;
@@ -635,15 +600,6 @@ export class DialogueEngine {
             this.h.npcFlee(def.id, userId);
             notes.push(`${def.name} runs away.`);
             break;
-          case 'join_party': {
-            const err = this.h.joinParty(userId, def.id);
-            notes.push(err ?? `${def.name} joins your ${this.h.ctx.r.terminology.party.toLowerCase()}.`);
-            break;
-          }
-          case 'leave_party':
-            this.h.leaveParty(userId, def.id);
-            notes.push(`${def.name} leaves your ${this.h.ctx.r.terminology.party.toLowerCase()}.`);
-            break;
           case 'change_disposition':
             disp += Math.max(-25, Math.min(25, Math.round(a.amount ?? 0)));
             break;
@@ -737,7 +693,7 @@ export class DialogueEngine {
     const target = (spec.target ?? spec.description).toLowerCase();
     const findNpc = () => [...ctx.npcs.values()].find((n) => target.includes(n.name.toLowerCase()) || n.name.toLowerCase().includes(target)) ?? ctx.npcs.get(npcId);
     const findFamily = () => ctx.world.families.find((f) => target.includes(f.name.toLowerCase()) || f.members.some((m) => target.includes(m.name.toLowerCase())) || f.name.toLowerCase().includes(target));
-    const findZone = () => ctx.world.zones.find((z) => z.kind !== 'interior' && (target.includes(z.name.toLowerCase()) || z.name.toLowerCase().includes(target)));
+    const findZone = () => ctx.world.zones.find((z) => target.includes(z.name.toLowerCase()) || z.name.toLowerCase().includes(target));
     const base = { id: 'tmp', description: spec.description.slice(0, 240) };
     switch (spec.type) {
       case 'talk':
@@ -778,7 +734,6 @@ export class DialogueEngine {
 
   private simpleDecision(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: { text: string; offered?: ItemInstance; gold?: number; skillId?: string; event?: string }): { actions: NpcAction[]; emotion: Emotion; speech: string } {
     const t = input.text.toLowerCase();
-    const w = this.h.ctx.world;
     const actions: NpcAction[] = [];
     const say: string[] = [];
     let emotion: Emotion = 'neutral';
@@ -830,15 +785,6 @@ export class DialogueEngine {
         say.push(disp < -40 && def.role === 'guard' ? 'That is enough. You are under arrest!' : pickLine(['How dare you.', 'I don\'t have to listen to this.', 'Charming. Truly.'], def.name));
         if (disp < -40 && def.role === 'guard') actions.push({ type: 'attack' });
         emotion = 'angry';
-      } else if (rt.partyOf === userId && has('part ways', 'leave the party', 'go home', 'dismiss', 'parted')) {
-        actions.push({ type: 'leave_party' });
-        say.push('If that is what you want. You know where to find me.');
-      } else if (def.canJoinParty && !rt.partyOf && ASKS_TO_JOIN.test(t)) {
-        if (disp >= -5) {
-          actions.push({ type: 'join_party' });
-          say.push(pickLine(['About time someone asked. Lead the way.', 'Why not? It beats sitting here.', 'Alright. But I take my share of the loot.'], def.name));
-          emotion = 'happy';
-        } else say.push("I don't know you well enough for that.");
       } else if ((def.role === 'merchant' || def.role === 'crafter' || def.role === 'innkeeper') && has('buy', 'sell', 'wares', 'trade', 'shop', 'goods', 'store', 'merchandise')) {
         actions.push({ type: 'open_trade' });
         say.push(pickLine(['Take a look. Everything is priced fairly.', 'See anything you like?', 'Coin first, questions later.'], def.name));

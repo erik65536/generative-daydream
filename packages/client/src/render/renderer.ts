@@ -10,7 +10,7 @@ import {
 } from '@gd/shared';
 import type { GameClient, ZoneData } from '../net/game';
 import { hexToRgb, mix, rgb, type RGB } from './color';
-import { drawFigure, drawImageSprite, loadImage } from './sprites';
+import { drawImageSprite, drawPlaceholder, loadImage } from './sprites';
 import { advance, cellBounds, drawCell, frameOf, newMotion, playOnce, rowOf, type Motion } from './actors';
 import { PlaceLight, type FigureLight } from './light';
 import { Mist, type MistFrame } from './mist';
@@ -34,7 +34,7 @@ const OBJECT_ART: Record<string, { key: string; height: number }> = {
   waypoint: { key: 'obj_waypoint', height: 2.1 },
 };
 /** Features one uses (they glow when near). Doors and ways out light up on hover. */
-const USABLE = new Set(['chest', 'sign', 'lore', 'bed', 'craft_station', 'waypoint', 'object']);
+const USABLE = new Set(['chest', 'sign', 'lore', 'craft_station', 'waypoint', 'object']);
 
 let lootCanvas: HTMLCanvasElement | null = null;
 /** A dropped satchel (drawn once). */
@@ -516,9 +516,9 @@ export class Renderer {
             this.hitRects.push({ id: f.id, kind: 'feature', x: s.x, y: s.y, w: art.width * this.zoom, h: art.height * this.zoom, depth });
             return;
           }
-          // Everything else is in the painting (a door, a bed, the thing a quest asks about) or small (a note):
+          // Everything else is in the painting (a way out, the thing a quest asks about) or small (a note):
           // a mark on the ground shows it can be used.
-          const glow = liveTrap ? 1 : hovered ? 1 : f.kind === 'door' || f.kind === 'exit' ? 0.25 + proximity * 0.45 : usable ? 0.2 + proximity * (0.4 + pulse * 0.3) : 0;
+          const glow = liveTrap ? 1 : hovered ? 1 : f.kind === 'exit' ? 0.25 + proximity * 0.45 : usable ? 0.2 + proximity * (0.4 + pulse * 0.3) : 0;
           if (glow > 0.01) this.groundMark(f, glow, liveTrap);
           const s = this.groundToScreen(f.x, f.y, 24);
           this.hitRects.push({ id: f.id, kind: 'feature', x: s.x - 26 * this.zoom, y: s.y - 30 * this.zoom, w: 52 * this.zoom, h: 64 * this.zoom, depth });
@@ -556,11 +556,10 @@ export class Renderer {
     ctx.arc(0, 0, r, 0, Math.PI * 2);
     ctx.stroke();
     ctx.restore();
-    if (f.kind === 'door' || f.kind === 'exit') {
-      // An arrow on the ground pointing the way through: into the building, or out of the place.
+    if (f.kind === 'exit') {
+      // An arrow on the ground pointing the way out of the place.
       const z = this.client.state.zone!;
-      const into = f.kind === 'door' && !!this.client.state.world?.zones.find((x) => x.id === f.targetZoneId && x.parentZoneId === z.id);
-      const dx = into ? -1 : f.x - z.entry.x, dy = into ? -1 : f.y - z.entry.y;
+      const dx = f.x - z.entry.x, dy = f.y - z.entry.y;
       const len = Math.hypot(dx, dy) || 1;
       const a = pic(f.x - (dx / len) * 0.25, f.y - (dy / len) * 0.25), b = pic(f.x + (dx / len) * 0.35, f.y + (dy / len) * 0.35);
       const ang = Math.atan2(b.y - a.y, b.x - a.x);
@@ -712,15 +711,13 @@ export class Renderer {
       if (e.dead) a.death = Math.min(1, a.death + dt * 1.2);
       a.fade = Math.min(1, a.fade + dt * 3);
       const p = pic(a.px, a.py);
-      // Screen-space facing from the ground direction.
-      const fx = Math.cos(a.face), fy = Math.sin(a.face);
-      const sdx = fx - fy, sdy = (fx + fy) / 2;
-      if (sdx < -0.3) a.dir = -1;
-      else if (sdx > 0.3) a.dir = 1;
+      // A still sprite faces left or right as it goes (the map is top-down: ground x is screen x).
+      const fx = Math.cos(a.face);
+      if (fx < -0.3) a.dir = -1;
+      else if (fx > 0.3) a.dir = 1;
       const anim = this.actorAnim(e.sprite);
       if (anim) advance(a.motion, anim, dt, a.moving && gap <= 2.5, gap > 2.5 || !dt ? 0 : moved / dt, !!(e.dead || e.downed));
       const dir = a.dir;
-      const back = sdy < -0.25;
       const depth = a.py + 0.05;
       const hovered = this.hover.entityId === e.id;
       const active = combat?.activeId === e.id;
@@ -770,11 +767,7 @@ export class Renderer {
             this.drawLit(b.half * 2, b.above, l, (g) => drawCell(g, sheet, anim, frameOf(a.motion, c), rowOf(a.face), e.scale), fallen, b.below);
           } else this.drawLit(height * 1.5, height * 1.1, l, (g) => {
             if (img) drawImageSprite(g, img, { height, dir, walk, amt: a.amt, t: this.t, downed: e.downed, hurt: a.hurt, attack: a.attack });
-            else
-              drawFigure(g, {
-                shape: e.shape, colors: e.colors.length ? e.colors : e.kind === 'character' ? ['#4a6a9a', '#2a3448', '#e0c060'] : ['#7a6a5a', '#4a3a30', '#d0b080'], scale: e.scale * 1.15, dir, back, walk, t: this.t, weapon: e.weapon, archetype: e.archetype,
-                seed: e.id, downed: e.downed, hurt: a.hurt, attack: a.attack, role: e.role, kind: e.kind, amt: a.amt, presentation: e.presentation,
-              });
+            else drawPlaceholder(g, height, e.downed);
           }, e.downed);
           ctx.shadowBlur = 0;
           if (e.statuses.some((s) => s.id === 'frozen')) {
@@ -945,7 +938,6 @@ export class Renderer {
     const fs = this.client.state.features.get(f.id);
     switch (f.kind) {
       case 'exit':
-      case 'door':
         return f.name ?? 'Passage';
       case 'chest':
         return `${f.name ?? 'Chest'}${f.lockLevel && !fs?.unlocked ? ' (locked)' : fs?.empty ? ' (empty)' : ''}`;

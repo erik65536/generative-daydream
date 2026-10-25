@@ -4,7 +4,8 @@
  * over the paintings (a chest, a sign, the waypoint), and item icons. Each image's brief comes from the world; Luna
  * writes the image prompts and picks their backdrops, and checks the results.
  */
-import { kinPresentation, type Presentation, type WorldDefinition } from '@gd/shared';
+import type { KinDef, Presentation, WorldDefinition } from '@gd/shared';
+import { heroSprite } from '../game/characters';
 import { BudgetExceeded } from '../genai/spend';
 import { z } from 'zod';
 import { assetBrief, imagePromptSystem, produceAssets, promptEntry, type ImageRecord as AssetRecord } from '../genai/images';
@@ -13,25 +14,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { worldAssetDir } from '../storage';
 
-/** Bump when the pipeline improves enough that existing art should be repainted. */
-export const ART_VERSION = 4;
-
-const PRESENTATIONS = ['feminine', 'masculine', 'androgynous'] as const;
-/** Player heroes come in each presentation a kin can have (each kin of a world is one); the class look itself stays gender-neutral. */
-const PRESENTATION_SUBJECT: Record<(typeof PRESENTATIONS)[number], string> = {
+/** Each kin is one gender: its heroes are drawn as it, and it must read at a glance from the front, at game size. */
+const PRESENTATION_SUBJECT: Record<Presentation, string> = {
   feminine: 'a woman (clearly female if not human)',
   masculine: 'a man (clearly male if not human)',
   androgynous: 'an androgynous person, neither clearly male nor female',
 };
 
-/** The presentations this world's heroes come in: those of its kins (all three before its rules exist). */
-const heroPresentations = (w: WorldDefinition): readonly Presentation[] => {
-  const kins = w.ruleset?.kins ?? [];
-  return kins.length ? PRESENTATIONS.filter((p) => kins.some((k) => kinPresentation(kins, k.id) === p)) : PRESENTATIONS;
-};
-
-/** The presentation must read at a glance from the front, at game size, whatever the class description says. */
-const PRESENTATION_LOOK: Record<(typeof PRESENTATIONS)[number], string> = {
+const PRESENTATION_LOOK: Record<Presentation, string> = {
   feminine: 'Her face, build and hair read as unmistakably feminine at a glance from the front (hair visible around the face or shoulders), and her outfit is cut for her, keeping its colours and pieces.',
   masculine: 'His face, build and hair read as unmistakably masculine at a glance from the front, and his outfit is cut for him, keeping its colours and pieces.',
   androgynous: 'Their face, build and hair are deliberately ambiguous, neither clearly male nor female, and their outfit keeps its colours and pieces.',
@@ -79,7 +69,7 @@ export interface ArtEntry {
 
 /**
  * Every asset the world uses. Repainted when missing or failed, when the brief or the owner's image prompt
- * changed, when re-rolled, or when made by an older pipeline.
+ * changed, or when re-rolled.
  */
 function collectAssets(w: WorldDefinition, level: 'essential' | 'full'): { rec: AssetRecord; entry: ArtEntry }[] {
   const out: { rec: AssetRecord; entry: ArtEntry }[] = [];
@@ -89,17 +79,18 @@ function collectAssets(w: WorldDefinition, level: 'essential' | 'full'): { rec: 
     const prompt = ov?.brief?.trim() || derived;
     const roll = ov?.roll ?? 0;
     const custom = ov?.imagePrompt?.trim() || undefined;
-    const stale = !prev || prev.status !== 'ok' || prev.prompt !== prompt || (prev.gen ?? 1) < ART_VERSION || (prev.roll ?? 0) !== roll || (!!custom && prev.imagePrompt !== custom);
+    const stale = !prev || prev.status !== 'ok' || prev.prompt !== prompt || (prev.roll ?? 0) !== roll || (!!custom && prev.imagePrompt !== custom);
     // A written prompt is kept while its brief stands, with the backdrop and view chosen with it.
-    const reuse = prev?.prompt === prompt && (prev.gen ?? 1) >= ART_VERSION && prev.imagePrompt && prev.backdrop ? { imagePrompt: prev.imagePrompt, backdrop: prev.backdrop, view: prev.view } : {};
+    const reuse = prev?.prompt === prompt && prev.imagePrompt && prev.backdrop ? { imagePrompt: prev.imagePrompt, backdrop: prev.backdrop, view: prev.view } : {};
     out.push({
-      rec: { key, kind, prompt, status: 'pending', gen: ART_VERSION, roll: roll || undefined, ...reuse, ...(custom ? { imagePrompt: custom } : {}), ...extra },
+      rec: { key, kind, prompt, status: 'pending', roll: roll || undefined, ...reuse, ...(custom ? { imagePrompt: custom } : {}), ...extra },
       entry: { key, kind, brief: prompt, defaultBrief: derived, stale },
     });
   };
-  // People are seen from the front; the prompt writer picks a creature's view by its body plan. Heroes are painted
-  // in the presentations this world's kins have (each kin is one), not all three.
-  for (const o of w.origins) for (const pres of heroPresentations(w)) add(`spr_origin_${o.id}_${pres}`, 'sprite', `The player's hero, ${PRESENTATION_SUBJECT[pres]}, a ${o.name}: ${o.appearance}. ${PRESENTATION_LOOK[pres]}`, { view: 'front' });
+  // People are seen from the front; the prompt writer picks a creature's view by its body plan. A hero is painted
+  // for every class and kin: the kin's body and gender in the class's outfit.
+  const kin = (k: KinDef) => `${PRESENTATION_SUBJECT[k.presentation]} of the ${k.name} (${k.appearance})`;
+  for (const o of w.origins) for (const k of w.ruleset?.kins ?? []) add(heroSprite(o.id, k.id), 'sprite', `The player's hero, ${kin(k)}, a ${o.name}: ${o.appearance}. ${PRESENTATION_LOOK[k.presentation]}`, { view: 'front' });
   for (const n of w.npcs) add(`spr_npc_${n.id}`, 'sprite', `${n.appearance}, ${n.title}`, { view: 'front' });
   for (const f of w.families) for (const m of f.members) add(`spr_mon_${f.id}_${m.archetype}`, 'sprite', `${m.appearance || m.name}, ${m.name}, hostile creature`);
   for (const b of w.bosses) add(`spr_boss_${b.id}`, 'sprite', `${b.appearance}, ${b.name} ${b.title}, imposing boss`);
@@ -125,8 +116,7 @@ export function listArt(w: WorldDefinition): ArtEntry[] {
 export function linkAssets(w: WorldDefinition) {
   const ok = (k: string) => (w.assets[k]?.status === 'ok' ? k : undefined);
   for (const o of w.origins) {
-    o.asset = ok(`spr_origin_${o.id}`);
-    o.assets = Object.fromEntries(heroPresentations(w).map((p) => [p, ok(`spr_origin_${o.id}_${p}`)]).filter(([, v]) => v));
+    o.assets = Object.fromEntries((w.ruleset?.kins ?? []).map((k) => [k.id, ok(heroSprite(o.id, k.id))]).filter((x): x is [string, string] => !!x[1]));
   }
   for (const n of w.npcs) n.asset = ok(`spr_npc_${n.id}`);
   for (const f of w.families) for (const m of f.members) m.asset = ok(`spr_mon_${f.id}_${m.archetype}`);
@@ -242,7 +232,7 @@ async function repairWeak(w: WorldDefinition, plan: AssetRecord[], o: ArtOptions
     const custom = (k: string) => w.artOverrides?.[k]?.imagePrompt?.trim() || undefined;
     const notes = new Map(weak.map((r) => [r.key, w.assets[r.key]?.error || 'it scored poorly with the art checker']));
     const kept = new Map(weak.map((r) => [r.key, w.assets[r.key]]));
-    const recs: AssetRecord[] = weak.map((r) => ({ ...r, status: 'pending', roll: (r.roll ?? 0) + 100 * pass, imagePrompt: custom(r.key), backdrop: undefined, view: r.key.startsWith('spr_origin_') || r.key.startsWith('spr_npc_') ? 'front' : undefined }));
+    const recs: AssetRecord[] = weak.map((r) => ({ ...r, status: 'pending', roll: (r.roll ?? 0) + 100 * pass, imagePrompt: custom(r.key), backdrop: undefined, view: r.key.startsWith('spr_hero_') || r.key.startsWith('spr_npc_') ? 'front' : undefined }));
     await writeImagePrompts(w, recs, o.report, o.shouldStop, undefined, notes);
     fs.rmSync(tmp, { recursive: true, force: true });
     fs.mkdirSync(tmp, { recursive: true });

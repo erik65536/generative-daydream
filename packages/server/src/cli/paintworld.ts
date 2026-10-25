@@ -1,11 +1,10 @@
 /**
  * Paint (or repaint) a world's art outside the web server, so a long run survives server restarts.
  * Saves as it goes; the running server picks the changes up. Usage: tsx src/cli/paintworld.ts <worldId> [essential|full] [--only key1,key2,...]
- * (--only paints just those assets when they are missing, failed, changed or made by an older pipeline.)
+ * (--only paints just those assets when they are missing, failed or changed.)
  */
 import { loadWorld, saveWorld } from '../storage';
 import { generateArt, linkAssets } from '../worldgen/art';
-import { genai } from '../genai/service';
 
 const [worldId, level = 'full'] = process.argv.slice(2).filter((a, i, all) => !a.startsWith('--') && all[i - 1] !== '--only');
 const onlyArg = process.argv.indexOf('--only');

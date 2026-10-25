@@ -1,6 +1,6 @@
 /** One running save-state of a world: authoritative simulation for every connected player. */
 import {
-  BitSet, DIFFICULTIES, SPACING, distToSegment, GAME_MINUTES_PER_DAY, MAX_PARTY_SIZE, REAL_MS_PER_GAME_MINUTE, RESPAWN_GAME_MINUTES, ROLE_VISUAL, RULESET_VERSION, Rng,
+  BitSet, DIFFICULTIES, PRONOUNS, SPACING, distToSegment, GAME_MINUTES_PER_DAY, MAX_PARTY_SIZE, REAL_MS_PER_GAME_MINUTE, RESPAWN_GAME_MINUTES, ROLE_VISUAL, Rng,
   bagUpgradeCost, canAllocate, fieldRecipe, nearStation, characterStats, curve, enchantCost, fogSize, upgradeCost, hashFloat, itemPrice, knownSkills, refMit, rx, sampleMotion, skillAp, skillRange, tilesInRadius, uid,
   type CharacterSpec, type ClientMessage, type DialogState, type DifficultyId, type EntityView, type FeatureDef, type FeatureState, type FxEvent, type InstanceState, type ItemInstance,
   type JournalEntry, type LootPile, type Memory, type NpcRuntime, type PlayerState, type PlayerView, type QuestDef, type Ruleset, type ServerMessage, type Surface,
@@ -13,11 +13,11 @@ import { withCallContext } from '../genai/context';
 import { WorldCtx, type ZoneMap } from './worldctx';
 import { bodyAt, isFree, nearestFree } from './space';
 import { Combat, type CombatHost } from './combat';
-import { addStatus, checkItemUse, checkSkill, executeSkill, isHarmful, isHostileTo, springTrap, useConsumable, applySurface } from './effects';
+import { checkItemUse, checkSkill, executeSkill, isHarmful, isHostileTo, springTrap, useConsumable, applySurface } from './effects';
 import { QuestEngine, objectivesOf, currentObjectiveIndex } from './quests';
 import { DialogueEngine } from './dialogue';
-import { addToInventory, affixValue, fitsInInventory, inventoryCapacity, normalizeInventory, makeItem, makeUnique, merchantStock, mergeStacks, removeFromInventory, rollLoot, rollRandomItem } from './loot';
-import { allocateNode, clampPools, createCharacter, defaultHotbar, grantXp, levelUpTo, regenerate, restoreFully } from './characters';
+import { addToInventory, affixValue, fitsInInventory, inventoryCapacity, makeItem, makeUnique, merchantStock, mergeStacks, removeFromInventory, rollLoot, rollRandomItem } from './loot';
+import { allocateNode, clampPools, createCharacter, grantXp, regenerate, restoreFully } from './characters';
 
 export interface Conn {
   userId: string;
@@ -82,18 +82,6 @@ export class GameInstance implements CombatHost {
     state.difficulty ??= world.input.difficulty ?? 'normal';
     this.rng = new Rng(`${state.id}:${Date.now()}`);
     this.mergeDynamicItems();
-    for (const p of Object.values(state.players)) {
-      p.inventory = normalizeInventory(this.r, p.inventory);
-      // A place that is gone (a building's room, now that buildings are only painted) leaves its visitors at the way
-      // in of the place that held it (a room's id starts with its town's), else at the start.
-      if (!this.ctx.zones.has(p.zoneId)) {
-        const holder = world.zones.filter((z) => p.zoneId.startsWith(`${z.id}_`)).sort((a, b) => b.id.length - a.id.length)[0];
-        const to = holder ?? this.ctx.zones.get(world.startZoneId)!;
-        p.zoneId = to.id;
-        p.x = to.entry.x;
-        p.y = to.entry.y;
-      }
-    }
     this.quests = new QuestEngine({
       ctx: this.ctx,
       rng: this.rng,
@@ -116,8 +104,7 @@ export class GameInstance implements CombatHost {
       questEvent: (p, q, kind) => this.questGossip(p, q, kind),
     });
     this.dialogue = new DialogueEngine(this.dialogueHost());
-    // (People saved in a place that is gone start again where the world puts them.)
-    for (const n of world.npcs) if (!state.npcs[n.id] || !this.ctx.zones.has(state.npcs[n.id]!.zoneId)) state.npcs[n.id] = this.initNpc(n.id);
+    for (const n of world.npcs) state.npcs[n.id] ??= this.initNpc(n.id);
   }
 
   // =================================================================== lifecycle
@@ -183,6 +170,14 @@ export class GameInstance implements CombatHost {
       addToInventory(this.r, inventory, inv);
     }
     if (!party.length) party.push(createCharacter(this.r, w, { name, classId: this.r.classes[0]!.id, kinId: this.r.kins[0]!.id }, prng).ch);
+    // A world played with companions: its three heroes travel with the player from the start (the AI plays them).
+    if (w.input.combatMode === 'party_npc')
+      for (const def of w.npcs.filter((n) => n.companion)) {
+        const { ch } = createCharacter(this.r, w, { name: def.name, classId: def.companion!.classId, kinId: def.companion!.kinId, sprite: def.asset ?? '', colors: def.colors }, new Rng(`${this.state.id}:${userId}:${def.id}`));
+        ch.npcId = def.id;
+        ch.aiControlled = true;
+        party.push(ch);
+      }
     for (const ch of party) restoreFully(this.r, ch, party.length <= 1);
     const start = this.ctx.zones.get(w.startZoneId)!;
     const p: PlayerState = {
@@ -329,8 +324,7 @@ export class GameInstance implements CombatHost {
     this.zones.set(zoneId, z);
     // Monsters. A slain pack comes back (for farming) once every member's respawn time has passed; bosses stay dead.
     const due = (m: MonsterRuntime) => {
-      const at = m.respawnAt ?? (m.respawnDay !== undefined ? (m.respawnDay - 1) * GAME_MINUTES_PER_DAY : undefined);
-      return at !== undefined && at <= this.state.clock;
+      return m.respawnAt !== undefined && m.respawnAt <= this.state.clock;
     };
     const groups = new Map<string, SpawnDef[]>();
     for (const s of map.def.spawns) groups.set(s.groupId, [...(groups.get(s.groupId) ?? []), s]);
@@ -340,7 +334,7 @@ export class GameInstance implements CombatHost {
       const extras = extrasOf(members);
       const gone = (m: MonsterRuntime) => m.absent || (m.dead && due(m));
       if (rts.some((m) => !m.absent) && rts.every(gone) && extras.every((m) => m.dead)) {
-        members.forEach((s, i) => Object.assign(rts[i]!, { dead: false, hp: -1, x: s.x, y: s.y, looted: false, respawnAt: undefined, respawnDay: undefined, diedAt: undefined, absent: undefined, scale: undefined, elite: undefined }));
+        members.forEach((s, i) => Object.assign(rts[i]!, { dead: false, hp: -1, x: s.x, y: s.y, looted: false, respawnAt: undefined, diedAt: undefined, absent: undefined, scale: undefined, elite: undefined }));
         for (const e of extras) delete rt.monsters[e.spawnId];
       }
       // Fit untouched packs to the party that will meet them (once per spawn).
@@ -367,9 +361,10 @@ export class GameInstance implements CombatHost {
       z.actors.set(actor.id, actor);
     }
     for (const rtn of Object.values(this.state.npcs)) {
-      if (rtn.zoneId !== zoneId || !rtn.alive || rtn.partyOf || rtn.fled) continue;
+      if (rtn.zoneId !== zoneId || !rtn.alive || rtn.fled) continue;
       const def = this.ctx.npcs.get(rtn.npcId);
-      if (!def) continue;
+      // Companions travel in the party, not around town.
+      if (!def || def.companion) continue;
       if (!onGround(rtn) && def.zoneId === zoneId) Object.assign(rtn, { x: def.x, y: def.y });
       const a = new NpcActor(def, rtn, zoneId, this.r);
       z.actors.set(a.id, a);
@@ -471,8 +466,8 @@ export class GameInstance implements CombatHost {
     const z = this.live(p.zoneId);
     // (A position off the place's ground, saved before it was laid out again, arrives at the way in instead.)
     const base = nearestFree(z.map.nav, this.actorsInZone(p.zoneId), at ?? { x: p.x, y: p.y }) ?? this.nearestFree(p.zoneId, z.map.def.entry);
-    // Companions stand clear of doors and ways out: one standing on a door covers it, and a click on it picks them.
-    const doors = z.map.def.features.filter((f) => f.kind === 'door' || f.kind === 'exit');
+    // Companions stand clear of ways out: one standing on a way out covers it, and a click on it picks them.
+    const doors = z.map.def.features.filter((f) => f.kind === 'exit');
     const clearOfDoors = (cx: number, cy: number) => {
       const c = z.map.nav.centre(cx, cy);
       return z.map.nav.walkableCell(cx, cy) && !bodyAt(this.actorsInZone(p.zoneId), c) && doors.every((f) => Math.hypot(f.x - c.x, f.y - c.y) >= 1.2);
@@ -537,20 +532,19 @@ export class GameInstance implements CombatHost {
 
   private enteredZone(p: PlayerState, zoneId: string, silent: boolean) {
     const def = this.ctx.zones.get(zoneId)!;
-    const outer = this.ctx.outerZone(zoneId);
     if (!p.visitedZones.includes(zoneId)) {
       p.visitedZones.push(zoneId);
-      if (!silent && def.kind !== 'interior') {
+      if (!silent) {
         this.journal(p, 'discovery', `Discovered ${def.name}.`);
         this.sendTo(p.userId, { t: 'toast', text: `Discovered: ${def.name}`, kind: 'info' });
         if (def.kind !== 'town') this.grantPartyXp(p, 15 + def.levelRange[0] * 8);
       }
     }
-    for (const l of [outer, ...(this.ctx.zones.get(outer)?.links ?? [])]) if (!p.knownZones.includes(l)) p.knownZones.push(l);
+    for (const l of [zoneId, ...def.links]) if (!p.knownZones.includes(l)) p.knownZones.push(l);
     if (def.kind === 'town') p.lastTownZoneId = zoneId;
     this.quests.onEnterZone(p, zoneId);
     // Community gatherings happening today.
-    const ev = this.state.events.find((e) => !e.done && e.day === this.day() && this.ctx.outerZone(e.zoneId) === outer && e.about === p.userId);
+    const ev = this.state.events.find((e) => !e.done && e.day === this.day() && e.zoneId === zoneId && e.about === p.userId);
     if (ev && def.kind === 'town') {
       ev.done = true;
       this.sendTo(p.userId, { t: 'narration', title: def.name, text: `The townsfolk have gathered in the square. As you arrive, faces turn toward you — and someone starts to cheer. They remembered: ${ev.reason}`, style: 'quest' });
@@ -565,7 +559,7 @@ export class GameInstance implements CombatHost {
       if (ev.day !== today || ev.zoneId !== z.id) continue;
       ev.npcIds.forEach((id, i) => {
         const rt = this.state.npcs[id];
-        if (!rt || !rt.alive || rt.partyOf) return;
+        if (!rt || !rt.alive || this.ctx.npcs.get(id)?.companion) return;
         const angle = (i / Math.max(1, ev.npcIds.length)) * Math.PI * 2;
         const spot = this.nearestFree(z.id, { x: ev.x + Math.cos(angle) * 3, y: ev.y + Math.sin(angle) * 3 });
         const existing = [...this.zones.values()].map((lz) => lz.actors.get(id)).find(Boolean) as NpcActor | undefined;
@@ -639,7 +633,7 @@ export class GameInstance implements CombatHost {
     for (const [k, v] of Object.entries(this.state.dynamicItems ?? {})) dynamicItems[k] = { name: v.name, description: v.description };
     const waypoints = p.visitedZones
       .map((id) => this.ctx.zones.get(id)!)
-      .filter((z) => z && z.kind === 'town')
+      .filter((z) => z && z.kind === 'town' && this.r.systems.fastTravel)
       .map((z) => ({ zoneId: z.id, name: z.name }));
     return { ...p, questDefs, loneWolf: this.loneWolf(p), npcMarkers, dynamicItems, waypoints, isOwner: this.state.ownerId === p.userId, difficulty: this.state.difficulty };
   }
@@ -1334,7 +1328,6 @@ export class GameInstance implements CombatHost {
           if (p.party.some((c) => c.id === msg.charId)) p.leaderId = msg.charId;
           return this.markPlayer(userId);
         }
-        case 'rest': return this.cmdRest(p, false);
         case 'fast_travel': return this.cmdFastTravel(p, msg.zoneId);
         case 'dev': return this.cmdDev(p, msg);
         case 'hard_save': return this.hardSave?.(p, msg.name);
@@ -1350,11 +1343,6 @@ export class GameInstance implements CombatHost {
           if (msg.questId && p.quests[msg.questId]?.status !== 'active') return;
           p.pinnedQuestId = msg.questId;
           return this.markPlayer(p.userId);
-        case 'dismiss_companion': {
-          const ch = p.party.find((c) => c.id === msg.charId);
-          if (ch?.npcId) this.leaveParty(userId, ch.npcId);
-          return;
-        }
         case 'chat': {
           const text = msg.text.slice(0, 300);
           for (const u of this.conns.keys()) this.sendTo(u, { t: 'chat', from: p.name, text });
@@ -1652,6 +1640,13 @@ export class GameInstance implements CombatHost {
       void this.dialogue.open(p.userId, actor.def.id);
       return;
     }
+    // A companion in the party is someone to talk to as well.
+    if (actor instanceof CharActor && actor.userId === p.userId && actor.ch.npcId && actor !== a) {
+      actor.facing = Math.atan2(a.y - actor.y, a.x - actor.x);
+      actor.dirty = true;
+      void this.dialogue.open(p.userId, actor.ch.npcId);
+      return;
+    }
     if (actor instanceof MonsterActor && actor.alive()) {
       // Clicking an enemy attacks it.
       return this.cmdSkill(p, a.id, 'attack', actor.id, undefined, undefined, true);
@@ -1695,7 +1690,6 @@ export class GameInstance implements CombatHost {
   private useFeature(p: PlayerState, a: CharActor, z: LiveZone, f: FeatureDef, inspect?: boolean) {
     const fr = (z.rt.features[f.id] ??= {});
     switch (f.kind) {
-      case 'door':
       case 'exit':
         if (f.targetZoneId) this.transfer(p, f.targetZoneId, f.targetFeatureId);
         return;
@@ -1758,8 +1752,6 @@ export class GameInstance implements CombatHost {
         this.quests.onInteract(p, f.id);
         return;
       }
-      case 'bed':
-        return this.cmdRest(p, true);
       case 'waypoint':
         this.sendTo(p.userId, { t: 'toast', text: 'Open your map (M) to travel between waypoints you have visited.', kind: 'info' });
         this.sendTo(p.userId, { t: 'narration', title: f.name ?? 'Waypoint', text: '__waypoint__', style: 'quest' });
@@ -1943,7 +1935,6 @@ export class GameInstance implements CombatHost {
     if (!item) return;
     if (item.bound) return this.sendError(p.userId, 'You should hold on to that.');
     const it = removeFromInventory(p.inventory, itemId, qty ?? item.qty);
-    void RULESET_VERSION;
     const z = this.zones.get(p.zoneId);
     const leader = this.leader(p);
     if (it && z && leader) {
@@ -1972,23 +1963,6 @@ export class GameInstance implements CombatHost {
     for (const c of this.charActors(p)) if (c.combatId === combat.id) combat.remove(c);
     this.sendTo(p.userId, { t: 'combat', combat: null });
     this.sendTo(p.userId, { t: 'toast', text: 'You escaped.', kind: 'info' });
-  }
-
-  private cmdRest(p: PlayerState, bed: boolean) {
-    if (this.charActors(p).some((a) => a.combatId)) return;
-    const z = this.zones.get(p.zoneId);
-    const hostilesNear = z && [...z.actors.values()].some((a) => a instanceof MonsterActor && a.alive() && Math.hypot(a.x - p.x, a.y - p.y) < 20);
-    if (hostilesNear) return this.sendError(p.userId, 'You cannot rest with enemies nearby.');
-    this.healParty(p.userId);
-    if (bed) {
-      const hour = this.hour();
-      const toMorning = ((24 - hour + 7) % 24 || 24) * 60 - (this.state.clock % 60);
-      const before = this.day();
-      this.state.clock += toMorning;
-      if (this.day() !== before) this.newDay();
-      this.sendTo(p.userId, { t: 'narration', title: 'Rest', text: 'You sleep soundly and wake at dawn, restored.', style: 'quest' });
-      this.sendClock(true);
-    }
   }
 
   /** Developer options (the server only lets admins send these). */
@@ -2034,6 +2008,7 @@ export class GameInstance implements CombatHost {
   }
 
   private cmdFastTravel(p: PlayerState, zoneId: string) {
+    if (!this.r.systems.fastTravel) return this.sendError(p.userId, 'There is no fast travel in this daydream.');
     const z = this.ctx.zones.get(zoneId);
     if (!z || z.kind !== 'town' || !p.visitedZones.includes(zoneId)) return this.sendError(p.userId, 'You have not found that waypoint.');
     const here = this.zones.get(p.zoneId);
@@ -2264,7 +2239,7 @@ export class GameInstance implements CombatHost {
     if (!p || !def || !rt) return;
     if (rt.stockDay !== this.day()) {
       const kind = def.merchantKind ?? (def.role === 'innkeeper' ? 'general' : def.role === 'crafter' ? 'materials' : 'general');
-      const level = Math.max(1, this.ctx.zones.get(this.ctx.outerZone(rt.zoneId))?.levelRange[0] ?? def.level);
+      const level = Math.max(1, this.ctx.zones.get(rt.zoneId)?.levelRange[0] ?? def.level);
       rt.stock = merchantStock(this.r, new Rng(`${this.state.id}:${npcId}:${this.day()}`), kind, Math.max(level, ...p.party.map((c) => c.level - 1)));
       rt.stockDay = this.day();
       rt.gold = Math.max(rt.gold, 300 + def.level * 60);
@@ -2367,78 +2342,6 @@ export class GameInstance implements CombatHost {
     return undefined;
   }
 
-  joinParty(userId: string, npcId: string): string | null {
-    const p = this.state.players[userId];
-    const def = this.ctx.npcs.get(npcId);
-    const rt = this.state.npcs[npcId];
-    if (!p || !def || !rt) return 'They cannot join.';
-    if (this.world.input.combatMode !== 'party_npc') return `${def.name} wishes you well, but prefers to stay.`;
-    if (p.party.length >= MAX_PARTY_SIZE) return `Your ${this.r.terminology.party.toLowerCase()} is full.`;
-    if (rt.partyOf) return 'They are already travelling with someone.';
-    const level = Math.max(1, Math.min(def.level, Math.max(...p.party.map((c) => c.level))));
-    const cls = this.r.classes.find((c) => c.aiRole === def.archetype) ?? this.r.classes.find((c) => (def.archetype === 'guardian' || def.archetype === 'brute' ? c.role === 'tank' : def.archetype === 'caster' ? c.role === 'caster' : def.archetype === 'healer' ? c.role === 'support' : def.archetype === 'archer' ? c.role === 'ranged' : c.role === 'melee')) ?? this.r.classes[0]!;
-    const rng = new Rng(`${this.state.id}:${npcId}`);
-    const { ch } = createCharacter(this.r, this.world, { name: def.name, classId: cls.id, kinId: this.r.kins[0]!.id, presentation: 'androgynous', pronouns: def.pronouns, sprite: def.asset ?? '', colors: def.colors }, rng);
-    ch.npcId = npcId;
-    ch.aiControlled = true;
-    ch.sprite = def.asset ?? '';
-    ch.colors = def.colors;
-    ch.archetype = def.archetype;
-    levelUpTo(this.r, ch, level, rng);
-    ch.hotbar = defaultHotbar(this.r, ch);
-    restoreFully(this.r, ch);
-    p.party.push(ch);
-    rt.partyOf = userId;
-    const actor = this.npcActor(npcId);
-    if (actor) {
-      this.zones.get(actor.zoneId)?.actors.delete(npcId);
-      this.broadcastZone(actor.zoneId, { t: 'entities', upsert: [], remove: [npcId] });
-    }
-    const z = this.zones.get(p.zoneId);
-    const leader = this.leader(p);
-    if (z && leader) {
-      const spot = this.nearestFree(z.id, { x: leader.x + 1, y: leader.y });
-      const a = new CharActor(ch, userId, z.id, spot.x, spot.y, this.r, () => this.loneWolf(p), this.world);
-      z.actors.set(a.id, a);
-    }
-    for (const c of p.party) clampPools(this.r, c, this.loneWolf(p));
-    this.journal(p, 'social', `${def.name} joined your ${this.r.terminology.party.toLowerCase()}.`);
-    this.markPlayer(userId);
-    return null;
-  }
-
-  leaveParty(userId: string, npcId: string) {
-    const p = this.state.players[userId];
-    const rt = this.state.npcs[npcId];
-    if (!p || !rt) return;
-    const ch = p.party.find((c) => c.npcId === npcId);
-    if (!ch) return;
-    p.party = p.party.filter((c) => c !== ch);
-    if (p.leaderId === ch.id) p.leaderId = p.party[0]!.id;
-    rt.partyOf = undefined;
-    const def = this.ctx.npcs.get(npcId)!;
-    rt.zoneId = def.zoneId;
-    rt.x = def.x;
-    rt.y = def.y;
-    const z = this.zones.get(p.zoneId);
-    if (z) {
-      z.actors.delete(ch.id);
-      this.broadcastZone(z.id, { t: 'entities', upsert: [], remove: [ch.id] });
-    }
-    const home = this.zones.get(def.zoneId);
-    if (home && !home.actors.has(npcId)) home.actors.set(npcId, new NpcActor(def, rt, def.zoneId, this.r));
-    this.journal(p, 'social', `${def.name} left your ${this.r.terminology.party.toLowerCase()} and went home.`);
-    this.markPlayer(userId);
-  }
-
-  healParty(userId: string) {
-    const p = this.state.players[userId];
-    if (!p) return;
-    for (const ch of p.party) restoreFully(this.r, ch, this.loneWolf(p));
-    for (const a of this.charActors(p)) a.dirty = true;
-    this.markPlayer(userId);
-  }
-
   private remember(npcId: string, mem: Memory) {
     const rt = this.state.npcs[npcId];
     if (!rt) return;
@@ -2458,13 +2361,13 @@ export class GameInstance implements CombatHost {
     const allowed = ['none', 'household', 'town', 'world'] as const;
     const level = Math.min(allowed.indexOf(spread), comm);
     if (level <= 0) return;
-    const town = this.ctx.townOf(fromRt.zoneId) ?? this.ctx.outerZone(fromRt.zoneId);
+    const town = this.ctx.townOf(fromRt.zoneId) ?? fromRt.zoneId;
     for (const [id, rt] of Object.entries(this.state.npcs)) {
       if (id === fromNpcId || !rt.alive) continue;
       const def = this.ctx.npcs.get(id)!;
       const sameBuilding = rt.zoneId === fromRt.zoneId;
       const related = from.relations?.includes(id) || def.relations?.includes(fromNpcId);
-      const sameTown = (this.ctx.townOf(rt.zoneId) ?? this.ctx.outerZone(rt.zoneId)) === town;
+      const sameTown = (this.ctx.townOf(rt.zoneId) ?? rt.zoneId) === town;
       const ok = level >= 3 || (level >= 2 && sameTown) || (level >= 1 && (sameBuilding || related));
       if (!ok) continue;
       if (rt.memories.some((m) => m.text === mem.text)) continue;
@@ -2538,8 +2441,6 @@ export class GameInstance implements CombatHost {
           a.dirty = true;
         }
       },
-      joinParty: (u: string, id: string) => this.joinParty(u, id),
-      leaveParty: (u: string, id: string) => this.leaveParty(u, id),
       giveItemsToPlayer: (u: string, items: ItemInstance[]) => {
         const p = this.state.players[u];
         if (!p) return;
@@ -2593,7 +2494,7 @@ export class GameInstance implements CombatHost {
         if (!town) return;
         const tz = this.ctx.zones.get(town)!;
         const wp = tz.features.find((f) => f.kind === 'waypoint') ?? { x: tz.entry.x, y: tz.entry.y };
-        const npcIds = Object.entries(this.state.npcs).filter(([id, r]) => r.alive && !r.partyOf && this.ctx.townOf(r.zoneId) === town && this.ctx.npcs.get(id)?.role !== 'merchant').map(([id]) => id).slice(0, 10);
+        const npcIds = Object.entries(this.state.npcs).filter(([id, r]) => r.alive && !this.ctx.npcs.get(id)?.companion && this.ctx.townOf(r.zoneId) === town && this.ctx.npcs.get(id)?.role !== 'merchant').map(([id]) => id).slice(0, 10);
         if (this.state.events.some((e) => e.day === day && e.zoneId === town && e.about === about)) return;
         this.state.events.push({ id: uid('ev'), day, kind: 'gathering', zoneId: town, x: wp.x - 2, y: wp.y + 2, about, reason, npcIds });
       },
@@ -2629,7 +2530,7 @@ export class GameInstance implements CombatHost {
         const kin = rx(this.r).kin.get(lead.kinId)?.name;
         const rest = p.party.filter((c) => c !== lead).map((c) => `${c.name} (${c.npcId ? 'companion' : this.ctx.className(c.classId)})`);
         const fame = p.stats.questsCompleted > 6 ? 'well known in these parts' : p.stats.questsCompleted > 2 ? 'gaining a reputation' : 'a newcomer';
-        return `${lead.name} (${lead.pronouns}), a ${this.r.terminology.level.toLowerCase()} ${lead.level} ${kin ? `${kin} ` : ''}${this.ctx.className(lead.classId)}${look?.appearance ? ` (${look.appearance})` : ''}, ${fame}.${rest.length ? ` Travelling with ${rest.join(', ')}.` : ''}`;
+        return `${lead.name} (${PRONOUNS[lead.presentation]}), a ${this.r.terminology.level.toLowerCase()} ${lead.level} ${kin ? `${kin} ` : ''}${this.ctx.className(lead.classId)}${look?.appearance ? ` (${look.appearance})` : ''}, ${fame}.${rest.length ? ` Travelling with ${rest.join(', ')}.` : ''}`;
       },
       communication: () => this.world.input.communication,
       dynamicQuest: (def: QuestDef) => {
@@ -2672,8 +2573,8 @@ export class GameInstance implements CombatHost {
     this.state.dynamicItems[id] = { id, baseId: 'quest_item', name: name.charAt(0).toUpperCase() + name.slice(1), description, rarityId: this.r.rarities[2]!.id, mods: [], questItem: true };
     this.mergeDynamicItems();
     // Hide it in a nearby non-town zone.
-    const outer = this.ctx.zones.get(this.ctx.outerZone(nearZoneId));
-    const target = outer?.links.map((l) => this.ctx.zones.get(l)!).find((z) => z && z.kind !== 'town' && z.kind !== 'interior') ?? outer;
+    const near = this.ctx.zones.get(nearZoneId);
+    const target = near?.links.map((l) => this.ctx.zones.get(l)!).find((z) => z && z.kind !== 'town') ?? near;
     if (target) {
       const rt = this.zoneRuntime(target.id);
       const map = this.ctx.map(target.id);
@@ -2696,7 +2597,7 @@ export class GameInstance implements CombatHost {
    * the item drops at once and becomes named a moment later, wherever it is by then).
    */
   private forgeLegendaries(items: ItemInstance[], zoneId: string, source: string) {
-    const zone = this.ctx.zones.get(this.ctx.outerZone(zoneId));
+    const zone = this.ctx.zones.get(zoneId);
     for (const item of items.filter((i) => isTopRarity(this.r, i))) {
       void forgeLegend(this.r, item, { world: { title: this.world.concept.title, pitch: this.world.concept.pitch, tone: this.world.concept.tone }, place: zone?.name ?? 'the wilds', source }).then((made) => {
         if (!made || item.uniqueId) return;
@@ -2706,7 +2607,7 @@ export class GameInstance implements CombatHost {
         item.uniqueId = made.def.id;
         item.uniqueMods = made.mods;
         for (const p of Object.values(this.state.players)) {
-          if (p.zoneId === zoneId || this.ctx.outerZone(p.zoneId) === this.ctx.outerZone(zoneId)) this.sendTo(p.userId, { t: 'toast', text: `Legendary: ${made.def.name}`, kind: 'loot' });
+          if (p.zoneId === zoneId || p.zoneId === zoneId) this.sendTo(p.userId, { t: 'toast', text: `Legendary: ${made.def.name}`, kind: 'loot' });
           this.refreshCharStats(p);
           this.markPlayer(p.userId);
         }

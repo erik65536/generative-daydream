@@ -77,18 +77,8 @@ export class WorldCtx {
     return this.world.uniqueItems[id];
   }
 
-  /** The town a zone belongs to (itself, or the parent of an interior). */
+  /** The town a place is (undefined for wild places and dungeons). */
   townOf(zoneId: string): string | undefined {
-    const z = this.zones.get(zoneId);
-    if (!z) return undefined;
-    if (z.kind === 'town') return z.id;
-    if (z.kind === 'interior' && z.parentZoneId) return z.parentZoneId;
-    return undefined;
-  }
-
-  /** Top-level zone for maps and quest "reach" checks. */
-  outerZone(zoneId: string): string {
-    const z = this.zones.get(zoneId);
-    return z?.kind === 'interior' && z.parentZoneId ? z.parentZoneId : zoneId;
+    return this.zones.get(zoneId)?.kind === 'town' ? zoneId : undefined;
   }
 }

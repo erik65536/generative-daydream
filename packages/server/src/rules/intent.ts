@@ -4,6 +4,7 @@
  *   core (terminology, pools, attributes, damage, statuses, slots, systems), gear, classes overview, class trees.
  */
 import { z } from 'zod';
+import type { RulesChoices } from '@gd/shared';
 
 const name = z.string().min(1).max(40);
 const text = (n = 220) => z.string().max(n);
@@ -75,7 +76,13 @@ export const GearIntentSchema = z.object({
   valuables: z.array(z.object({ name })).max(4),
   tools: z.object({ disarm: z.string().max(40).optional(), unlock: z.string().max(40).optional(), recall: z.string().max(40).optional() }),
   affixNames: z.array(z.object({ effect: z.enum(STAT_EFFECTS), of: z.string().max(40).optional(), prefix: name, suffix: name })).max(30),
-  kins: z.array(z.object({ name, description: text(200), attributes: z.array(z.object({ attribute: name, points: z.number().int().min(1).max(2) })).max(2), perk: statPick.optional() })).min(1).max(6),
+  kins: z.array(z.object({
+    name,
+    description: text(200),
+    look: text(240).describe('What a person of this kin looks like, body and face only (species, build, skin, fur or scales, ears, eyes), without clothes and without gender: used to draw its heroes'),
+    attributes: z.array(z.object({ attribute: name, points: z.number().int().min(1).max(2) })).max(2),
+    perk: statPick.optional(),
+  })).min(1).max(4),
 });
 export type GearIntent = z.infer<typeof GearIntentSchema>;
 
@@ -135,18 +142,5 @@ export interface RulesetIntent {
 }
 
 /** User overrides from the world creation form (advanced section). */
-export interface RulesOverrides {
-  turnModel?: 'ap';
-  deathMode?: 'corpse_run';
-  revive?: 'heal' | 'special' | 'after_combat';
-  crit?: boolean;
-  dodge?: boolean;
-  control?: boolean;
-  surfaces?: boolean;
-  traps?: boolean;
-  locks?: boolean;
-  crafting?: boolean;
-  upgrades?: boolean;
-  enchanting?: boolean;
-  classes?: number;
-}
+/** The rule choices of the creation form (anything unset is the designer's). */
+export type RulesOverrides = RulesChoices;

@@ -1,7 +1,7 @@
 /**
  * Controller play, designed for a pad rather than a mouse adapted to one:
  *
- *   Exploring   left stick walks; the nearest person, chest, door or pile ahead is focused (LB/RB to change)
+ *   Exploring   left stick walks; the nearest person, chest, way out or pile ahead is focused (LB/RB to change)
  *               and A acts on it; X attacks the nearest foe.
  *   Combat      a ground cursor snaps to foes (LB/RB), shows the path and cost, and A moves or attacks there;
  *               Y ends the turn.
@@ -27,7 +27,7 @@ const PANELS: { id: NonNullable<GameClient['state']['panel']>; label: string }[]
   { id: 'codex', label: 'Codex' },
   { id: 'menu', label: 'Menu' },
 ];
-const INTERACTIVE = new Set(['chest', 'door', 'exit', 'sign', 'lore', 'bed', 'craft_station', 'waypoint', 'object']);
+const INTERACTIVE = new Set(['chest', 'exit', 'sign', 'lore', 'craft_station', 'waypoint', 'object']);
 
 interface Target { info: HoverInfo; verb: string; name: string; x: number; y: number; hostile?: boolean }
 
@@ -201,7 +201,7 @@ export class PadInput {
       if (!INTERACTIVE.has(f.kind) || Math.hypot(f.x - lead.x, f.y - lead.y) > 2.6) continue;
       const fs = st.features.get(f.id);
       if (f.kind === 'chest' && fs?.opened) continue;
-      const verbs: Record<string, string> = { chest: 'Open', door: 'Enter', exit: 'Travel', sign: 'Read', lore: 'Read', bed: 'Rest', craft_station: 'Craft', waypoint: 'Waypoint', object: 'Examine' };
+      const verbs: Record<string, string> = { chest: 'Open', exit: 'Travel', sign: 'Read', lore: 'Read', craft_station: 'Craft', waypoint: 'Waypoint', object: 'Examine' };
       const verb = verbs[f.kind] ?? 'Use';
       out.push({ info: this.r.hoverAt(f, { featureId: f.id }), verb, name: f.name ?? f.kind, x: f.x, y: f.y, score: score(f.x, f.y) });
     }

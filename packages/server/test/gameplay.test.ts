@@ -69,21 +69,28 @@ describe('gameplay simulation', () => {
 });
 
 describe('companions', () => {
-  it('recruits an NPC companion through conversation', async () => {
+  it('travel with the player from the start, AI-played, and can be talked to', async () => {
     const w = await genWorld('A misty kingdom of dragons and ruined castles', 'small', 'party_npc');
+    const companions = w.npcs.filter((n) => n.companion);
+    expect(companions.length).toBe(3);
+    expect(new Set(companions.map((n) => n.companion!.classId)).size).toBe(Math.min(3, w.ruleset.classes.length));
     const inst = instances.create(w, 'uc', 'Tester', 'companions', [hero(w, 'Lead', 'ranged')]);
-    inst.join({ userId: 'uc', send: () => {} });
-    const comp = w.npcs.find((n) => n.canJoinParty)!;
-    expect(comp).toBeTruthy();
+    const msgs: { t: string; dialog?: { npcId: string } | null }[] = [];
+    inst.join({ userId: 'uc', send: (m) => msgs.push(m as never) });
     const p = inst.state.players.uc!;
-    inst.transfer(p, comp.zoneId);
-    await inst.dialogue.open('uc', comp.id);
-    await inst.dialogue.say('uc', 'Would you travel with me?');
-    expect(p.party.length).toBe(2);
-    expect(p.party[1]!.npcId).toBe(comp.id);
-    expect(inst._charActors('uc').length).toBe(2);
-    await inst.dialogue.say('uc', 'It is time we parted ways.');
-    expect(p.party.length).toBe(1);
+    expect(p.party.map((c) => c.npcId)).toEqual([undefined, ...companions.map((n) => n.id)]);
+    expect(p.party.slice(1).every((c) => c.aiControlled && c.kinId === w.npcs.find((n) => n.id === c.npcId)!.companion!.kinId)).toBe(true);
+    // They walk with the party, never stand about in town.
+    const town = inst._live(w.startZoneId);
+    expect(companions.some((n) => town.actors.has(n.id))).toBe(false);
+    expect(inst._charActors('uc').length).toBe(4);
+    // Clicking one opens a conversation with them.
+    const [lead, first] = inst._charActors('uc');
+    first!.x = lead!.x + 1;
+    first!.y = lead!.y;
+    inst.handle('uc', { t: 'interact', targetId: first!.id });
+    await wait(5);
+    expect(msgs.filter((m) => m.t === 'dialog').pop()?.dialog?.npcId).toBe(first!.ch.npcId);
     // (It builds a world of its own, balance simulation included: up to a few minutes on a busy machine.)
   }, 300_000);
 });

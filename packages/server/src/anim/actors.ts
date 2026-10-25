@@ -6,7 +6,7 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import { ANIM_VERSION, type AssetRecord, type BodyPlan, type WorldDefinition } from '@gd/shared';
+import { type AssetRecord, type BodyPlan, type WorldDefinition } from '@gd/shared';
 import { worldAssetDir } from '../storage';
 import { animateActor, animationConfig, saveAnimation, type AnimateOptions } from './animator';
 
@@ -19,7 +19,7 @@ const PERSON = /\b(man|woman|person|humanoid|knight|soldier|priest|mage|warrior|
 const FEET = /\b(boots|soles|legs|feet)\b/i;
 
 export function bodyPlan(rec: AssetRecord): BodyPlan {
-  if (/^spr_(origin|npc)_/.test(rec.key)) return 'humanoid';
+  if (/^spr_(hero|npc)_/.test(rec.key)) return 'humanoid';
   const text = `${rec.prompt ?? ''} ${rec.imagePrompt ?? ''}`;
   // The art plan paints people and upright figures from the front, animals and other body plans from the side.
   if (rec.view === 'front') return 'humanoid';
@@ -29,13 +29,13 @@ export function bodyPlan(rec: AssetRecord): BodyPlan {
   return 'humanoid';
 }
 
-/** The base sprites of characters and creatures (not item icons, objects or pose variants). */
+/** The standing views of characters and creatures. */
 export function actorSprites(w: WorldDefinition): AssetRecord[] {
-  return Object.values(w.assets).filter((a) => a.kind === 'sprite' && a.status === 'ok' && !a.ref && !a.variant && !!a.file && a.key.startsWith('spr_'));
+  return Object.values(w.assets).filter((a) => a.kind === 'sprite' && a.status === 'ok' && !!a.file && a.key.startsWith('spr_'));
 }
 
-/** Whether an actor's sheets are missing or out of date (an older format, or made from an earlier painting). */
-export const needsAnimation = (rec: AssetRecord) => !rec.anim || rec.anim.v !== ANIM_VERSION || rec.anim.from !== rec.file;
+/** Whether an actor's sheets are missing or were made from an earlier painting. */
+export const needsAnimation = (rec: AssetRecord) => !rec.anim || rec.anim.from !== rec.file;
 
 export interface WorldAnimateOptions extends AnimateOptions {
   only?: (key: string) => boolean;

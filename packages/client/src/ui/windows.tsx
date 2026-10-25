@@ -1,7 +1,7 @@
 import { readable } from './theme';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  DIFFICULTIES, bagUpgradeCost, fieldRecipe, nearStation, branchSpent, canAllocate, codexSections, enchantCost, inventoryCapacity, inventoryUsed, itemPrice, knownSkills, modifierLabel, nodeLines, perPointLabel,
+  DIFFICULTIES, fieldRecipe, nearStation, branchSpent, canAllocate, codexSections, enchantCost, inventoryCapacity, inventoryUsed, itemPrice, knownSkills, modifierLabel, nodeLines, perPointLabel,
   rx, skillRank, upgradeCost, xpForLevel,
   type CharacterState, type ItemInstance, type QuestDef, type QuestObjective, type Ruleset, type TreeNode,
 } from '@gd/shared';
@@ -152,7 +152,7 @@ export function DialogWindow() {
       <span className="corner br" />
       <div className="dlg-side">
         <div className="dlg-portrait">
-          <Portrait size={150} full sprite={c.assetUrl(dialog.sprite)} colors={dialog.colors} seed={dialog.npcId} kind="npc" />
+          <Portrait size={150} full sprite={c.assetUrl(dialog.sprite)} />
         </div>
         <div className="display gold dlg-name">{dialog.npcName}</div>
         <div className="serif muted dlg-title">{dialog.npcTitle}</div>
@@ -270,7 +270,7 @@ function useItem(charId: string, item: ItemInstance) {
   const use = rx(c.r).item.get(item.baseId)?.use;
   if (!use) return;
   if (use.targeting === 'self' || use.tool === 'recall') c.send({ t: 'use_item', charId, itemId: item.id, targetId: charId });
-  else if (use.tool === 'disarm' || use.tool === 'unlock') c.toast(use.tool === 'disarm' ? 'Click a spotted trap to disarm it.' : 'Click a locked chest or door to open it.', 'info');
+  else if (use.tool === 'disarm' || use.tool === 'unlock') c.toast(use.tool === 'disarm' ? 'Click a spotted trap to disarm it.' : 'Click a locked chest to open it.', 'info');
   else if (use.targeting === 'ally') c.send({ t: 'use_item', charId, itemId: item.id, targetId: charId });
   else c.update({ targeting: { charId, itemId: item.id }, panel: null });
 }
@@ -472,7 +472,7 @@ export function CharacterWindow({ onClose }: { onClose: () => void }) {
       <div className="panel-body row" style={{ alignItems: 'flex-start', gap: 20 }}>
         <div className="col" style={{ width: 230 }}>
           <div className="row" style={{ gap: 10 }}>
-            <div className="portrait-lg"><Portrait size={64} sprite={c.assetUrl(ch.sprite)} colors={ch.colors} seed={ch.id} archetype={ch.archetype} /></div>
+            <div className="portrait-lg"><Portrait size={64} sprite={c.assetUrl(ch.sprite)} /></div>
             <div>
               <div className="display gold" style={{ fontSize: 20 }}>{ch.name}</div>
               <div className="muted small">{t.level} {ch.level} {kin?.name} {cls?.name}{ch.npcId ? ' (companion)' : ''}</div>
@@ -777,7 +777,7 @@ export function MapWindow({ onClose }: { onClose: () => void }) {
   const c = client();
   if (!player || !world || !zone) return null;
   const t = world.ruleset.terminology;
-  const outer = zone.kind === 'interior' ? zone.parentZoneId ?? zone.id : zone.id;
+  const outer = zone.id;
   const leader = c.leaderEntity();
   const nearWaypoint = zone.features.some((f) => f.kind === 'waypoint' && leader && Math.hypot(f.x - leader.x, f.y - leader.y) < 3);
   const canTravelTo = (id: string) => nearWaypoint && id !== outer && world.zones.find((z) => z.id === id)?.kind === 'town' && player.waypoints.some((w) => w.zoneId === id);
@@ -786,7 +786,7 @@ export function MapWindow({ onClose }: { onClose: () => void }) {
       <div className="panel-body" style={{ padding: 12 }}>
         <WorldMapView world={world} player={player} here={outer} canTravelTo={canTravelTo} onTravel={(id) => (c.send({ t: 'fast_travel', zoneId: id }), onClose())}
           terms={{ town: t.town, dungeon: t.dungeon, wilderness: t.wilderness, level: t.level }} />
-        <div className="hint" style={{ marginTop: 8 }}>{nearWaypoint ? 'Click a place with a waypoint ring to travel there.' : `Stand by a waypoint in a ${t.town.toLowerCase()} to travel between visited ${t.town.toLowerCase()}s.`}</div>
+        {world.ruleset.systems.fastTravel && <div className="hint" style={{ marginTop: 8 }}>{nearWaypoint ? 'Click a place with a waypoint ring to travel there.' : `Stand by a waypoint in a ${t.town.toLowerCase()} to travel between visited ${t.town.toLowerCase()}s.`}</div>}
       </div>
     </Window>
   );
@@ -979,13 +979,6 @@ export function MenuWindow({ onClose, onHelp, onCodex }: { onClose: () => void; 
             I command my companions in combat (otherwise they act on their own)
           </label>
         )}
-        {player.party.some((p) => p.npcId) && (
-          <div className="row wrap">
-            {player.party.filter((p) => p.npcId).map((p) => (
-              <button key={p.id} className="btn sm ghost" onClick={() => c.send({ t: 'dismiss_companion', charId: p.id })}>Part ways with {p.name}</button>
-            ))}
-          </div>
-        )}
         <div className="ornament" />
         <div className="row">
           <button className="btn" onClick={onHelp}>Controls</button>
@@ -1006,7 +999,7 @@ export function HelpWindow({ onClose }: { onClose: () => void }) {
     ['Left click ground', 'Move (in combat: move the active character)'],
     ['Left click person', 'Talk'],
     ['Left click enemy', 'Attack (walks into range first)'],
-    ['Left click object', `Use: doors, chests, signs and notes${r?.systems.traps ? '; disarm traps you have spotted' : ''}`],
+    ['Left click object', `Use: ways out, chests, signs and notes${r?.systems.traps ? '; disarm traps you have spotted' : ''}`],
     ['Left click loot / chest', 'Take everything (and nearby drops)'],
     ['Shift + click loot / chest', 'Open it and choose items'],
     ['1 – 0', 'Ready a skill, then click a target'],

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { Rng, maxStack } from '@gd/shared';
 import { compileRuleset } from '../src/rules/compile';
 import { defaultIntent } from '../src/rules/defaults';
-import { addToInventory, fitsInInventory, makeItem, normalizeInventory } from '../src/game/loot';
+import { addToInventory, fitsInInventory, makeItem } from '../src/game/loot';
 
 describe('inventory stacks', () => {
   const r = compileRuleset(defaultIntent('fantasy'), { genre: 'fantasy', maxLevel: 8 });
@@ -34,9 +34,4 @@ describe('inventory stacks', () => {
     expect(fitsInInventory(r, p, [makeItem(r, rng, potion.id, 3, common, max)])).toBe(false);
   });
 
-  it('re-packs old saves that split stacks by level', () => {
-    const inv = normalizeInventory(r, [makeItem(r, rng, potion.id, 1, common, 2), makeItem(r, rng, potion.id, 4, common, 3)]);
-    expect(inv.length).toBe(1);
-    expect(inv[0]!.qty).toBe(5);
-  });
 });

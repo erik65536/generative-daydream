@@ -10,8 +10,9 @@ import {
 import { bindWorld, resolveElement, uniqueBase } from '../rules/bind';
 import type { Genre } from '../rules/genre';
 import type { RulesetIntent } from '../rules/intent';
-import { normColor, normColors, type AreaContentOut, type AtlasOut, type ConceptOut, type FamiliesOut, type NpcOut, type StoryOut, type TownContentOut } from './schemas';
+import { normColor, normColors, type AreaContentOut, type AtlasOut, type CompanionsOut, type ConceptOut, type FamiliesOut, type NpcOut, type StoryOut, type TownContentOut } from './schemas';
 import type { WorldSkeleton, ZoneSlot } from './structure';
+import { fitTiles } from './mapdraw';
 
 export interface Draft {
   id: string;
@@ -60,24 +61,27 @@ export function fuzzy<T>(ref: string | undefined, items: T[], name: (t: T) => st
   return bestScore >= 10 ? best : undefined;
 }
 
-/** The residents every town needs, as game functions (the town step is asked again until all are there). */
-export function townRoles(companions: boolean): { role: NpcRole; merchantKind?: 'general' | 'weapons'; label: string }[] {
+/**
+ * The residents every town needs, as game functions (the town step is asked again until all are there): with
+ * crafting, a crafter, whose workshop holds the town's crafting station.
+ */
+export function townRoles(crafting: boolean): { role: NpcRole; merchantKind?: 'general' | 'weapons'; label: string }[] {
   return [
     { role: 'innkeeper', label: 'innkeeper' },
     { role: 'merchant', merchantKind: 'general', label: 'merchant (general goods)' },
     { role: 'merchant', merchantKind: 'weapons', label: 'merchant (weapons or armor)' },
     { role: 'trainer', label: 'trainer' },
     { role: 'guard', label: 'guard' },
-    ...(companions ? [{ role: 'companion' as const, label: 'companion' }] : []),
+    ...(crafting ? [{ role: 'crafter' as const, label: 'crafter (runs the workshop where things are made)' }] : []),
   ];
 }
 
 /** Required roles the town's residents (and story characters living there) leave uncovered. */
-export function missingRoles(residents: Pick<NpcOut, 'role' | 'merchantKind'>[], companions: boolean): string[] {
+export function missingRoles(residents: Pick<NpcOut, 'role' | 'merchantKind'>[], crafting: boolean): string[] {
   const used = new Set<number>();
   const covers = (n: Pick<NpcOut, 'role' | 'merchantKind'>, req: ReturnType<typeof townRoles>[number]) =>
     n.role === req.role && (req.merchantKind !== 'weapons' || n.merchantKind === 'weapons' || n.merchantKind === 'armor');
-  return townRoles(companions)
+  return townRoles(crafting)
     .filter((req) => {
       const i = residents.findIndex((n, j) => !used.has(j) && covers(n, req));
       if (i < 0) return true;
@@ -99,7 +103,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   const rng = new Rng(`${d.seed}:assemble`);
   const sk = d.skeleton;
   const r = d.ruleset;
-  const systems = { traps: r.systems.traps, lockpicking: r.systems.locks, crafting: r.crafting.enabled };
+  const systems = { traps: r.systems.traps, lockpicking: r.systems.locks, crafting: r.crafting.enabled, fastTravel: r.systems.fastTravel };
   const size = SIZE_PROFILES[d.input.size];
   const zoneInfo = (slot: string) => d.atlas.zones.find((z) => z.slotId === slot);
   const slotById = new Map(sk.slots.map((s) => [s.slotId, s]));
@@ -143,13 +147,15 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     itemKey.set(it.key, id);
   });
   const dungeonSlots = sk.slots.filter((s) => s.kind === 'dungeon');
+  const lairSlots = sk.slots.filter((s) => s.kind !== 'town');
   const bosses: BossDef[] = [];
   const bossKey = new Map<string, string>();
-  const bossDungeonUsed = new Set<string>();
+  const lairUsed = new Set<string>();
+  // Each boss in the lair the story chose; two bosses share a place only when there are more bosses than places.
   d.story.bosses.forEach((b, i) => {
-    let slot = slotById.get(b.dungeonSlot);
-    if (!slot || slot.kind !== 'dungeon' || bossDungeonUsed.has(slot.slotId)) slot = dungeonSlots.find((x) => !bossDungeonUsed.has(x.slotId)) ?? slot ?? dungeonSlots[0]!;
-    bossDungeonUsed.add(slot.slotId);
+    let slot = slotById.get(b.lairSlot);
+    if (!slot || slot.kind === 'town' || lairUsed.has(slot.slotId)) slot = (slot && slot.kind !== 'town' && lairSlots.every((x) => lairUsed.has(x.slotId)) ? slot : undefined) ?? lairSlots.find((x) => !lairUsed.has(x.slotId)) ?? dungeonSlots[i % dungeonSlots.length]!;
+    lairUsed.add(slot.slotId);
     const famIds = zoneFamilies.get(slot.slotId) ?? [];
     const id = `b${i}_${slugify(b.name)}`;
     const isFinal = i === d.story.bosses.length - 1;
@@ -172,7 +178,6 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   const npcs: NpcDef[] = [];
   const npcKey = new Map<string, string>();
   const usedNames = new Set<string>();
-  const companionsAllowed = d.input.combatMode === 'party_npc';
   const pickArchetype = (role: NpcRole): MonsterArchetype =>
     role === 'guard' ? 'guardian' : role === 'mystic' ? 'caster' : role === 'companion' ? rng.pick(['skirmisher', 'archer', 'caster', 'healer', 'guardian'] as MonsterArchetype[]) : role === 'trainer' ? 'skirmisher' : 'brute';
   /** Two people of the same name are told apart by where they live. */
@@ -206,11 +211,10 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       barks: o.barks?.length ? o.barks : ['...'],
       level: Math.max(1, slot.levelRange[0] + (role === 'guard' ? 3 : role === 'companion' ? 0 : 1)),
       archetype: pickArchetype(role),
-      canJoinParty: companionsAllowed && (o.canJoinParty === true || role === 'companion'),
       essential: false,
       questIds: [],
       colors: [rng.pick(['#7a4a3a', '#3a5a7a', '#5a7a3a', '#7a6a3a', '#6a3a6a', '#3a6a6a', '#8a8a8a']), rng.pick(['#d0b090', '#a07850', '#704830', '#e0c0a0'])],
-      wanders: role === 'commoner' || role === 'guard' || role === 'companion',
+      wanders: role === 'commoner' || role === 'guard',
       ...extra,
     };
   };
@@ -450,6 +454,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       id: zid(s.slotId),
       name: zi.name,
       kind: s.kind,
+      tiles: fitTiles(s.kind, [zi.tiles.cols, zi.tiles.rows]),
       description: zi.description,
       regionIndex: s.regionIndex,
       levelRange: s.levelRange,
@@ -475,8 +480,8 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     for (const link of s.links)
       add(zoneById.get(zid(s.slotId))!, { id: `${zid(s.slotId)}_exit_${link}`, kind: 'exit', targetZoneId: zid(link), targetFeatureId: `${zid(link)}_exit_${s.slotId}`, name: `To ${zoneInfo(link)?.name}` });
 
-  // Towns: a building for everyone who works indoors (painted on the map, not entered: they stand outside it), the
-  // waypoint, a sign and a workbench (health comes back outside combat, so there are no beds).
+  // Towns: a building for everyone who works indoors (painted on the map, not entered: they stand outside it), a sign,
+  // the crafting station at the crafter's workshop (with crafting), and the waypoint (with fast travel).
   for (const t of townSlots) {
     const z = zoneById.get(zid(t.slotId))!;
     const content = d.towns[t.slotId];
@@ -496,7 +501,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       n.wanders = false;
       return { id: `${z.id}_b${bi}`, name: nameFor(n, purpose), purpose, npcId: n.id };
     });
-    add(z, { id: `${z.id}_waypoint`, kind: 'waypoint', name: `${z.name} Waypoint` });
+    if (systems.fastTravel) add(z, { id: `${z.id}_waypoint`, kind: 'waypoint', name: `${z.name} Waypoint` });
     add(z, { id: `${z.id}_sign`, kind: 'sign', text: content?.signText ?? `Welcome to ${z.name}.`, name: 'Sign' });
     if (systems.crafting && !workers.some((n) => n.role === 'crafter')) add(z, { id: `${z.id}_craft`, kind: 'craft_station', name: 'Workbench' });
   }
@@ -530,7 +535,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       continue;
     }
     const want = p.zoneId ? zoneById.get(p.zoneId) : undefined;
-    const z = want && want.kind !== 'town' && want.kind !== 'interior' ? want : zones.find((x) => x.kind === 'dungeon' && x.regionIndex === (want?.regionIndex ?? 0)) ?? zones.find((x) => x.kind === 'dungeon')!;
+    const z = want && want.kind !== 'town' ? want : zones.find((x) => x.kind === 'dungeon' && x.regionIndex === (want?.regionIndex ?? 0)) ?? zones.find((x) => x.kind === 'dungeon')!;
     const chest = z.features.find((f) => f.id === `${z.id}_chest_quest`);
     if (chest) chest.items!.push(p.uniqueId);
     else add(z, { id: `${z.id}_chest_quest`, kind: 'chest', name: 'Chest', lootTier: z.levelRange[1] + 1, items: [p.uniqueId] });
@@ -544,7 +549,6 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
 
   const world: WorldDefinition = {
     id: d.id,
-    formatVersion: 2,
     ownerId: owner.id,
     ownerName: owner.name,
     public: true,
@@ -585,4 +589,42 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   delete (world.concept as { _rules?: string })._rules;
   bindWorld(world, r, d.rulesIntent.classes);
   return world;
+}
+
+/**
+ * The three heroes who travel with the player (a world played with companions): people of the starting town who are
+ * in the party from the first moment, with a class and kin of the world's rules.
+ */
+export function addCompanions(w: WorldDefinition, out: CompanionsOut) {
+  const r = w.ruleset;
+  w.npcs = w.npcs.filter((n) => !n.companion);
+  out.companions.forEach((c, i) => {
+    const cls = r.classes.find((x) => x.name === c.className) ?? r.classes[i % r.classes.length]!;
+    const kin = r.kins.find((x) => x.name === c.kinName) ?? r.kins[0]!;
+    w.npcs.push({
+      id: `n_comp${i}_${slugify(c.name)}`,
+      name: c.name,
+      title: c.title,
+      role: 'companion',
+      zoneId: w.startZoneId,
+      x: 0,
+      y: 0,
+      pronouns: kin.presentation === 'feminine' ? 'she/her' : kin.presentation === 'masculine' ? 'he/him' : 'they/them',
+      personality: c.personality,
+      appearance: c.appearance,
+      backstory: c.backstory,
+      knowledge: c.knowledge,
+      secrets: [],
+      voice: c.voice,
+      greeting: c.greeting,
+      barks: c.barks.length ? c.barks : ['...'],
+      level: 1,
+      archetype: cls.aiRole,
+      companion: { classId: cls.id, kinId: kin.id },
+      essential: true,
+      questIds: [],
+      colors: ['#4a6a9a', '#d0b090'],
+      wanders: false,
+    });
+  });
 }

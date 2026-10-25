@@ -208,7 +208,7 @@ export function codexSections(r: Ruleset): CodexSection[] {
       title: 'Traps and locks',
       lines: [
         ...(r.systems.traps ? ['Traps are hidden until someone notices them; trap sense widens the range. Spotted traps can be avoided or disarmed.'] : []),
-        ...(r.systems.locks ? ['Locked chests and doors need a key, a tool, or a skilled hand.'] : []),
+        ...(r.systems.locks ? ['Locked chests need a key, a tool, or a skilled hand.'] : []),
       ],
     });
   }

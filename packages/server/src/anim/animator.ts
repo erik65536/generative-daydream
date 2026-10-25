@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { ACTOR_CLIPS, ANIM_VERSION, clipKey, type ActorAnim, type BodyPlan, type ClipName, type WorldDefinition } from '@gd/shared';
+import { ACTOR_CLIPS, clipKey, type ActorAnim, type BodyPlan, type ClipName, type WorldDefinition } from '@gd/shared';
 import { genai } from '../genai/service';
 import { callContext } from '../genai/context';
 import { promptTag } from '../gpu/presence';
@@ -211,9 +211,9 @@ export function saveAnimation(w: WorldDefinition, key: string, r: Rendered & { b
     }
     const file = `${k.replace('@', '_')}_${stamp}.webp`;
     fs.writeFileSync(path.join(dir, file), sheet);
-    w.assets[k] = { key: k, kind: 'sprite', file, prompt: `${clip} of ${key}`, status: 'ok', ref: key, variant: 'anim', width: r.cell[0] * r.clips[clip]!.frames, height: r.cell[1] * 8 };
+    w.assets[k] = { key: k, kind: 'sheet', file, prompt: `${clip} of ${key}`, status: 'ok', ref: key, width: r.cell[0] * r.clips[clip]!.frames, height: r.cell[1] * 8 };
   }
-  const anim: ActorAnim = { v: ANIM_VERSION, body: r.body, scale, cell: r.cell, anchor: r.anchor, height: ACTOR_HEIGHT, from: w.assets[key]?.file ?? '', clips: r.clips };
+  const anim: ActorAnim = { body: r.body, scale, cell: r.cell, anchor: r.anchor, height: ACTOR_HEIGHT, from: w.assets[key]?.file ?? '', clips: r.clips };
   if (w.assets[key]) w.assets[key]!.anim = anim;
   return anim;
 }
