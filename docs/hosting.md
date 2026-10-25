@@ -138,6 +138,26 @@ journalctl -u caddy
 The admin pages (Users, GPU) work as in development. The GPU page reads VRAM from ComfyUI's own report, because
 `nvidia-smi` is not on the box.
 
+## Moving worlds between machines
+
+A world takes hours of GPU to build, so build it once and carry it: from development to the game box, or from the
+game box home to reproduce a bug. On the machine that has it (in `packages/server`):
+
+```
+npm run worldpack -- export <worldId> thimble.gdpack --saves
+```
+
+Copy the file over, then on the other machine (the server can be running):
+
+```
+npm run worldpack -- import thimble.gdpack --owner <username>
+```
+
+The world belongs to `--owner`; with `--saves` its saves come along, each player given to the account of the same
+name there (or the owner). Something already there is kept unless `--replace`. `--rigs` adds the animation rigs (to
+animate again) and `--draft` the build's intermediate steps (to lay places out again); neither is needed to play.
+A pack is a gzipped tar read with the system's `tar`, and is checked before anything is copied in.
+
 ## Deleted worlds
 
 Deleting a daydream moves it to `/var/lib/gd/trash/<id>/`:

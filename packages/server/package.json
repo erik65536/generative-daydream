@@ -8,6 +8,7 @@
     "start": "tsx src/index.ts",
     "gen": "tsx src/cli/genlive.ts",
     "users": "tsx src/cli/users.ts",
+    "worldpack": "tsx src/cli/worldpack.ts",
     "worker": "tsx src/worker.ts"
   },
   "dependencies": {
