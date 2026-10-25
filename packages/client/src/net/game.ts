@@ -301,14 +301,19 @@ export class GameClient {
     return this.state.player?.party ?? [];
   }
 
-  /** A thing a quest has the player use ("search the stand") is there only while an open quest step needs it. */
+  /**
+   * A thing a quest has the player use ("search the stand") is there only while it is the step the quest is on (or an
+   * optional step, which can be done any time), not for a step still to come.
+   */
   questThingOpen(featureId: string): boolean {
     const pl = this.state.player;
     if (!pl) return false;
     return Object.values(pl.quests).some((q) => {
       if (q.status !== 'active') return false;
       const objectives = q.overrides ?? pl.questDefs[q.questId]?.objectives ?? [];
-      return objectives.some((o) => o.featureId === featureId && !q.objectives[o.id]?.done);
+      const open = (o: (typeof objectives)[number]) => !q.objectives[o.id]?.done;
+      const current = objectives.find((o) => open(o) && !o.optional);
+      return objectives.some((o) => o.featureId === featureId && open(o) && (o === current || o.optional));
     });
   }
 
