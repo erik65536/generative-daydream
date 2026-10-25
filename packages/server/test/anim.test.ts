@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import sharp from 'sharp';
 import { describe, expect, it } from 'vitest';
 import { ACTOR_CLIPS, ANIM_DIRS, clipFrame, clipKey, dirRow, type AnimClip, type AssetRecord, type WorldDefinition } from '@gd/shared';
@@ -178,6 +179,44 @@ describe('rendering sheets', async () => {
       expect(r.clips.die?.loop).toBe(false);
     } finally {
       await closeRenderer();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('SkinTokens skeleton grammar', () => {
+  const python = spawnSync('python', ['--version']).status === 0;
+  it.skipIf(!python)("asks for a branch's new joint and a first joint before the skeleton ends", () => {
+    // A stand-in for SkinTokens' tokenizer whose grammar allows anything, as the real one does at these points:
+    // coordinates 0-7, then branch 8, eos 9 and a class token 10.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gd-st-'));
+    try {
+      fs.mkdirSync(path.join(dir, 'src', 'tokenizer'), { recursive: true });
+      const stub = ['class TokenizerPart:', '    num_discrete, token_id_branch, token_id_eos = 8, 8, 9', '    def next_posible_token(self, ids):', '        return list(range(11))'];
+      fs.writeFileSync(path.join(dir, 'src', 'tokenizer', 'tokenizer_part.py'), stub.join('\n'));
+      const script = [
+        'import json, sys',
+        `sys.path[:0] = [${JSON.stringify(dir)}, ${JSON.stringify(path.resolve(__dirname, '../animator'))}]`,
+        'import skintokens_run',
+        'skintokens_run.patch_grammar()',
+        'from src.tokenizer.tokenizer_part import TokenizerPart',
+        'class Ids(list):',
+        '    def tolist(self): return list(self)',
+        't = TokenizerPart()',
+        'cases = [[10], [10, 1, 2, 3], [10, 1, 2, 3, 8, 4, 5, 6], [10, 1, 2, 3, 8, 4, 5, 6, 7], [10, 1, 2, 3, 8, 4, 5, 6, 7, 7, 7]]',
+        'print(json.dumps([t.next_posible_token(Ids(c)) for c in cases]))',
+      ].join('\n');
+      const r = spawnSync('python', ['-c', script], { encoding: 'utf8' });
+      expect(r.stderr).toBe('');
+      const [start, joint, parent, partial, branched] = JSON.parse(r.stdout) as number[][];
+      const coords = [0, 1, 2, 3, 4, 5, 6, 7];
+      expect(start).not.toContain(9);
+      expect(joint).toContain(9);
+      expect(parent).toEqual(coords);
+      expect(partial).toEqual(coords);
+      expect(branched).toContain(9);
+      expect(branched).toContain(8);
+    } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });

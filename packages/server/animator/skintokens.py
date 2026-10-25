@@ -12,7 +12,7 @@ def skintokens(job: str, st_dir: str, st_python: str, device: str = 'cuda') -> d
     t0 = time.time()
     log = os.path.join(job, 'skintokens.log')
     with open(log, 'w', encoding='utf8') as f:
-        p = subprocess.run([st_python, 'demo.py', '--input', os.path.abspath(os.path.join(job, 'mesh.glb')), '--output', os.path.abspath(out)],
+        p = subprocess.run([st_python, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'skintokens_run.py'), st_dir, '--input', os.path.abspath(os.path.join(job, 'mesh.glb')), '--output', os.path.abspath(out)],
                            cwd=st_dir, env=env, stdout=f, stderr=subprocess.STDOUT)
     if p.returncode != 0 or not os.path.exists(out):
         tail = open(log, encoding='utf8', errors='replace').read()[-1500:]
