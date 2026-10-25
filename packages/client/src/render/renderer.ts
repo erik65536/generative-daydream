@@ -1444,7 +1444,8 @@ export class Renderer {
     // 0 at noon, 1 at midnight, smooth dawn/dusk.
     const night = h < 5 ? 1 : h < 7.5 ? 1 - (h - 5) / 2.5 : h < 18 ? 0 : h < 20.5 ? (h - 18) / 2.5 : 1;
     const dusk = h > 17 && h < 20.5 ? Math.sin(((h - 17) / 3.5) * Math.PI) : h > 5 && h < 8 ? Math.sin(((h - 5) / 3) * Math.PI) * 0.7 : 0;
-    return { darkness: night * 0.62 + dusk * 0.16, tint: mix([10, 16, 48], [90, 40, 30], dusk) };
+    // Dusk and dawn are a soft amber shading into the night's blue (a strong red read as a red cast on the world).
+    return { darkness: night * 0.62 + dusk * 0.1, tint: mix([10, 16, 48], [96, 70, 44], dusk * 0.7) };
   }
 
   private drawLighting(z: ZoneData) {
