@@ -627,7 +627,7 @@ async function closeOpening(cv: Raster, b: MapBrief, p: MapPlan, o: MapExit, tex
   await cv.paste(out, wx, wy, S, S, (x, y) => strength(x + wx, y + wy) > 0);
 }
 
-/** The barrier band's depth in metres (the stand-in walk plan blocks it except at the exits). */
+/** The barrier band's depth in metres (the walk plan blocks it except at the exits). */
 export const BARRIER_DEPTH_M = BAND / PAINT_PXM;
 /** An exit's gap width in metres. */
 export const EXIT_GAP_M = GAP / PAINT_PXM;

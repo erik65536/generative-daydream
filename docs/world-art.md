@@ -11,12 +11,14 @@ separate images drawn over the maps.
 1. **Make the map** (`paintAndRead`, needs only what the place is: name, description, buildings, ways out and the
    sides they leave by). Luna plans the map; Krea 2 paints the whole place once (best of eight, Sol checking every
    area can be reached), SeedVR2 enlarges it and Krea adds detail; exits are painted where Sol finds a street
-   reaching the edge, then a barrier round the edge; Sol closes unplanned ways out. Where people can walk is a
-   stand-in for now (everywhere but the barrier). See `places.md` for the pipeline, the settings and why.
+   reaching the edge, then a barrier round the edge; Sol closes unplanned ways out. Where people can walk is read
+   back by Qwen (three plans) with Luna where they disagree, then made usable without repainting (narrow passages
+   widened, cut-off areas joined). See `places.md` for the pipeline, the settings and why.
 2. **Settle** (`settlePlace`, after assembly). Luna places every building, way out, person and thing on the
    numbered spots of the reading; the map is brought to game scale (a Lanczos resize; SeedVR2 2× first when it
    must grow more than 1.5×) and saved as `place_<zoneId>`; the walk and sight plans become the place's navigation grid; and monster
-   packs, the boss and traps are spread by walking distance from the way in. Town buildings are painted, never
+   packs (in open ground), the boss (in the lair placement chose) and traps are spread by walking distance from the
+   way in. Town buildings are painted, never
    entered: each is someone's workplace (`zone.buildings`), and they stand outside its entrance; a workbench
    stands in the town. (Worlds from before keep their interiors, which still work.)
    While Luna places things, the place's air is made (`atmosphere.ts`, below), and the light its map carries is

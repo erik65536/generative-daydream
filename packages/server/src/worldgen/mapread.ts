@@ -1,395 +1,286 @@
 /**
- * Reading a top-down map (see docs/places.md): where people can walk, what blocks sight, the buildings and their
- * doors, and landmarks. Two readers that make different mistakes, and Luna where they disagree:
+ * Reading a big top-down map (see docs/places.md): where people can walk, where its buildings are (for sight) and
+ * what blocks sight; the spots things are placed on (entrances, named landmarks) are found in mapspots.ts. Studied
+ * in October 2026 against 400 hand-labelled points on five maps.
  *
- * 1. SAM: Luna names what the map shows as an object detector would (floors, stairs, walls, buildings, water, props,
- *    trees, doors); SAM 3 finds each name in overlapping 1024 px tiles (it sees about 1000 px); the most specific
- *    (smallest) detection wins each pixel. A wall mask whose inside is mostly floor keeps only its rim (the detector
- *    filled in a walled area); a detection covering over a third of the map is ignored (a scene-sized blob). Cells
- *    take their majority class; Luna checks the colouring once, beside the map, and her better names are read again.
- *    Strong on clutter (desks, cars), weak where names drift (a dark temple read almost no floor).
- * 2. Qwen-Image 2.1 edit redraws the map as a three-colour plan: white walkable, blue water and the outside, black
- *    solid. Strong on structure and the outside, weak on clutter. (Two colours flipped the sea to walkable.)
- * 3. Where they agree (about 70% of a map, right 94% of the time) the cell is settled. Every joined patch where they
- *    disagree is settled by Luna on the decision API: a zoomed crop with a crosshair every metre over the patch ("can
- *    a person stand here?"), each cell taking its nearest sample's answer; patches under 1 m² take Qwen's answer.
- *    91% right at hand-labelled points, against 85% (SAM) and 80% (Qwen).
+ * 1. Qwen-Image 2.1 edit redraws the whole map (at about 1.4 or 2.4 MP: tiles lose the context that tells a roof
+ *    from a floor) as flat plans, three ways (WALK_READINGS): white walkable, black solid (filled, not outlined),
+ *    blue water, pits and the outside. A fourth plan also paints buildings red (BUILDING_PLAN). Each reading alone is
+ *    right at 85-87% of the points; they share their mistakes (small things blurred into floor), so a vote gains
+ *    little, but where they split is where the map is uncertain.
+ * 2. Luna settles the split cells (decision API, the place's description in the prompt): a patch of up to 20 m² in
+ *    one look with the patch outlined; a bigger one sampled every 2 m, each sample a close-up with a ring at the point
+ *    ("what is under the ring?"), each cell taking its nearest sample. Patches under 2 m² take the majority. Right at
+ *    92% of the points after the walkability fixes (mapfix.ts), for about a cent of Luna per map.
+ * 3. Water is judged by the place: each patch most readings painted blue gets one look ("can the character walk
+ *    across it here?"), so a shallow puddle or ice meant to be walked on opens and a canal or marsh stays a barrier.
+ *
+ * SAM 3 with Luna's names (the earlier reader) was weaker here: its names drift ("frozen runnel" took the snow
+ * trails) and it read a dungeon almost wholly wrong. Sol on crops was no better than Luna at forty times the price.
  */
 import sharp from 'sharp';
-import { z } from 'zod';
 import { genai } from '../genai/service';
-import { qwenEdit, segment } from './comfy';
+import { qwenEdit } from './comfy';
 import { CELL, cellsOf, components, type Grid } from './mapgrid';
+import type { Spot } from './mapspots';
 
-export const WALK_PLAN = 'Convert this top-down map into a flat three-colour plan with exactly the same layout, shapes and positions. Paint pure white every open floor area where a person can walk: floors, corridors, paths, streets, plazas, lawns, carpet, bridges and stairs. Paint pure blue all water (sea, rivers, pools, channels), pits and the empty darkness, fog or land outside the place. Paint pure black everything solid that blocks walking: walls, buildings and roofs, furniture, desks, cars, machines, statues, rocks, cliffs, trees, hedges and bushes. Only white, blue and black, no texture, no outlines.';
+/** Qwen prompts for the walk readings, and the megapixels each map is read at. */
+export const WALK_READINGS: { prompt: string; mp: number }[] = [
+  {
+    mp: 2.4,
+    prompt: 'Convert this top-down map into a flat three-colour plan with exactly the same layout, shapes and positions. Paint pure white every open floor area where a person can walk: floors, corridors, paths, streets, plazas, lawns, carpet, bridges and stairs. Paint pure blue all water (sea, rivers, pools, channels), pits and the empty darkness, fog or land outside the place. Paint pure black everything solid that blocks walking: walls, buildings and roofs, furniture, desks, cars, machines, statues, rocks, cliffs, trees, hedges and bushes. Only white, blue and black, no texture, no outlines.',
+  },
+  {
+    mp: 1.4,
+    prompt: 'Convert this top-down game map into a flat walkability mask for the game, with exactly the same layout, shapes and positions. Paint pure white all ground the player can walk on: floors, streets, paths, plazas, decks, bridges, stairs, grass, snow and sand, including patterns, rugs and decorations lying flat on the ground. Paint pure black, filled solid, everything the player cannot walk through: buildings and roofs, walls, fences, hedges, furniture, tables, crates, carts, statues, rocks, trees, bushes and unlit dark areas. Paint pure blue all water, pits and the area outside the place. Fill every shape completely: no outlines, no texture, no grey.',
+  },
+  {
+    mp: 1.4,
+    prompt: 'Convert this top-down view into a game pathing mask with exactly the same layout. Fill areas the player is allowed to stand in white. Fill areas the player is blocked from standing in black. Fill all water, pits and the area outside the place with blue. Fill all objects, buildings, trees, rocks and tables with black rather than outlining them. Only flat white, black and blue.',
+  },
+];
 
-const ReadSchema = z.object({
-  floors: z.array(z.string().max(40)).min(1).max(5).describe('Surfaces people walk on, as an object detector would name them by material and colour: "grey cobblestone street", "wooden plank floor", "green grass lawn"'),
-  stairs: z.array(z.string().max(40)).max(3).describe('Stairs or ramps; empty if none'),
-  walls: z.array(z.string().max(40)).max(4).describe('Walls, rock masses, hedges, fences, partitions, cliffs: things standing up that block walking (not buildings)'),
-  buildings: z.array(z.string().max(40)).max(3).describe('Roofed buildings seen from above, by the look of their roofs ("red tiled roof"); empty for indoor places'),
-  water: z.array(z.string().max(40)).max(3).describe('Water, pits, lava or the void around the place'),
-  props: z.array(z.string().max(40)).max(6).describe('Solid things standing on the floor: furniture, cars, crates, statues, fountains, tables'),
-  trees: z.array(z.string().max(40)).max(3).describe('Trees, bushes, giant mushrooms: crowns seen from above'),
-  door: z.string().max(40).describe('What doors and entrances look like from above, as a detector name ("wooden door"); empty if none'),
-});
-export type MapRead = z.infer<typeof ReadSchema>;
-type Kind = 'floor' | 'stairs' | 'wall' | 'building' | 'water' | 'prop' | 'tree';
-const KINDS: [keyof MapRead, Kind][] = [['floors', 'floor'], ['stairs', 'stairs'], ['walls', 'wall'], ['buildings', 'building'], ['water', 'water'], ['props', 'prop'], ['trees', 'tree']];
-/** Kinds people walk on, and kinds that block sight. */
-const OPEN = new Set<Kind>(['floor', 'stairs']);
-const TALL = new Set<Kind>(['wall', 'building', 'tree']);
+/** The plan that marks buildings (red), for sight. */
+export const BUILDING_PLAN = {
+  mp: 1.4,
+  prompt: 'Convert this top-down game map into a flat four-colour plan for the game, with exactly the same layout, shapes and positions. Paint pure white all ground the player can walk on: floors, streets, paths, plazas, decks, bridges, stairs, grass, snow and sand, including patterns, rugs and decorations lying flat on the ground. Paint pure red every building and roof. Paint pure black, filled solid, everything else the player cannot walk through: walls, fences, hedges, furniture, tables, crates, carts, statues, rocks, trees, bushes and unlit dark areas. Paint pure blue all water, pits and the area outside the place. Fill every shape completely: no outlines, no texture, no grey.',
+};
 
-export interface Detected {
-  /** Each cell's class (index into `classes`, -1 unknown). */
-  cls: Int16Array;
-  classes: { kind: Kind; term: string }[];
-  /** Door detections' centres (picture px). */
-  doors: { x: number; y: number }[];
+/** A plan read back as cells: walkable (near white), water (blue) and building (red). */
+export interface PlanCells {
+  walk: Uint8Array;
+  water: Uint8Array;
+  building: Uint8Array;
 }
 
-/** Luna names what the map shows, as an object detector would. */
-export async function nameThings(png: Buffer, name: string, description: string): Promise<MapRead> {
-  return genai().structured('world.design', {
-    system: 'You are the level designer of a 2D top-down RPG. You read top-down maps so the game can use them. Judge only what you see.',
-    prompt: `This top-down map is ${name}: ${description}\nAn object detector (SAM 3) will find things in it from short English names you give. Name each kind of surface and object exactly as it looks in this map, by material, shape and colour.`,
-    schema: ReadSchema,
-    name: 'map_read',
-    images: [await sharp(png).resize({ width: 1400, withoutEnlargement: true }).jpeg({ quality: 88 }).toBuffer()],
-    maxTokens: 2000,
-  });
+/** Qwen's plan of the whole map, read at about `mp` megapixels, as cells. */
+export async function readPlan(png: Buffer, g: Grid, plan: { prompt: string; mp: number }, seed = 1): Promise<PlanCells> {
+  const { width: W, height: H } = (await sharp(png).metadata()) as { width: number; height: number };
+  const k = Math.sqrt((plan.mp * 1e6) / (W * H));
+  const ref = await sharp(png).resize(Math.round((W * k) / 16) * 16, Math.round((H * k) / 16) * 16).png().toBuffer();
+  const { data, info } = await sharp(await qwenEdit(ref, plan.prompt, seed)).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const n = info.width * info.height, walk = new Uint8Array(n), water = new Uint8Array(n), building = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    const r = data[i * 3]!, gr = data[i * 3 + 1]!, b = data[i * 3 + 2]!;
+    walk[i] = r > 150 && gr > 150 && b > 150 ? 1 : 0;
+    water[i] = b > 140 && r < 110 ? 1 : 0;
+    building[i] = r > 150 && gr < 100 && b < 100 ? 1 : 0;
+  }
+  return { walk: cellsOf(walk, info.width, info.height, g), water: cellsOf(water, info.width, info.height, g), building: cellsOf(building, info.width, info.height, g) };
 }
 
-/** SAM 3 over the map in overlapping tiles: every detection of `term`, as a picture-sized mask. */
-async function detect(png: Buffer, W: number, H: number, term: string, many: boolean): Promise<Uint8Array[]> {
-  const TILE = 1024, OVER = 128;
-  const starts = (n: number) => {
-    if (n <= TILE + OVER) return [0];
-    const out: number[] = [];
-    for (let v = 0; ; v += TILE - OVER) {
-      out.push(Math.min(v, n - TILE));
-      if (v + TILE >= n) break;
-    }
-    return out;
+/** What Luna is told about the place she judges. */
+export interface PlaceBrief {
+  name: string;
+  description: string;
+}
+
+const CONTEXT = (p: PlaceBrief) => `We are turning a painted top-down map into the walkability mask of a 2D top-down RPG. The game draws this painting as the place, and lets the player character (about half a metre across, seen from above) walk only where the mask allows; everything else blocks movement like a wall.
+The place: ${p.name}. As designed: ${p.description.slice(0, 1400)}`;
+
+/** Images for Luna: the whole map with a box round the close-up, and the close-up (`S` map px square, shown at `C`). */
+async function views(png: Buffer, W: number, H: number, cx: number, cy: number, S: number, C: number, overlay: (s: number, left: number, top: number) => string) {
+  const left = Math.round(Math.max(0, Math.min(W - S, cx - S / 2))), top = Math.round(Math.max(0, Math.min(H - S, cy - S / 2)));
+  const s = C / S;
+  const crop = await sharp(png).extract({ left, top, width: S, height: S }).resize(C, C).composite([{ input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${C}" height="${C}">${overlay(s, left, top)}</svg>`) }]).png().toBuffer();
+  const o = 1024 / W;
+  const box = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="${Math.round(H * o)}"><rect x="${left * o}" y="${top * o}" width="${S * o}" height="${S * o}" fill="none" stroke="#ff00ff" stroke-width="3"/></svg>`;
+  const overview = await sharp(png).resize(1024).composite([{ input: Buffer.from(box) }]).jpeg({ quality: 85 }).toBuffer();
+  return [overview, crop];
+}
+
+const yesNo = (yes: string, no: string) => ({ yes, no });
+const probYes = (a: Record<string, { type: string; probabilities?: Record<string, number> }>, q: string) => a[q]?.probabilities?.yes ?? 0.5;
+
+/** What can lie under a point; only ground is walkable. */
+const WHAT = {
+  ground: 'open ground: floor, street, path, plaza, deck or boardwalk, bridge, stairs, grass, snow, sand, or something flat painted or lying on the ground (tiles, rugs, patterns, shadows, puddles)',
+  building: 'a roof or building',
+  wall: 'a wall, its top, a fence, hedge, railing or pillar',
+  plant: 'a tree or bush',
+  object: 'furniture, a crate, barrel, cart, boat, statue, rock or other solid object',
+  water: 'water or ice',
+  void: 'darkness, a pit, a cliff, or the land outside the place',
+};
+
+/** Luna's probability that the point (picture px) is ground the character can stand on. */
+export async function groundAt(png: Buffer, W: number, H: number, x: number, y: number, pxm: number, p: PlaceBrief): Promise<number> {
+  const S = Math.round(12 * pxm), C = 512;
+  const ring = (s: number, left: number, top: number) => {
+    const cx = (x - left) * s, cy = (y - top) * s;
+    const l = (a: number, b: number, c: number, d: number) => `<line x1="${a}" y1="${b}" x2="${c}" y2="${d}" stroke="#ff00ff" stroke-width="4"/>`;
+    return `<circle cx="${cx}" cy="${cy}" r="9" fill="none" stroke="#ff00ff" stroke-width="3"/>${l(cx - 30, cy, cx - 14, cy)}${l(cx + 14, cy, cx + 30, cy)}${l(cx, cy - 30, cx, cy - 14)}${l(cx, cy + 14, cx, cy + 30)}`;
   };
-  const out: Uint8Array[] = [];
-  for (const top of starts(H))
-    for (const left of starts(W)) {
-      const tw = Math.min(TILE, W), th = Math.min(TILE, H);
-      const tile = tw === W && th === H ? png : await sharp(png).extract({ left, top, width: tw, height: th }).png().toBuffer();
-      for (const m of await segment(tile, `${term}:${many ? 200 : 60}`)) {
-        const raw = await sharp(m).greyscale().resize(tw, th, { fit: 'fill' }).raw().toBuffer();
-        const full = new Uint8Array(W * H);
-        for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) if (raw[y * tw + x]! > 127) full[(top + y) * W + left + x] = 1;
-        out.push(full);
-      }
+  const a = await genai().decide('image.check', {
+    state: `${CONTEXT(p)}\nImage 1 is the whole map; the magenta box marks where image 2 is. Image 2 is a close-up of about 12 metres; the point asked about is the centre of the small magenta ring.`,
+    questions: { what: { type: 'choice', instructions: 'What is directly under the centre of the ring, as the painter meant it? Answer for that point only. Flat things on the ground (patterns, tiles, rugs, shadows, puddles, fallen leaves) count as ground. Water and ice count as ground only if this place clearly means people to walk on them; otherwise answer water.', criteria: WHAT } },
+    images: await views(png, W, H, x, y, Math.min(S, W, H), C, ring),
+  });
+  const w = a.what;
+  return w?.type === 'choice' ? (w.probabilities.ground ?? (w.choice === 'ground' ? 1 : 0)) : 0.5;
+}
+
+/** The questions Luna answers about an outlined area. */
+const AREA = {
+  patch: {
+    note: 'a magenta outline marks an area our readers disagree about.',
+    instructions: 'Is most of the outlined area ground the character can stand on (floor, street, path, deck, bridge, stairs, grass, snow, or flat things lying on the ground such as patterns, rugs, shadows and puddles)? Answer no if most of it is a roof or building, a wall, fence or hedge, furniture or another solid object, a tree or bush, a rock, deep water, unlit darkness, or the land outside the place. Water and ice count as ground only if this place clearly means people to walk on them.',
+    criteria: yesNo('mostly ground the character can stand on', 'mostly blocked'),
+  },
+  water: {
+    note: 'a magenta outline marks an area our reader painted as water or ice.',
+    instructions: 'In this place, can the character walk across the outlined area? Answer yes only if it is a shallow puddle, wet ground, or ice this place means people to walk on; answer no if it is a barrier such as a pond, pool, river, canal, lake, sea, marsh water, a pit, unlit darkness or the land outside the place. Judge by the place as designed and how the painting shows it.',
+    criteria: yesNo('the character can walk across it', 'a barrier'),
+  },
+  reach: {
+    note: 'a magenta outline marks an area the mask reads as walkable but cut off from the rest of the walkable ground.',
+    instructions: 'Is the outlined area open ground (floor, street, path, deck, yard, garden, room) that the player should be able to walk to? Answer no if it is mostly a roof, the top of a wall or rock, water, darkness, or the land outside the place.',
+    criteria: yesNo('open ground the player should reach', 'not ground the player should reach'),
+  },
+};
+
+/** Luna's probability of yes to an area question about some cells, outlined (just outside them) on a close-up. */
+export async function judgeArea(png: Buffer, W: number, H: number, cells: number[], g: Grid, p: PlaceBrief, kind: keyof typeof AREA): Promise<number> {
+  const kx = W / g.cols, ky = H / g.rows;
+  let c0 = Infinity, c1 = -Infinity, r0 = Infinity, r1 = -Infinity;
+  for (const i of cells) {
+    const c = i % g.cols, r = Math.floor(i / g.cols);
+    (c0 = Math.min(c0, c)), (c1 = Math.max(c1, c)), (r0 = Math.min(r0, r)), (r1 = Math.max(r1, r));
+  }
+  const pxm = kx / CELL;
+  const S = Math.min(Math.max(Math.round(8 * pxm), Math.round(Math.max((c1 - c0 + 1) * kx, (r1 - r0 + 1) * ky) + 6 * pxm)), W, H);
+  const set = new Set(cells), ring = new Set<number>();
+  for (const i of cells) for (const j of [i - 1, i + 1, i - g.cols, i + g.cols]) if (j >= 0 && j < g.cols * g.rows && !set.has(j)) ring.add(j);
+  const outline = (s: number, left: number, top: number) => [...ring].map((i) => `<rect x="${((i % g.cols) * kx - left) * s}" y="${(Math.floor(i / g.cols) * ky - top) * s}" width="${Math.max(2, kx * s)}" height="${Math.max(2, ky * s)}" fill="#ff00ff"/>`).join('');
+  const q = AREA[kind];
+  const a = await genai().decide('image.check', {
+    state: `${CONTEXT(p)}\nImage 1 is the whole map (the magenta box marks image 2). In image 2, about ${Math.round(S / pxm)} metres across, ${q.note}`,
+    questions: { a: { type: 'choice', instructions: q.instructions, criteria: q.criteria } },
+    images: await views(png, W, H, ((c0 + c1 + 1) / 2) * kx, ((r0 + r1 + 1) / 2) * ky, S, 768, outline),
+  });
+  return probYes(a, 'a');
+}
+
+/** Run tasks a few at a time. */
+async function pool<T, R>(items: T[], n: number, fn: (t: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i]!);
     }
+  }));
   return out;
 }
 
-/** Chamfer distance (px) from each set pixel to the nearest unset one. */
-function inside(m: Uint8Array, W: number, H: number): Float32Array {
-  const d = new Float32Array(W * H);
-  for (let i = 0; i < d.length; i++) d[i] = m[i] ? 1e9 : 0;
-  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    const i = y * W + x;
-    if (!d[i]) continue;
-    d[i] = Math.min(d[i]!, x > 0 ? d[i - 1]! + 1 : 1, y > 0 ? d[i - W]! + 1 : 1);
-  }
-  for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) {
-    const i = y * W + x;
-    if (!d[i]) continue;
-    d[i] = Math.min(d[i]!, x < W - 1 ? d[i + 1]! + 1 : 1, y < H - 1 ? d[i + W]! + 1 : 1);
-  }
-  return d;
-}
+const PATCH_MIN = 2, PATCH_ONE_LOOK = 20, SAMPLE_SPACING = 2;
 
-/** SAM's reading of the map with the given names, as cell classes. */
-export async function detectAll(png: Buffer, read: MapRead, g: Grid, pxm: number): Promise<Detected> {
-  const { width: W, height: H } = (await sharp(png).metadata()) as { width: number; height: number };
-  const classes: Detected['classes'] = [];
-  for (const [key, kind] of KINDS) for (const term of read[key] as string[]) if (term.trim()) classes.push({ kind, term: term.trim() });
-  const floorSeen = new Uint8Array(W * H);
-  const owner = new Int16Array(W * H).fill(-1), best = new Float64Array(W * H).fill(Infinity);
-  // Floors first, so a wall's inside can be tested against them.
-  const order = [...classes.keys()].sort((a, b) => Number(!OPEN.has(classes[a]!.kind)) - Number(!OPEN.has(classes[b]!.kind)));
-  for (const ci of order) {
-    const c = classes[ci]!;
-    for (const m of await detect(png, W, H, c.term, c.kind === 'prop' || c.kind === 'tree')) {
-      let area = 0;
-      for (const v of m) area += v;
-      if (area < 50 || (!OPEN.has(c.kind) && area > (W * H) / 3)) continue;
-      if (OPEN.has(c.kind)) for (let i = 0; i < m.length; i++) if (m[i]) floorSeen[i] = 1;
-      if (c.kind === 'wall') {
-        const d = inside(m, W, H);
-        let core = 0, onFloor = 0;
-        for (let i = 0; i < m.length; i++) if (d[i]! > pxm) (core++, floorSeen[i] && onFloor++);
-        if (core > 0 && onFloor / core > 0.5) {
-          area = 0;
-          for (let i = 0; i < m.length; i++) if (d[i]! > pxm) m[i] = 0;
-            else area += m[i]!;
-        }
-      }
-      for (let i = 0; i < m.length; i++) if (m[i] && area < best[i]!) (best[i] = area), (owner[i] = ci);
-    }
-  }
-  const doors: Detected['doors'] = [];
-  if (read.door.trim())
-    for (const m of await detect(png, W, H, read.door.trim(), true)) {
-      let sx = 0, sy = 0, n = 0;
-      for (let i = 0; i < m.length; i++) if (m[i]) (sx += i % W), (sy += Math.floor(i / W)), n++;
-      if (n > 20 && n < (W * H) / 50) doors.push({ x: sx / n, y: sy / n });
-    }
-  // Cells take the class at their centre, then a majority filter (radius 2 cells) removes speckle.
-  const cls = new Int16Array(g.cols * g.rows);
-  for (let r = 0; r < g.rows; r++)
-    for (let c = 0; c < g.cols; c++) cls[r * g.cols + c] = owner[Math.min(H - 1, Math.floor(((r + 0.5) * H) / g.rows)) * W + Math.min(W - 1, Math.floor(((c + 0.5) * W) / g.cols))]!;
-  for (let pass = 0; pass < 2; pass++) {
-    const prev = Int16Array.from(cls);
-    for (let r = 0; r < g.rows; r++)
-      for (let c = 0; c < g.cols; c++) {
-        const votes = new Map<number, number>();
-        for (let dr = -2; dr <= 2; dr++) for (let dc = -2; dc <= 2; dc++) {
-          const rr = r + dr, cc = c + dc;
-          if (rr < 0 || cc < 0 || rr >= g.rows || cc >= g.cols) continue;
-          const v = prev[rr * g.cols + cc]!;
-          if (v >= 0) votes.set(v, (votes.get(v) ?? 0) + 1);
-        }
-        let top = -1, n = 0;
-        for (const [k, v] of votes) if (v > n) (top = k), (n = v);
-        const cur = prev[r * g.cols + c]!;
-        if (cur < 0 || (votes.get(cur) ?? 0) < 8) cls[r * g.cols + c] = top;
-      }
-  }
-  return { cls, classes, doors };
-}
-
-const PALETTE = [[230, 25, 75], [60, 180, 75], [255, 225, 25], [0, 130, 200], [245, 130, 48], [145, 30, 180], [70, 240, 240], [240, 50, 230], [210, 245, 60], [250, 190, 212], [0, 128, 128], [220, 190, 255], [170, 110, 40], [255, 250, 200], [128, 0, 0], [170, 255, 195], [128, 128, 0], [0, 0, 128]];
-
-/** The map beside its class colouring, with the legend in a strip of its own (never over the map). */
-export async function classView(png: Buffer, d: Detected, g: Grid): Promise<Buffer> {
-  const k = 4, LW = g.cols * k, LH = g.rows * k;
-  const rgb = Buffer.alloc(g.cols * g.rows * 3);
-  const counts = new Map<number, number>();
-  for (let i = 0; i < d.cls.length; i++) {
-    const c = d.cls[i]!;
-    counts.set(c, (counts.get(c) ?? 0) + 1);
-    if (c >= 0) rgb.set(PALETTE[c % PALETTE.length]!, i * 3);
-  }
-  const legendH = Math.max(LH, 22 * d.classes.length + 16), LGW = 420;
-  const legend = d.classes.map((c, i) => `<rect x="8" y="${8 + i * 22}" width="16" height="16" fill="rgb(${PALETTE[i % PALETTE.length]!.join(',')})"/><text x="30" y="${21 + i * 22}" font-size="15" font-family="Arial" fill="#fff">${c.kind}: ${c.term.replace(/[<&>]/g, '')} (${((counts.get(i) ?? 0) * CELL * CELL).toFixed(0)} m²)</text>`).join('');
-  const classes = await sharp(rgb, { raw: { width: g.cols, height: g.rows, channels: 3 } }).resize(LW, LH, { kernel: 'nearest' }).png().toBuffer();
-  return sharp({ create: { width: LW * 2 + LGW + 32, height: legendH, channels: 3, background: '#000' } })
-    .composite([
-      { input: await sharp(png).resize(LW, LH, { fit: 'fill' }).png().toBuffer(), left: 0, top: 0 },
-      { input: classes, left: LW + 16, top: 0 },
-      { input: Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="${LGW}" height="${legendH}">${legend}</svg>`), left: LW * 2 + 32, top: 0 },
-    ])
-    .jpeg({ quality: 85 })
-    .toBuffer();
-}
-
-const CheckSchema = z.object({
-  correct: z.boolean().describe('True if every area is coloured as the right kind of thing everywhere that matters for walking'),
-  mistakes: z.array(z.string().max(200)).max(6).describe('Each wrongly coloured area, in plain words'),
-  drop: z.array(z.string().max(40)).max(5).describe('Names from the legend whose colour covers things that are not that (copy the name after the colon exactly)'),
-  floors: z.array(z.string().max(40)).max(3).describe('New detector names for walkable surfaces left uncoloured or wrongly coloured'),
-  obstacles: z.array(z.string().max(40)).max(3).describe('New detector names for solid things people cannot walk through that are coloured as floor'),
-});
-
-/** Luna checks SAM's colouring once: names that grabbed the wrong thing are dropped, better ones added (null: it is right). */
-export async function checkNames(view: Buffer, name: string, read: MapRead): Promise<{ read: MapRead; mistakes: string[] } | null> {
-  const chk = await genai().structured('world.design', {
-    system: 'You check how a game reads a top-down map. Judge only what you see.',
-    prompt: `Left: a top-down map of ${name}. Middle: how the game read it, each colour one detector name. Right: the legend (kind: name; floor and stairs are walkable, everything else is not). Is everything coloured as the right kind of thing? Name each wrongly coloured area, drop names that grabbed the wrong thing (for example a puddle name that covered a whole road), and give better detector names for what was missed. Names are short English phrases as an object detector would use them, describing what the thing looks like by material and colour ("dark grey asphalt driving lane", never just "floor").`,
-    schema: CheckSchema,
-    name: 'map_read_check',
-    images: [view],
-    maxTokens: 2000,
-  });
-  if (chk.correct || !(chk.drop.length || chk.floors.length || chk.obstacles.length)) return null;
-  const dropped = new Set(chk.drop.map((d) => d.replace(/^[a-z]+:\s*/i, '').trim().toLowerCase()));
-  const keep = (t: string) => !dropped.has(t.trim().toLowerCase());
-  const next: MapRead = {
-    floors: [...read.floors.filter(keep), ...chk.floors].slice(0, 6),
-    stairs: read.stairs.filter(keep),
-    walls: read.walls.filter(keep),
-    buildings: read.buildings.filter(keep),
-    water: read.water.filter(keep),
-    props: [...read.props.filter(keep), ...chk.obstacles].slice(0, 8),
-    trees: read.trees.filter(keep),
-    door: read.door,
-  };
-  if (!next.floors.length) next.floors = read.floors;
-  return { read: next, mistakes: chk.mistakes };
-}
-
-/** Open cells (people may stand) and see-through cells from SAM's classes. */
-export function samCells(d: Detected): { open: Uint8Array; sight: Uint8Array } {
-  const n = d.cls.length, open = new Uint8Array(n), sight = new Uint8Array(n);
-  for (let i = 0; i < n; i++) {
-    const c = d.classes[d.cls[i]!];
-    if (c && OPEN.has(c.kind)) open[i] = 1;
-    if (!c || !TALL.has(c.kind)) sight[i] = 1;
-  }
-  return { open, sight };
-}
-
-/** Qwen's three-colour plan of a picture: walkable where it painted near white (a picture-sized mask). */
-export async function walkPlan(png: Buffer, seed = 1): Promise<Uint8Array> {
-  const { width: W, height: H } = (await sharp(png).metadata()) as { width: number; height: number };
-  const out = await qwenEdit(png, WALK_PLAN, seed);
-  const { data } = await sharp(out).resize(W, H, { fit: 'fill' }).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  const m = new Uint8Array(W * H);
-  for (let i = 0; i < m.length; i++) m[i] = data[i * 3]! > 150 && data[i * 3 + 1]! > 150 && data[i * 3 + 2]! > 150 ? 1 : 0;
-  return m;
-}
-
-/** Qwen's plan of the map as open cells. */
-export async function qwenCells(png: Buffer, g: Grid): Promise<Uint8Array> {
-  const { width: W, height: H } = (await sharp(png).metadata()) as { width: number; height: number };
-  return cellsOf(await walkPlan(png), W, H, g);
-}
-
-/** Luna's answer on whether a person can stand at a picture point (a zoomed crop with a crosshair, the map beside it). */
-async function standHere(png: Buffer, overview: Buffer, x: number, y: number, W: number, H: number): Promise<number> {
-  const R = Math.min(90, Math.floor(Math.min(W, H) / 2) - 1), C = 384;
-  const left = Math.max(0, Math.min(W - 2 * R, Math.round(x) - R)), top = Math.max(0, Math.min(H - 2 * R, Math.round(y) - R));
-  const cx = ((x - left) * C) / (2 * R), cy = ((y - top) * C) / (2 * R);
-  const line = (x1: number, y1: number, x2: number, y2: number) => `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#ff00ff" stroke-width="4"/>`;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${C}" height="${C}"><circle cx="${cx}" cy="${cy}" r="10" fill="none" stroke="#ff00ff" stroke-width="4"/>${line(cx - 24, cy, cx - 13, cy)}${line(cx + 13, cy, cx + 24, cy)}${line(cx, cy - 24, cx, cy - 13)}${line(cx, cy + 13, cx, cy + 24)}</svg>`;
-  const crop = await sharp(png).extract({ left, top, width: 2 * R, height: 2 * R }).resize(C, C).composite([{ input: Buffer.from(svg) }]).png().toBuffer();
-  const a = await genai().decide('image.check', {
-    state: 'A top-down game map; the first image is the whole map, the second a close-up with a magenta crosshair.',
-    questions: { stand: { type: 'noul', instructions: 'Is the exact centre of the magenta crosshair on open ground where a person could stand and walk (floor, path, street, lawn, stairs), rather than on a wall, building, roof, furniture, vehicle, plant, rock, water, a pit or the darkness outside?' } },
-    images: [overview, crop],
-  });
-  return a.stand?.type === 'noul' ? a.stand.noul : 0.5;
-}
-
-/** Metres between Luna's samples inside a disagreement patch. */
-const SAMPLE_SPACING = 1;
-
-export interface Arbitrated {
+export interface Settled {
   open: Uint8Array;
-  /** Share of cells the readers agreed on, patches settled by Luna, her calls. */
+  /** Share of cells the readings agreed on, and Luna's looks. */
   agree: number;
-  patches: number;
-  calls: number;
+  looks: number;
 }
 
-/** Settle where SAM and Qwen disagree (see the file comment). */
-export async function arbitrate(png: Buffer, sam: Uint8Array, qwen: Uint8Array, g: Grid): Promise<Arbitrated> {
+/** Where the walk readings split, Luna decides (see the file comment). */
+export async function settle(png: Buffer, readings: Uint8Array[], g: Grid, p: PlaceBrief): Promise<Settled> {
   const { width: W, height: H } = (await sharp(png).metadata()) as { width: number; height: number };
-  const overview = await sharp(png).resize({ width: 512 }).png().toBuffer();
-  const out = Uint8Array.from(sam);
+  const n = g.cols * g.rows, kx = W / g.cols, ky = H / g.rows;
+  const votes = new Uint8Array(n);
+  for (const m of readings) for (let i = 0; i < n; i++) votes[i]! += m[i]!;
+  const open = Uint8Array.from(votes, (v) => (2 * v > readings.length ? 1 : 0));
+  const split = (i: number) => votes[i]! > 0 && votes[i]! < readings.length;
+  const patches = components(g, split).filter((q) => q.length * CELL * CELL >= PATCH_MIN);
   let agree = 0;
-  for (let i = 0; i < sam.length; i++) if (sam[i] === qwen[i]) agree++;
-  const patches = components(g, (i) => sam[i] !== qwen[i]);
-  let calls = 0, settled = 0;
+  for (let i = 0; i < n; i++) if (!split(i)) agree++;
   const col = (i: number) => i % g.cols, row = (i: number) => Math.floor(i / g.cols);
-  await Promise.all(patches.map(async (p) => {
-    if (p.length * CELL * CELL < 1) {
-      for (const k of p) out[k] = qwen[k]!;
-      return;
-    }
-    settled++;
-    // Samples spread over the patch (farthest-point from the cell nearest its centroid), one per SPACING².
-    let sx = 0, sy = 0;
-    for (const k of p) (sx += col(k)), (sy += row(k));
-    const mx = sx / p.length, my = sy / p.length;
-    const pts = [p.reduce((b, k) => (Math.hypot(col(k) - mx, row(k) - my) < Math.hypot(col(b) - mx, row(b) - my) ? k : b), p[0]!)];
-    const want = Math.max(1, Math.min(400, Math.round((p.length * CELL * CELL) / (SAMPLE_SPACING * SAMPLE_SPACING))));
-    const dmin = new Float64Array(p.length).fill(Infinity);
-    while (pts.length < want) {
-      const q = pts[pts.length - 1]!;
-      let bestK = -1, bd = -1;
-      p.forEach((k, i) => {
-        dmin[i] = Math.min(dmin[i]!, Math.hypot(col(k) - col(q), row(k) - row(q)));
-        if (dmin[i]! > bd) (bd = dmin[i]!), (bestK = k);
-      });
-      if (bd < 1) break;
-      pts.push(bestK);
-    }
-    const votes = await Promise.all(pts.map((k) => standHere(png, overview, ((col(k) + 0.5) * W) / g.cols, ((row(k) + 0.5) * H) / g.rows, W, H)));
-    calls += votes.length;
-    for (const k of p) {
+  const whole = patches.filter((q) => q.length * CELL * CELL <= PATCH_ONE_LOOK);
+  const sampled = patches.filter((q) => q.length * CELL * CELL > PATCH_ONE_LOOK).map((q) => ({ cells: q, at: spread(q, g, SAMPLE_SPACING / CELL) }));
+  const [areaVotes, pointVotes] = await Promise.all([
+    pool(whole, 16, (q) => judgeArea(png, W, H, q, g, p, 'patch').catch(() => -1)),
+    pool(sampled.flatMap((s) => s.at), 16, (i) => groundAt(png, W, H, (col(i) + 0.5) * kx, (row(i) + 0.5) * ky, kx / CELL, p).catch(() => -1)),
+  ]);
+  whole.forEach((q, j) => { if (areaVotes[j]! >= 0) for (const c of q) open[c] = areaVotes[j]! > 0.5 ? 1 : 0; });
+  let k = 0;
+  for (const s of sampled) {
+    const v = pointVotes.slice(k, (k += s.at.length));
+    for (const c of s.cells) {
       let bi = 0, bd = Infinity;
-      pts.forEach((q, i) => {
-        const d = Math.hypot(col(k) - col(q), row(k) - row(q));
+      s.at.forEach((q, i) => {
+        const d = Math.hypot(col(c) - col(q), row(c) - row(q));
         if (d < bd) (bd = d), (bi = i);
       });
-      out[k] = votes[bi]! > 0.5 ? 1 : 0;
+      if (v[bi]! >= 0) open[c] = v[bi]! > 0.5 ? 1 : 0;
     }
-  }));
-  return { open: out, agree: agree / sam.length, patches: settled, calls };
+  }
+  return { open, agree: agree / n, looks: whole.length + pointVotes.length };
 }
 
-/** A picture point and what is there. */
-export interface Spot {
-  x: number;
-  y: number;
-  label: string;
-  /** The building it belongs to (1-based), for entrances. */
-  building?: number;
+/** Cells spread over a patch about `gap` cells apart (farthest-point from the one nearest its middle). */
+function spread(q: number[], g: Grid, gap: number): number[] {
+  const col = (i: number) => i % g.cols, row = (i: number) => Math.floor(i / g.cols);
+  let sx = 0, sy = 0;
+  for (const c of q) (sx += col(c)), (sy += row(c));
+  const mx = sx / q.length, my = sy / q.length;
+  const pts = [q.reduce((b, c) => (Math.hypot(col(c) - mx, row(c) - my) < Math.hypot(col(b) - mx, row(b) - my) ? c : b), q[0]!)];
+  const want = Math.min(200, Math.round(q.length / (gap * gap)));
+  const dmin = new Float64Array(q.length).fill(Infinity);
+  while (pts.length < want) {
+    const last = pts[pts.length - 1]!;
+    let bk = -1, bd = -1;
+    q.forEach((c, i) => {
+      dmin[i] = Math.min(dmin[i]!, Math.hypot(col(c) - col(last), row(c) - row(last)));
+      if (dmin[i]! > bd) (bd = dmin[i]!), (bk = c);
+    });
+    if (bd < gap * 0.75) break;
+    pts.push(bk);
+  }
+  return pts;
 }
 
 /**
- * Buildings (SAM's building pieces of 6 m² or more) and an entrance for each: a detected door on or by it, else the
- * open ground nearest the middle of its lower side (the side facing the viewer). Spots are picture px.
+ * Water judged by the place: every patch most readings painted blue, inside the place (not touching the barrier band)
+ * and at least 1 m², gets one look; walkable ones open. Returns how many opened.
  */
-export function entrances(d: Detected, walk: Uint8Array, g: Grid, W: number, H: number): Spot[] {
-  const kx = W / g.cols, ky = H / g.rows;
-  const isBuilding = (i: number) => d.classes[d.cls[i]!]?.kind === 'building';
-  const pieces = components(g, isBuilding).filter((p) => p.length * CELL * CELL >= 6);
-  const nearestWalk = (cx: number, cy: number, maxCells: number): [number, number] | null => {
-    let best: [number, number] | null = null, bd = Infinity;
-    for (let r = Math.max(0, Math.floor(cy - maxCells)); r <= Math.min(g.rows - 1, Math.ceil(cy + maxCells)); r++)
-      for (let c = Math.max(0, Math.floor(cx - maxCells)); c <= Math.min(g.cols - 1, Math.ceil(cx + maxCells)); c++) {
-        if (!walk[r * g.cols + c]) continue;
-        const dd = Math.hypot(c - cx, r - cy);
-        if (dd < bd && dd <= maxCells) (bd = dd), (best = [c, r]);
-      }
-    return best;
-  };
-  const out: Spot[] = [];
-  pieces.forEach((p, bi) => {
-    let c0 = Infinity, c1 = -Infinity, r0 = Infinity, r1 = -Infinity;
-    for (const k of p) (c0 = Math.min(c0, k % g.cols)), (c1 = Math.max(c1, k % g.cols)), (r0 = Math.min(r0, Math.floor(k / g.cols))), (r1 = Math.max(r1, Math.floor(k / g.cols)));
-    const margin = 1 / CELL;
-    const doors = d.doors.filter((q) => q.x / kx >= c0 - margin && q.x / kx <= c1 + 1 + margin && q.y / ky >= r0 - margin && q.y / ky <= r1 + 1 + margin);
-    const tries = doors.length ? doors.map((q) => [q.x / kx, q.y / ky] as const) : [[(c0 + c1) / 2, r1 + 1] as const];
-    for (const [cx, cy] of tries) {
-      const at = nearestWalk(cx, cy, 3 / CELL);
-      if (!at) continue;
-      const x = (at[0] + 0.5) * kx, y = (at[1] + 0.5) * ky;
-      if (out.some((o) => o.building === bi + 1 && Math.hypot(o.x - x, o.y - y) < kx / CELL)) continue;
-      out.push({ x, y, label: doors.length ? 'door' : 'front of a building', building: bi + 1 });
-    }
+export async function judgeWater(png: Buffer, open: Uint8Array, waters: Uint8Array[], g: Grid, band: number, p: PlaceBrief): Promise<number> {
+  const { width: W, height: H } = (await sharp(png).metadata()) as { width: number; height: number };
+  const water = (i: number) => 2 * waters.reduce((a, m) => a + m[i]!, 0) > waters.length;
+  const inside = (i: number) => Math.min(Math.floor(i / g.cols), i % g.cols, g.rows - 1 - Math.floor(i / g.cols), g.cols - 1 - (i % g.cols)) > band;
+  const patches = components(g, water).filter((q) => q.length * CELL * CELL >= 1 && q.every(inside));
+  const votes = await pool(patches, 12, (q) => judgeArea(png, W, H, q, g, p, 'water').catch(() => 0));
+  let opened = 0;
+  patches.forEach((q, i) => {
+    if (votes[i]! <= 0.5) return;
+    opened++;
+    for (const c of q) open[c] = 1;
   });
-  return out;
+  return opened;
 }
 
-/** Landmarks: the largest props and trees with walkable ground within 1.5 m (the spot is on that ground). */
-export function landmarks(d: Detected, walk: Uint8Array, g: Grid, W: number, H: number, max = 10): Spot[] {
-  const kx = W / g.cols, ky = H / g.rows;
-  const out: { spot: Spot; size: number }[] = [];
-  d.classes.forEach((c, ci) => {
-    if (c.kind !== 'prop' && c.kind !== 'tree' && c.kind !== 'water') return;
-    for (const p of components(g, (i) => d.cls[i] === ci)) {
-      if (p.length * CELL * CELL < 0.5) continue;
-      let sx = 0, sy = 0;
-      for (const k of p) (sx += k % g.cols), (sy += Math.floor(k / g.cols));
-      const mx = sx / p.length, my = sy / p.length, R = 1.5 / CELL + Math.sqrt(p.length / Math.PI);
-      let best: [number, number] | null = null, bd = Infinity;
-      for (let r = Math.max(0, Math.floor(my - R)); r <= Math.min(g.rows - 1, Math.ceil(my + R)); r++)
-        for (let col = Math.max(0, Math.floor(mx - R)); col <= Math.min(g.cols - 1, Math.ceil(mx + R)); col++) {
-          if (!walk[r * g.cols + col]) continue;
-          const dd = Math.hypot(col - mx, r - my);
-          if (dd < bd && dd <= R) (bd = dd), (best = [col, r]);
-        }
-      if (best) out.push({ spot: { x: (best[0] + 0.5) * kx, y: (best[1] + 0.5) * ky, label: c.term }, size: p.length });
+/** The walkable cell nearest a grid point, within `max` cells. */
+function nearestWalk(walk: Uint8Array, g: Grid, cx: number, cy: number, max: number): [number, number] | null {
+  let best: [number, number] | null = null, bd = Infinity;
+  for (let r = Math.max(0, Math.floor(cy - max)); r <= Math.min(g.rows - 1, Math.ceil(cy + max)); r++)
+    for (let c = Math.max(0, Math.floor(cx - max)); c <= Math.min(g.cols - 1, Math.ceil(cx + max)); c++) {
+      if (!walk[r * g.cols + c]) continue;
+      const d = Math.hypot(c - cx, r - cy);
+      if (d < bd && d <= max) (bd = d), (best = [c, r]);
     }
-  });
+  return best;
+}
+
+/** Unnamed landmarks, when Sol names none: the largest solid things (not buildings or water, 0.5 to 40 m²) standing in walkable ground, each at the walkable ground beside it. */
+export function landmarks(open: Uint8Array, walk: Uint8Array, building: Uint8Array, water: Uint8Array, g: Grid, W: number, H: number, max = 10): Spot[] {
+  const kx = W / g.cols, ky = H / g.rows, out: { spot: Spot; size: number }[] = [];
+  for (const q of components(g, (i) => !open[i] && !building[i] && !water[i])) {
+    const m2 = q.length * CELL * CELL;
+    if (m2 < 0.5 || m2 > 40) continue;
+    let sx = 0, sy = 0;
+    for (const i of q) (sx += i % g.cols), (sy += Math.floor(i / g.cols));
+    const mx = sx / q.length, my = sy / q.length;
+    const at = nearestWalk(walk, g, mx, my, 1.5 / CELL + Math.sqrt(q.length / Math.PI));
+    if (at) out.push({ spot: { x: (at[0] + 0.5) * kx, y: (at[1] + 0.5) * ky, label: 'a landmark' }, size: q.length });
+  }
   return out.sort((a, b) => b.size - a.size).slice(0, max).map((o) => o.spot);
 }

@@ -6,8 +6,9 @@
 
 /** Plan cell size in metres. */
 export const CELL = 0.25;
-/** A character's centre keeps this far from anything not open (metres). */
-export const CLEARANCE = 0.35;
+/** A character's centre keeps this far from anything not open (metres): one cell, so a passage a reader drew a little
+ * narrow still opens (characters may clip slightly into things that look solid). */
+export const CLEARANCE = 0.25;
 
 export type Side = 'top' | 'bottom' | 'left' | 'right';
 export const SIDES: readonly Side[] = ['top', 'right', 'bottom', 'left'];
@@ -26,10 +27,9 @@ export interface Walk {
   main: number;
 }
 
-/** Where people can walk on an open mask: clearance, then 4-joined regions. The grid's edge counts as open (ways out). */
-export function walkOf(open: Uint8Array, g: Grid): Walk {
+/** Where people can walk on an open mask: clearance (R cells), then 4-joined regions. The grid's edge counts as open (ways out). */
+export function walkOf(open: Uint8Array, g: Grid, R = Math.ceil(CLEARANCE / CELL)): Walk {
   const { cols, rows } = g, n = cols * rows;
-  const R = Math.ceil(CLEARANCE / CELL);
   const disc: [number, number][] = [];
   for (let dr = -R; dr <= R; dr++) for (let dc = -R; dc <= R; dc++) if (dr * dr + dc * dc <= R * R) disc.push([dr, dc]);
   const walk = new Uint8Array(n);

@@ -1,9 +1,9 @@
 /**
  * A place, from design to game data: Luna plans it, it is painted as a big top-down map (mapdraw.ts: the whole place
- * once, enlarged and detailed, then its exits and barrier), Luna decides where everything goes, and the map is
- * resampled to game scale and turned into ground metres (the navigation grid, every door, exit, person, chest, trap
- * and monster pack). Where people can walk is a stand-in for now (everywhere but the barrier, which opens at the
- * exits) until a new reader replaces readMap and repairMap, which are kept but not used. See docs/places.md.
+ * once, enlarged and detailed, then its exits and barrier), it is read (where people can walk, made usable without
+ * repainting: mapread.ts, mapfix.ts), Luna decides where everything goes, and the map is resampled to game scale and
+ * turned into ground metres (the navigation grid, every door, exit, person, chest, trap and monster pack). See
+ * docs/places.md.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -18,13 +18,17 @@ import { upscale } from './comfy';
 import type { GpuQueue } from './gpu';
 import { BARRIER_DEPTH_M, EXIT_GAP_M, MAP_STEPS, PAINT_PXM, makeMap, mapPixels, planMap, type MapBrief, type MapExit, type MapPlan } from './mapdraw';
 import { CELL, type Grid, type Side } from './mapgrid';
-import { arbitrate, checkNames, classView, detectAll, nameThings, qwenCells, samCells, type MapRead, type Spot } from './mapread';
+import { fixMap } from './mapfix';
+import { BUILDING_PLAN, judgeArea, judgeWater, landmarks, readPlan, settle, WALK_READINGS, type PlanCells } from './mapread';
+import { dropSameBuilding, findEntrances, fuseDoors, nameLandmarks, ontoWalk, readDoorPlan, type Spot } from './mapspots';
 import { candidates, place, pxPerMetre, type Candidate, type MapReading, type PlaceNeeds } from './placement';
 import { MIST_SIZE, measureLight, paintMist, type MistBrief } from './atmosphere';
 import { normColor } from './schemas';
 
 /** Monster packs keep their distance so fighting one never drags in the next (aggro reaches about 6.5 m). */
 const PACK_SPACING = 13;
+/** A pack's centre keeps this far (m) from anything blocked where the map has room: in a room or clearing, not a passage. */
+const PACK_CLEARANCE = 2;
 
 const THING_KINDS = new Set(['chest', 'sign', 'lore', 'waypoint', 'craft_station', 'bed', 'object']);
 
@@ -120,6 +124,7 @@ export function placeNeeds(w: WorldDefinition, z: ZoneDef): PlaceNeeds {
     ...sketchOf(w, z),
     people: w.npcs.filter((n) => n.zoneId === z.id).map((n) => ({ id: n.id, name: n.name, title: n.title, role: n.role, works: z.buildings?.find((b) => b.npcId === n.id)?.name })),
     things: z.features.filter((f) => THING_KINDS.has(f.kind)).map((f) => ({ id: f.id, what: thingText(f) })),
+    bosses: w.bosses.filter((b) => b.zoneId === z.id).map((b) => ({ id: b.id, name: `${b.name}, ${b.title}`, what: b.description.slice(0, 200) })),
   };
 }
 
@@ -231,72 +236,85 @@ export async function paintAndRead(w: WorldLook, s: PlaceSketch, ctx: PlaceConte
   });
   const r = made.review;
   ctx.report(`${s.name}: map made (Sol: fun ${r.fun}, coherence ${r.coherence}, theme ${r.theme}${r.usable ? ', usable as is' : `; ${r.problems.slice(0, 200)}`})`);
-  return { plan, seed: ctx.seed, canvas: made.png, reading: standInReading(s.kind, made.exits) };
+  const reading = await readPlace(draft, made.png, s, made.exits, ctx);
+  return { plan, seed: ctx.seed, canvas: made.png, reading };
 }
 
 /**
- * Where people can walk until the new reader exists: everywhere except the painted barrier band round the edge, which
- * opens at the ways out; each way out is a spot just inside its gap. No entrances or landmarks are found.
+ * Read a painted map (mapread.ts, then mapfix.ts): Qwen's plans of it, Luna where they split and on its water, the
+ * fixes that make it usable, and its entrances, named landmarks and ways out (mapspots.ts). Every step is saved per
+ * map, so a resumed build picks up where it stopped.
  */
-export function standInReading(kind: ZoneKind, exits: MapExit[]): MapReading {
-  const { W, H, X, Y } = mapPixels(kind);
+export async function readPlace(draft: PlaceDraft, map: Buffer, s: PlaceSketch, exits: MapExit[], ctx: PlaceContext): Promise<MapReading> {
+  const { W, H, X, Y } = mapPixels(s.kind);
   const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
-  const band = Math.ceil(BARRIER_DEPTH_M / CELL), half = EXIT_GAP_M / CELL / 2;
-  const inGap = (r: number, c: number) => exits.some((e) => {
-    const a = e.at * (e.side === 'top' || e.side === 'bottom' ? g.cols : g.rows);
-    return e.side === 'top' ? r < band && Math.abs(c - a) < half : e.side === 'bottom' ? r >= g.rows - band && Math.abs(c - a) < half
-      : e.side === 'left' ? c < band && Math.abs(r - a) < half : c >= g.cols - band && Math.abs(r - a) < half;
-  });
-  const walk = new Uint8Array(g.cols * g.rows);
-  for (let r = 0; r < g.rows; r++)
-    for (let c = 0; c < g.cols; c++) if (Math.min(r, c, g.rows - 1 - r, g.cols - 1 - c) >= band || inGap(r, c)) walk[r * g.cols + c] = 1;
+  const tag = `${ctx.seed}`, place = { name: s.name, description: s.description };
+  const band = Math.ceil(BARRIER_DEPTH_M / CELL), gap = EXIT_GAP_M / CELL;
+  const plans: PlanCells[] = [];
+  for (const [i, plan] of [...WALK_READINGS, BUILDING_PLAN].entries()) {
+    const name = (part: string) => `read${i}_${part}_${tag}`;
+    const saved = await Promise.all(['walk', 'water', 'building'].map((p) => draft.cells(name(p), g)));
+    if (saved.every(Boolean)) {
+      plans.push({ walk: saved[0]!, water: saved[1]!, building: saved[2]! });
+      continue;
+    }
+    const read = await ctx.gpu.run('reader', ctx.priority, () => readPlan(map, g, plan, ctx.seed));
+    for (const p of ['walk', 'water', 'building'] as const) await draft.saveCells(name(p), read[p], g);
+    plans.push(read);
+  }
+  const walkPlans = plans.slice(0, WALK_READINGS.length), building = plans[plans.length - 1]!.building;
+  let open = await draft.cells(`open_${tag}`, g);
+  if (!open) {
+    const st = await settle(map, walkPlans.map((p) => p.walk), g, place);
+    const wet = await judgeWater(map, st.open, walkPlans.map((p) => p.water), g, band, place);
+    ctx.report(`${s.name}: Qwen's readings agree on ${Math.round(st.agree * 100)}% of the map; Luna settled the rest (${st.looks} looks)${wet ? `, and ${wet} water patches people can walk across` : ''}`);
+    open = st.open;
+    await draft.saveCells(`open_${tag}`, open, g);
+  }
+  let walk = await draft.cells(`walk_${tag}`, g);
+  let fixedOpen = await draft.cells(`fixed_${tag}`, g);
+  if (!walk || !fixedOpen) {
+    const keep = async (cells: number[]) => (await judgeArea(map, W, H, cells, g, place, 'reach').catch(() => 1)) > 0.5;
+    const f = await fixMap(open, g, exits, band, gap, keep);
+    ctx.report(`${s.name}: ${f.joined} cut-off areas joined, ${f.left} left out${f.exits ? `, ${f.exits} ways out opened` : ''}`);
+    walk = f.walk;
+    fixedOpen = f.open;
+    await draft.saveCells(`walk_${tag}`, walk, g);
+    await draft.saveCells(`fixed_${tag}`, fixedOpen, g);
+  }
+  const water = Uint8Array.from(fixedOpen, (_, i) => (2 * walkPlans.reduce((a, p) => a + p.water[i]!, 0) > walkPlans.length ? 1 : 0));
+  let spots = draft.json<{ doors: Spot[]; landmarks: Spot[] }>(`spots_${tag}`);
+  if (!spots) {
+    const pxm = W / X;
+    // Entrances only where the place has buildings: Luna's finds, moved onto Qwen's door marks (marks she missed are
+    // kept too), onto the walkable ground, then one per building.
+    const doors = async () => {
+      const marks = await ctx.gpu.run('reader', ctx.priority, () => readDoorPlan(map, pxm, ctx.seed));
+      const found = fuseDoors(await findEntrances(map, pxm, place), marks, pxm);
+      const missed = marks.filter((m) => m.building && found.every((f) => Math.hypot(f.x - m.x, f.y - m.y) >= 2 * pxm)).map((m) => ({ x: m.x, y: m.y, label: 'a building' }));
+      return dropSameBuilding(map, pxm, place, ontoWalk([...found, ...missed], walk!, g, W, H));
+    };
+    const [d, named] = await Promise.all([s.buildings.length ? doors() : Promise.resolve([]), nameLandmarks(map, pxm, place).catch((): Spot[] => [])]);
+    // People stand on the walkable ground nearest a landmark (a pond's shore, a statue's foot).
+    const sights = named.length ? ontoWalk(named, walk, g, W, H, 15) : landmarks(fixedOpen, walk, building, water, g, W, H);
+    spots = { doors: d, landmarks: sights };
+    ctx.report(`${s.name}: ${d.length} entrances; landmarks: ${sights.map((m) => m.label).join(', ')}`);
+    draft.saveJson(`spots_${tag}`, spots);
+  }
   const inset = (BARRIER_DEPTH_M + 2) * PAINT_PXM;
   const edges: Spot[] = exits.map((e) => {
     const a = e.at * (e.side === 'top' || e.side === 'bottom' ? W : H);
     return { x: e.side === 'left' ? inset : e.side === 'right' ? W - inset : a, y: e.side === 'top' ? inset : e.side === 'bottom' ? H - inset : a, label: e.side };
   });
-  return { width: W, height: H, X, Y, grid: g, walk, sight: new Uint8Array(g.cols * g.rows).fill(1), doors: [], edges, landmarks: [], area: walk.reduce((a, v) => a + v, 0) * CELL * CELL };
-}
-
-/**
- * Read a map: SAM's names (checked once by Luna), Qwen's plan, and Luna where they disagree. Saved per map. Not used
- * while the stand-in reading is (it was made for maps of about 1.4 MP; Qwen's plan of a whole big map runs out of
- * memory, and SAM's masks grow with the picture).
- */
-export async function readMap(draft: PlaceDraft, map: Buffer, s: PlaceSketch, seed: number, ctx: PlaceContext) {
-  const { X, Y } = mapPixels(s.kind);
-  const g: Grid = { cols: Math.round(X / CELL), rows: Math.round(Y / CELL) };
-  const { width: W } = (await sharp(map).metadata()) as { width: number };
-  const pxm = W / X;
-  let read = draft.json<MapRead>(`names_${seed}`);
-  let detected;
-  if (read) detected = await ctx.gpu.run('reader', ctx.priority, () => detectAll(map, read!, g, pxm));
-  else {
-    read = await nameThings(map, s.name, s.description);
-    detected = await ctx.gpu.run('reader', ctx.priority, () => detectAll(map, read!, g, pxm));
-    const fix = await checkNames(await classView(map, detected, g), s.name, read);
-    if (fix) {
-      ctx.report(`${s.name}: ${fix.mistakes.join('; ').slice(0, 300)}`);
-      read = fix.read;
-      detected = await ctx.gpu.run('reader', ctx.priority, () => detectAll(map, read!, g, pxm));
-    }
-    draft.saveJson(`names_${seed}`, read);
-  }
-  draft.saveFile(`classes_${seed}.jpg`, await classView(map, detected, g));
-  const { open: samOpen, sight } = samCells(detected);
-  const qwen = (await draft.cells(`qwen_${seed}`, g)) ?? (await ctx.gpu.run('reader', ctx.priority, () => qwenCells(map, g)));
-  await draft.saveCells(`qwen_${seed}`, qwen, g);
-  let open = await draft.cells(`open_${seed}`, g);
-  let agree = draft.json<number>(`agree_${seed}`) ?? 0;
-  if (!open) {
-    const arb = await arbitrate(map, samOpen, qwen, g);
-    open = arb.open;
-    agree = +arb.agree.toFixed(3);
-    ctx.report(`${s.name}: readers agree on ${Math.round(arb.agree * 100)}% of the map; Luna settled ${arb.patches} patches (${arb.calls} looks)`);
-    await draft.saveCells(`open_${seed}`, open, g);
-    draft.saveJson(`agree_${seed}`, agree);
-  }
-  return { detected, open, sight, agree };
+  return {
+    width: W, height: H, X, Y, grid: g, walk,
+    // Buildings block sight; the rest of what blocks walking is mostly low (props, rocks) or seen through (trees' gaps).
+    sight: Uint8Array.from(building, (v) => (v ? 0 : 1)),
+    doors: spots.doors,
+    edges,
+    landmarks: spots.landmarks,
+    area: walk.reduce((a, v) => a + v, 0) * CELL * CELL,
+  };
 }
 
 /** Design, paint and read a place, and turn it into game data. */
@@ -378,7 +396,7 @@ export function groundOf(r: MapReading, k: number): { width: number; height: num
     return c < 0 || rr < 0 || c >= r.grid.cols || rr >= r.grid.rows ? -1 : rr * r.grid.cols + c;
   };
   // A cell is walkable when any part of it is (its centre and eight points 0.2 m out): the plan already keeps a
-  // character's centre 0.35 m from obstacles, and the pathfinder never cuts corners, so a diagonal passage sampled at
+  // character's centre CLEARANCE from obstacles, and the pathfinder never cuts corners, so a diagonal passage sampled at
   // cell centres alone would break into corner-touching cells.
   const Q = NAV_CELL / 2.5, AROUND = [-Q, 0, Q].flatMap((dx) => [-Q, 0, Q].map((dy) => [dx, dy] as const));
   for (let cy = 0; cy < rows; cy++)
@@ -478,11 +496,16 @@ function furnish(w: WorldDefinition, z: ZoneDef, r: MapReading, spots: Map<strin
   const entryFeature = z.features.find((f) => f.kind === 'waypoint') ?? z.features.find((f) => f.kind === 'exit' || f.kind === 'door');
   z.entry = entryFeature ? { x: entryFeature.x, y: entryFeature.y } : settle(fallbackSpot());
 
-  if (z.kind === 'wilderness' || z.kind === 'dungeon') populate(w, z, nav, rng, r.area, taken);
+  // A boss waits in the lair Luna chose for it (its spot), else deepest in.
+  const lairs = new Map([...spots].filter(([id]) => w.bosses.some((b) => b.id === id)).map(([id, c]) => [id, at(c)]));
+  if (z.kind === 'wilderness' || z.kind === 'dungeon') populate(w, z, nav, rng, r.area, taken, lairs);
 }
 
-/** Monster packs, the boss and traps, spread by walking distance from the way in (deeper = harder). */
-export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, area: number, taken: Vec2[]) {
+/**
+ * Monster packs, the boss and traps, spread by walking distance from the way in (deeper = harder). Packs gather in open
+ * ground (rooms, clearings, squares), never passages: their centres keep PACK_CLEARANCE from anything blocked. A boss waits in its lair (a spot placement chose), else deepest in.
+ */
+export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, area: number, taken: Vec2[], lairs = new Map<string, Vec2>()) {
   const r = w.ruleset;
   const costs = nav.reach(z.entry, 1e6);
   if (!costs.size) return;
@@ -510,22 +533,28 @@ export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, are
     });
   };
 
-  // The boss waits deepest in.
   const bosses = w.bosses.filter((b) => b.zoneId === z.id);
-  const lair = cells.reduce((a, b) => (b.depth > a.depth ? b : a)).p;
+  const deepest = cells.reduce((a, b) => (b.depth > a.depth ? b : a)).p;
+  const reached = (p: Vec2) => costs.has(nav.cellOf(p.x, p.y)[1] * nav.cols + nav.cellOf(p.x, p.y)[0]);
+  const lairOf = (id: string) => (lairs.has(id) && reached(lairs.get(id)!) ? lairs.get(id)! : deepest);
+  const lair = bosses.length ? lairOf(bosses[0]!.id) : deepest;
   for (const b of bosses) {
     const fam = w.families.find((f) => f.id === b.familyId) ?? families[0];
     if (!fam) continue;
     const adds = buildPack(r, rng.fork(`boss:${b.id}`), { mode: w.input.combatMode, level: b.level, kind: 'boss', roles: fam.members.map((m) => m.archetype) }).filter((m) => !m.boss);
-    spawnAt(`${z.id}_boss`, [{ role: b.archetype, level: b.level, boss: true }, ...adds.map((m) => ({ ...m, level: Math.max(1, b.level - 1) }))], lair, fam.id, b.id);
+    spawnAt(`${z.id}_boss`, [{ role: b.archetype, level: b.level, boss: true }, ...adds.map((m) => ({ ...m, level: Math.max(1, b.level - 1) }))], lairOf(b.id), fam.id, b.id);
   }
 
   // Packs: about one per 160 m² of walkable ground, spaced apart, away from the ways in and out.
   if (families.length) {
     const want = Math.max(3, Math.min(12, Math.round(area / (z.kind === 'dungeon' ? 130 : 160))));
-    const packs: Vec2[] = [lair];
+    const packs: Vec2[] = bosses.length ? bosses.map((b) => lairOf(b.id)) : [deepest];
+    // Only open ground, best clearance first (with some chance): fewer packs rather than packs in passages. A map with no
+    // open ground at all takes the shuffled order.
+    const clear = clearance(nav), roomy = cells.filter((c) => clear[c.i]! >= PACK_CLEARANCE);
+    const order = roomy.length ? roomy.map((c) => ({ c, s: clear[c.i]! * (0.6 + 0.8 * rng.next()) })).sort((a, b) => b.s - a.s).map((x) => x.c) : cells;
     let n = 0;
-    for (const c of cells) {
+    for (const c of order) {
       if (n >= want) break;
       if (nearDoor(c.p, 9) || packs.some((p) => Math.hypot(p.x - c.p.x, p.y - c.p.y) < PACK_SPACING)) continue;
       packs.push(c.p);
@@ -548,4 +577,22 @@ export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, are
       z.features.push({ id: `${z.id}_trap${traps.length}`, kind: 'trap', x: c.p.x, y: c.p.y, trapKind: trap.id, trapLevel: z.levelRange[1], name: trap.name });
     }
   }
+}
+
+/** Each navigation cell's distance (m) to the nearest blocked cell or the map's edge (city-block steps). */
+export function clearance(nav: Nav): Float32Array {
+  const n = nav.cols * nav.rows, d = new Float32Array(n).fill(Infinity), queue: number[] = [];
+  for (let i = 0; i < n; i++) {
+    const cx = i % nav.cols, cy = Math.floor(i / nav.cols);
+    if (!nav.walkableCell(cx, cy)) (d[i] = 0), queue.push(i);
+    else if (cx === 0 || cy === 0 || cx === nav.cols - 1 || cy === nav.rows - 1) (d[i] = NAV_CELL), queue.push(i);
+  }
+  for (let h = 0; h < queue.length; h++) {
+    const i = queue[h]!, cx = i % nav.cols, cy = Math.floor(i / nav.cols);
+    for (const [x, y] of [[cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]] as const) {
+      const j = y * nav.cols + x;
+      if (nav.inside(x, y) && d[j]! > d[i]! + NAV_CELL) (d[j] = d[i]! + NAV_CELL), queue.push(j);
+    }
+  }
+  return d;
 }
