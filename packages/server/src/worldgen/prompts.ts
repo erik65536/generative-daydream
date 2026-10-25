@@ -9,6 +9,7 @@ The world's rules (health, resources, classes, skills, items) are designed in a 
 Rules:
 - Honor the user's theme and prompts above everything else, including any meta instructions they give.
 - Be specific, vivid and original. Prefer concrete details over generic fantasy filler. Give characters distinct voices and wants.
+- People talk plainly and conversationally, in everyday words: their greetings and barks are what someone would really say. A "voice" is how they sound (warm, curt, nervous, formal), not quaint or poetic wording; only a rare character, for whom it is part of who they are, speaks oddly.
 - Stay consistent with everything already decided (names, facts, tone).
 - In-world text never mentions game mechanics, JSON, or the engine.
 - Output only the requested JSON.`;

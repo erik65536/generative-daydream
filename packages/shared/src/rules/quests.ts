@@ -141,5 +141,3 @@ export interface NpcAction {
   lead?: string;
 }
 
-export const EMOTIONS = ['neutral', 'happy', 'amused', 'sad', 'angry', 'afraid', 'surprised', 'suspicious', 'grateful', 'thoughtful'] as const;
-export type Emotion = (typeof EMOTIONS)[number];

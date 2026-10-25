@@ -25,7 +25,7 @@ inst.join({
   userId: 'u1',
   send: (m) => {
     if (m.t !== 'dialog' || !m.dialog || m.dialog.thinking) return;
-    for (const msg of m.dialog.messages.slice(last)) if (msg.speaker !== 'player') console.log(`   ${msg.speaker === 'npc' ? `${m.dialog.npcName} [${msg.emotion}]` : '>>'}: ${msg.text}`);
+    for (const msg of m.dialog.messages.slice(last)) if (msg.speaker !== 'player') console.log(`   ${msg.speaker === 'npc' ? m.dialog.npcName : '>>'}: ${msg.text}`);
     last = m.dialog.messages.length;
   },
 });

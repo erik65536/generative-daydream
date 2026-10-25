@@ -61,11 +61,6 @@ function PartyTabs({ ch, mark }: { ch: CharacterState; mark?: (p: CharacterState
 
 // =================================================================================== dialog
 
-const EMOTION_TINT: Record<string, string> = {
-  happy: '#9fe07a', amused: '#e8d27a', grateful: '#9fe07a', angry: '#ff7a5a', afraid: '#c9a0ff', sad: '#8ab4ff',
-  suspicious: '#e0a85a', surprised: '#ffd27a', neutral: '#a69c8c',
-};
-
 /**
  * Reveals the newest NPC line progressively, like a spoken reply (click to show it all). When lines are read
  * aloud, it keeps pace with the voice, as subtitles do.
@@ -201,7 +196,6 @@ export function DialogWindow() {
               {m.speaker === 'npc' && (
                 <span className="who">
                   {dialog.npcName.split(' ')[0]}
-                  {m.emotion && m.emotion !== 'neutral' && <span className="emo" style={{ color: EMOTION_TINT[m.emotion] ?? 'var(--muted)' }}>{m.emotion}</span>}
                 </span>
               )}
               {m.speaker === 'npc' ? <Typed text={m.text} animate={i === lastNpc && i >= animateFrom} cps={aloud && voiceOut.available() ? voiceOut.pace : undefined} /> : m.text}

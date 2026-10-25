@@ -18,7 +18,7 @@ beforeAll(async () => {
     junkOnce: ['main_story'],
     npc: (prompt) => {
       const quest = prompt.match(/(q_side_[\w]+)/)?.[1];
-      return { actions: quest ? [{ type: 'offer_quest', questId: quest }, { type: 'remember', memory: 'The player asked for work.', spread: 'town' }] : [{ type: 'none' }], emotion: 'happy', speech: 'Mock NPC says hello and has a job for you.' };
+      return { actions: quest ? [{ type: 'offer_quest', questId: quest }, { type: 'remember', memory: 'The player asked for work.', spread: 'town' }] : [{ type: 'none' }], speech: 'Mock NPC says hello and has a job for you.' };
     },
   });
   restore = plainPlaces();

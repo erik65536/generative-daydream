@@ -1,7 +1,7 @@
 /** WebSocket protocol between the browser and the authoritative game server. */
 import type { ActiveStatus, CharacterState, ItemInstance, JournalEntry, LootPile, PlayerState, Surface, DamageEvent } from './world/instance';
 import type { ClientWorld, FeatureDef, ZoneDef } from './world/types';
-import type { QuestDef, Emotion } from './rules/quests';
+import type { QuestDef } from './rules/quests';
 import type { MonsterArchetype, NpcRole } from './rules/actors';
 import type { DifficultyId } from './ruleset/types';
 
@@ -108,7 +108,6 @@ export interface FxEvent {
 export interface DialogMessage {
   speaker: 'player' | 'npc' | 'narrator';
   text: string;
-  emotion?: Emotion;
 }
 
 export interface DialogState {

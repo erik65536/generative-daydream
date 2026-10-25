@@ -1,5 +1,5 @@
 /** Save-state of a world being played. Many instances can exist per world. */
-import type { QuestDef, QuestProgress, Emotion } from '../rules/quests';
+import type { QuestDef, QuestProgress } from '../rules/quests';
 import type { MonsterArchetype } from '../rules/actors';
 import type { DifficultyId, Modifier } from '../ruleset/types';
 import { Rng } from '../util/rng';
@@ -93,7 +93,6 @@ export interface JournalEntry {
 export interface ConversationTurn {
   speaker: 'player' | 'npc' | 'narrator';
   text: string;
-  emotion?: Emotion;
   day: number;
 }
 

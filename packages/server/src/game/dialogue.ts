@@ -6,8 +6,8 @@
  */
 import { z } from 'zod';
 import {
-  EMOTIONS, NPC_ACTION_INFO, NPC_GIFTS, OBJECTIVE_TYPES, rx, uid, type NpcGift, type JournalEntry,
-  type DialogMessage, type DialogState, type Emotion, type ItemInstance, type Memory, type NpcAction, type NpcActionType, type NpcDef, type NpcRuntime,
+  NPC_ACTION_INFO, NPC_GIFTS, OBJECTIVE_TYPES, rx, uid, type NpcGift, type JournalEntry,
+  type DialogMessage, type DialogState, type ItemInstance, type Memory, type NpcAction, type NpcActionType, type NpcDef, type NpcRuntime,
   type PlayerState, type QuestDef, type QuestObjective, type ZoneDef, type NewObjectiveSpec,
 } from '@gd/shared';
 import { genai } from '../genai/service';
@@ -117,9 +117,9 @@ export class DialogueEngine {
     this.h.sendDialog(userId, null);
   }
 
-  private record(p: PlayerState, npcId: string, speaker: 'player' | 'npc' | 'narrator', text: string, emotion?: Emotion) {
+  private record(p: PlayerState, npcId: string, speaker: 'player' | 'npc' | 'narrator', text: string) {
     const list = (p.conversations[npcId] ??= []);
-    list.push({ speaker, text, emotion, day: this.h.day() });
+    list.push({ speaker, text, day: this.h.day() });
     if (list.length > MAX_HISTORY) {
       const old = list.splice(0, list.length - MAX_HISTORY);
       const summary = old.filter((t) => t.speaker !== 'narrator').map((t) => `${t.speaker === 'player' ? p.name : 'I'}: ${t.text}`).join(' ');
@@ -177,7 +177,7 @@ export class DialogueEngine {
     const s: Session = { npcId, messages: [], thinking: false, ended: false };
     this.sessions.set(userId, s);
     // Recent history so the conversation feels continuous.
-    for (const t of (p.conversations[npcId] ?? []).slice(-6)) s.messages.push({ speaker: t.speaker, text: t.text, emotion: t.emotion });
+    for (const t of (p.conversations[npcId] ?? []).slice(-6)) s.messages.push({ speaker: t.speaker, text: t.text });
     const events: string[] = [];
     if (this.h.quests.onTalk(p, npcId)) events.push('The player came to speak with you as part of a task they are doing.');
     for (const d of this.h.quests.tryDeliver(p, npcId)) {
@@ -200,13 +200,13 @@ export class DialogueEngine {
       return;
     }
     if (firstMeeting) {
-      s.messages.push({ speaker: 'npc', text: def.greeting, emotion: 'neutral' });
-      this.record(p, npcId, 'npc', def.greeting, 'neutral');
+      s.messages.push({ speaker: 'npc', text: def.greeting });
+      this.record(p, npcId, 'npc', def.greeting);
     } else {
       // A "hello again" is shown, not kept: otherwise every visit adds one more to the history (and the model's transcript).
       const last = s.messages[s.messages.length - 1];
       const line = this.returnGreeting(def, rt, p);
-      if (last?.text !== line) s.messages.push({ speaker: 'npc', text: line, emotion: 'neutral' });
+      if (last?.text !== line) s.messages.push({ speaker: 'npc', text: line });
     }
     this.send(userId);
   }
@@ -283,7 +283,7 @@ export class DialogueEngine {
     if (!s || !p) return;
     const def = this.npc(s.npcId)!;
     const rt = this.h.npcRt(s.npcId)!;
-    let decision: { actions: NpcAction[]; emotion: Emotion; speech: string };
+    let decision: { actions: NpcAction[]; speech: string };
     try {
       decision = await this.llmDecision(userId, p, def, rt, input);
     } catch (e) {
@@ -298,8 +298,8 @@ export class DialogueEngine {
     const speech = sanitizeSpeech(decision.speech, def.name);
     s.thinking = false;
     if (speech) {
-      s.messages.push({ speaker: 'npc', text: speech, emotion: decision.emotion });
-      this.record(p, s.npcId, 'npc', speech, decision.emotion);
+      s.messages.push({ speaker: 'npc', text: speech });
+      this.record(p, s.npcId, 'npc', speech);
     }
     for (const n of narration) {
       s.messages.push({ speaker: 'narrator', text: n });
@@ -331,7 +331,8 @@ export class DialogueEngine {
       `World facts you might know:\n${w.worldFacts.slice(0, 6).map((f) => `- ${f}`).join('\n')}`,
       mems.length ? `What you remember:\n${mems.map((m) => `- ${m.source === 'rumor' ? `(heard from ${this.npc(m.fromNpcId ?? '')?.name ?? 'someone'}) ` : ''}${m.text}${m.dueDay !== undefined ? ` (day ${m.dueDay})` : ''}`).join('\n')}` : '',
       `Your feelings toward ${p.name}: ${label}.`,
-      `How to behave: stay fully in character and speak as ${def.name} would — natural dialogue, 1-4 sentences unless asked for detail. React to exactly what the player says and does; you can be charmed, persuaded, offended, fooled or unimpressed like a real person with your personality. Never mention being an AI, game mechanics, JSON, ids or numbers.`,
+      `How to behave: stay fully in character as ${def.name}, 1-4 sentences unless asked for detail. React to exactly what the player says and does; you can be charmed, persuaded, offended, fooled or unimpressed like a real person with your personality. Never mention being an AI, game mechanics, JSON, ids or numbers.`,
+      `How you talk: plainly and conversationally, like a real person chatting with someone in front of them. Everyday words, clear sentences, one thought at a time; answer what you were asked first and say what you mean. Your world shows in what you talk about (its places, people and troubles), not in quaint wording: no riddles, sayings, poetic or old-fashioned phrasing, and you need not end on a question. Your voice above is how you sound (warm, curt, nervous, formal...), not a reason to talk strangely; only speak oddly if your personality says that is who you are.`,
       `Make talking to you worth it. You have a life, worries and things you know; when the conversation earns it, act on them the way a real person would, through the actions you are offered each turn, and say it in your own words. Do not hand out things to strangers who have done nothing; small talk can stay small talk.`,
       `How you feel about ${p.name} is never said as a label or number: show it in tone, in what you share and in what you will do for them.`,
     ]
@@ -436,10 +437,9 @@ export class DialogueEngine {
           }),
         )
         .max(5),
-      emotion: z.enum(EMOTIONS),
       speech: z.string().min(1).max(1200),
     });
-    lines.push(`Reply with JSON: "actions" (may be empty), "emotion", and "speech" (only ${def.name}'s spoken words).`);
+    lines.push(`Reply with JSON: "actions" (may be empty) and "speech" (only ${def.name}'s spoken words).`);
     const out = await genai().structured('npc.decision', { system: this.persona(p, def, rt), prompt: lines.join('\n\n'), schema, name: 'npc_turn' });
     const actions: NpcAction[] = out.actions.map((a) => ({
       ...a,
@@ -455,7 +455,7 @@ export class DialogueEngine {
       secretRef: a.secretRef === 'none' ? undefined : a.secretRef ?? undefined,
       lead: a.lead ?? undefined,
     }));
-    return { actions, emotion: out.emotion as Emotion, speech: out.speech };
+    return { actions, speech: out.speech };
   }
 
   private knownZones(def: NpcDef, rt: NpcRuntime): ZoneDef[] {
@@ -732,11 +732,10 @@ export class DialogueEngine {
 
   // ------------------------------------------------------------------ simple replies (no model, or out of budget)
 
-  private simpleDecision(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: { text: string; offered?: ItemInstance; gold?: number; skillId?: string; event?: string }): { actions: NpcAction[]; emotion: Emotion; speech: string } {
+  private simpleDecision(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: { text: string; offered?: ItemInstance; gold?: number; skillId?: string; event?: string }): { actions: NpcAction[]; speech: string } {
     const t = input.text.toLowerCase();
     const actions: NpcAction[] = [];
     const say: string[] = [];
-    let emotion: Emotion = 'neutral';
     const has = (...words: string[]) => words.some((x) => new RegExp(`\\b${x}`, 'i').test(t));
     const disp = this.disposition(rt, userId);
     const available = this.availableQuests(p, def);
@@ -744,11 +743,9 @@ export class DialogueEngine {
     if (input.event) {
       if (input.event.includes('handed you')) {
         say.push(pickLine(['This is it. You actually did it.', 'Ah — thank you. You have no idea what this means.', 'Good. Very good.'], def.name));
-        emotion = 'grateful';
       } else if (input.event.includes('remembered')) {
         const m = rt.memories.filter((x) => x.about === userId && x.fulfilled).slice(-1)[0];
         say.push(`${p.name}! I haven't forgotten${m ? ` — ${m.text.replace(/^the player('s)?/i, 'your').replace(/\.$/, '')}` : ''}. Today's the day!`);
-        emotion = 'happy';
       } else if (input.event.includes('first time')) say.push(def.greeting || `Hello there. I'm ${def.name}.`);
       else say.push(pickLine([`So you came. Good — I've been expecting you, ${p.name}.`, 'There you are. We need to talk.', `${p.name}. Sit — what I have to say is important.`], def.name));
       for (const q of involved) {
@@ -765,7 +762,6 @@ export class DialogueEngine {
       } else {
         actions.push({ type: 'accept_gift' });
         say.push(pickLine(['For me? That is kind of you.', 'Well! I won\'t say no to that.', 'Thank you — truly.'], def.name));
-        emotion = 'grateful';
       }
     }
     if (input.skillId) {
@@ -773,7 +769,6 @@ export class DialogueEngine {
       if (sk?.effects.some((e) => e.kind === 'heal')) {
         say.push('Oh — I feel better already. Thank you.');
         actions.push({ type: 'change_disposition', amount: 8 });
-        emotion = 'grateful';
       } else say.push('What... was that supposed to do?');
     }
     if (!input.event && input.text) {
@@ -784,7 +779,6 @@ export class DialogueEngine {
         actions.push({ type: 'change_disposition', amount: -15 });
         say.push(disp < -40 && def.role === 'guard' ? 'That is enough. You are under arrest!' : pickLine(['How dare you.', 'I don\'t have to listen to this.', 'Charming. Truly.'], def.name));
         if (disp < -40 && def.role === 'guard') actions.push({ type: 'attack' });
-        emotion = 'angry';
       } else if ((def.role === 'merchant' || def.role === 'crafter' || def.role === 'innkeeper') && has('buy', 'sell', 'wares', 'trade', 'shop', 'goods', 'store', 'merchandise')) {
         actions.push({ type: 'open_trade' });
         say.push(pickLine(['Take a look. Everything is priced fairly.', 'See anything you like?', 'Coin first, questions later.'], def.name));
@@ -798,7 +792,6 @@ export class DialogueEngine {
         const q = available[0]!;
         actions.push({ type: 'offer_quest', questId: q.id });
         say.push(`${q.summary} Will you do it?`);
-        emotion = 'thoughtful';
       } else if (has('news', 'rumor', 'rumour', 'heard', 'happening', 'gossip', 'know', 'tell me', 'about')) {
         const rumors = rt.memories.filter((m) => m.source === 'rumor' && m.about !== userId).slice(-2);
         const k = [...def.knowledge, ...rumors.map((r) => `I heard ${r.text.replace(/\.$/, '')}.`)];
@@ -812,7 +805,6 @@ export class DialogueEngine {
         const dueIn = has('tomorrow') ? 1 : has('next week') ? 7 : undefined;
         actions.push({ type: 'remember', memory: `${p.name} told me: "${input.text.slice(0, 160)}"`, dueInDays: dueIn, spread: 'town', gathering: has('birthday', 'wedding') && dueIn !== undefined });
         say.push(dueIn !== undefined ? 'I\'ll remember that. Don\'t think I won\'t!' : 'I\'ll keep that in mind.');
-        emotion = 'happy';
       } else {
         // Persuasion: a thoughtful argument that touches the objective's topic.
         const persuade = involved.find((q) => q.objectives[q.current]?.type === 'persuade' && q.objectives[q.current]?.npcId === def.id);
@@ -824,7 +816,6 @@ export class DialogueEngine {
           if (input.text.length > 40 && (overlap >= 1 || persuasive || disp > 20)) {
             actions.push({ type: 'complete_objective', questId: persuade.def.id, objectiveId: o.id });
             say.push(pickLine(['...You make a fair point. Very well.', 'I hadn\'t thought of it that way. Alright — you have convinced me.', 'Fine. Fine! I will do it.'], def.name));
-            emotion = 'thoughtful';
           } else say.push(pickLine(['I am not convinced. Give me a real reason.', 'Words are cheap. Why should I?', 'Hm. You will have to do better than that.'], def.name));
         } else if (has('hello', 'hi', 'greetings', 'hey', 'good morning', 'good evening')) say.push(def.greeting || `Hello, ${p.name}.`);
         else if (has('who are you', 'your name', 'yourself')) say.push(`${def.name}. ${def.title}. ${def.backstory}`);
@@ -835,7 +826,7 @@ export class DialogueEngine {
       }
     }
     if (!say.length) say.push(def.greeting || '...');
-    return { actions, emotion, speech: say.join(' ') };
+    return { actions, speech: say.join(' ') };
   }
 }
 
