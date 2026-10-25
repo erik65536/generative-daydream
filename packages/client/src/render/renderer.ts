@@ -288,29 +288,11 @@ export class Renderer {
   /** Developer option: show where people can walk (green) and see through (blue). */
   showWalk = false;
   /**
-   * Keep the view inside the painting: a place smaller than the screen sits centred with mist around it. Off by
-   * default (the developer panel switches it, remembered in this browser) until it is decided how it should feel.
+   * Where the camera may look to show ground point `g`: the view stays inside the painting, and a place smaller than
+   * the screen sits centred with mist around it.
    */
-  clampCamera = (() => {
-    try {
-      return localStorage.getItem('gd.clampCamera') === '1';
-    } catch {
-      return false;
-    }
-  })();
-
-  setClampCamera(on: boolean) {
-    this.clampCamera = on;
-    try {
-      localStorage.setItem('gd.clampCamera', on ? '1' : '0');
-    } catch {
-      /* not remembered */
-    }
-  }
-
-  /** Where the camera may look to show ground point `g`: kept inside the painting when clamping. */
   private framed(z: ZoneData, g: Vec2): Vec2 {
-    if (!this.clampCamera || !z.painting) return g;
+    if (!z.painting) return g;
     const c = pic(g.x, g.y), P = z.painting;
     const fit = (v: number, lo: number, hi: number, half: number) => (hi - lo <= half * 2 ? (lo + hi) / 2 : Math.max(lo + half, Math.min(hi - half, v)));
     const cx = fit(c.x, -P.ox, P.width - P.ox, this.W / 2 / this.zoom), cy = fit(c.y, -P.oy, P.height - P.oy, this.H / 2 / this.zoom);
@@ -350,13 +332,14 @@ export class Renderer {
     const inside = !!z && p.x >= 0 && p.y >= 0 && p.x < z.width && p.y < z.height;
     const info: HoverInfo = { point: inside ? p : null, screenX: sx, screenY: sy };
     // Overlapping figures: the one whose body centre is nearest the cursor wins, so a figure standing just
-    // behind another can still be clicked on its visible part. Entities beat features and loot.
+    // behind another can still be clicked on its visible part. Any figure under the cursor beats things on the
+    // ground (a creature standing over a satchel or a sign is the one picked).
     let best: (typeof this.hitRects)[number] | null = null;
     let bestScore = Infinity;
     for (const h of this.hitRects) {
       if (sx < h.x || sy < h.y || sx > h.x + h.w || sy > h.y + h.h) continue;
       const nx = (sx - (h.x + h.w / 2)) / (h.w / 2), ny = (sy - (h.y + h.h * 0.45)) / (h.h / 2);
-      const score = nx * nx + ny * ny + (h.kind === 'entity' ? 0 : 0.6) - h.depth * 1e-4;
+      const score = nx * nx + ny * ny + (h.kind === 'entity' ? 0 : 100) - h.depth * 1e-4;
       if (score < bestScore) {
         best = h;
         bestScore = score;

@@ -1,7 +1,6 @@
 /**
  * Developer options for admins (toggle with the ` key): go to any place, see the whole map, reload the daydream
- * after it was edited on disk, zoom far out, see where people can walk, keep the camera inside the painting, and
- * hide the HUD for clean views. Ctrl+click teleports the party.
+ * after it was edited on disk, zoom far out, see where people can walk, and hide the HUD for clean views. Ctrl+click teleports the party.
  */
 import { useState } from 'react';
 import { client, useGame } from '../net/game';
@@ -12,7 +11,6 @@ export function DevPanel({ renderer, hudHidden, setHudHidden, onClose }: { rende
   const { world, zone } = useGame((s) => ({ world: s.world, zone: s.zone }));
   const [q, setQ] = useState('');
   const [peace, setPeace] = useState(false);
-  const [clamp, setClamp] = useState(!!renderer?.clampCamera);
   const [figureLight, setFigureLight] = useState(renderer?.figureLight ?? true);
   if (!world) return null;
   const list = world.zones.filter((z) => !q || z.name.toLowerCase().includes(q.toLowerCase()));
@@ -31,7 +29,6 @@ export function DevPanel({ renderer, hudHidden, setHudHidden, onClose }: { rende
         <button className="btn sm" onClick={() => (c.send({ t: 'dev', action: 'peace', on: !peace }), setPeace(!peace))}>{peace ? 'Peaceful ✓' : 'Peaceful'}</button>
         <button className="btn sm" title="Show where people can walk (green) and what blocks sight (blue)" onClick={() => renderer && (renderer.showWalk = !renderer.showWalk)}>Walkable</button>
         <button className="btn sm" title="Tint characters and creatures with the place's light (off: as painted or rendered)" onClick={() => { if (!renderer) return; renderer.figureLight = !renderer.figureLight; setFigureLight(renderer.figureLight); }}>{figureLight ? 'Figure light ✓' : 'Figure light'}</button>
-        <button className="btn sm" title="Keep the view inside the painting (a small place sits centred with mist around it)" onClick={() => (renderer?.setClampCamera(!renderer.clampCamera), setClamp(!clamp))}>{clamp ? 'Clamp camera ✓' : 'Clamp camera'}</button>
       </div>
       <input className="input" placeholder="Find a place…" value={q} onChange={(e) => setQ(e.target.value)} />
       <div className="dev-zones">

@@ -74,8 +74,8 @@ like the painting they stand in. The game never paints past the walkable ground;
   painting, sampled under it), brighter or darker with that ground; then cut back to the figure's shape and washed
   faintly with the light from the upper left. Under it lies a soft contact shadow, flattened as the figures' camera
   sees the ground, sized from the body (0.45 m) in the place's own shadow colour, stronger on brighter ground.
-- **Camera clamp** (developer panel, "Clamp camera", remembered per browser, off by default): the view stays
-  inside the painting; a place smaller than the screen sits centred with mist around it.
+- **Camera:** the view always stays inside the painting; a place smaller than the screen sits centred with mist
+  around it.
 
 ## The image pipeline (characters, objects, icons)
 
