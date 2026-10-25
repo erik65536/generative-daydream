@@ -139,6 +139,11 @@ gather only in open ground: a pack's centre keeps 2 m from anything blocked (`PA
 with some chance, so packs stand in rooms, clearings and squares rather than passages (on the dungeon, 7 of 12 packs
 of the earlier random rule stood in passages; none now).
 
+**Arriving.** A party coming in through a way out or a door stands on the nearest open ground by walking
+(`Nav.arrival`): past the narrow painted path of an edge exit, not in it, where a fight would line it up single file.
+Packs keep their centres 11 m from every way in and from where a party arrives through it (`PACK_FROM_DOOR`: aggro
+reaches 6.5 m and a pack is about 3 m across), so nobody walks into a fight on arrival.
+
 ## Making it usable
 
 `mapfix.ts`, without repainting (the character may clip a little through things that look solid):
