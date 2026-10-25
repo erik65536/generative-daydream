@@ -140,16 +140,23 @@ export async function kreaMasked(init: Buffer, mask: Buffer, prompt: string, see
 
 /**
  * Qwen-Image 2.1 Turbo, edit: the model sees `ref` and paints what `prompt` asks of it at the reference's size (a
- * multiple of 16). Deterministic for a seed, so cached like the reader's answers.
+ * multiple of 16). `more` are further references at the same size ("Picture 2", ...). Deterministic for a seed, so
+ * cached like the reader's answers.
  */
-export async function qwenEdit(ref: Buffer, prompt: string, seed: number): Promise<Buffer> {
+export async function qwenEdit(ref: Buffer, prompt: string, seed: number, more: Buffer[] = []): Promise<Buffer> {
   const meta = await sharp(ref).metadata();
   const width = Math.round(meta.width! / 16) * 16, height = Math.round(meta.height! / 16) * 16;
-  const png = await sharp(ref).resize(width, height, { fit: 'fill' }).removeAlpha().png().toBuffer();
-  const c = cached('qwenedit', png, `${prompt}|${seed}`);
+  const sized = (b: Buffer) => sharp(b).resize(width, height, { fit: 'fill' }).removeAlpha().png().toBuffer();
+  const png = await sized(ref), extra = await Promise.all(more.map(sized));
+  const c = cached('qwenedit', Buffer.concat([png, ...extra]), `${prompt}|${seed}`);
   const hit = c.get();
   if (hit) return hit[0]!;
-  return c.put([one(await run(QWEN, workflow('qwen21_edit.json', { ref_1: await upload(png), prompt, width, height, seed, checkpoint: QWEN })), 'Qwen edit')])[0]!;
+  const wf = workflow('qwen21_edit.json', { ref_1: await upload(png), prompt, width, height, seed, checkpoint: QWEN }) as Workflow;
+  for (const [i, b] of extra.entries()) {
+    wf[`ref${i + 2}`] = { class_type: 'LoadImage', inputs: { image: await upload(b) } };
+    wf['6']!.inputs[`images.image_${i + 2}`] = [`ref${i + 2}`, 0];
+  }
+  return c.put([one(await run(QWEN, wf), 'Qwen edit')])[0]!;
 }
 
 /** Krea 2 AnyPaint: paint the white part of `mask` to continue `init`, redrawing `redraw` px of its boundary. */
