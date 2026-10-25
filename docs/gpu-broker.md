@@ -40,8 +40,9 @@ GPU PC (dev) ─────┘   one queue, one      └─ SkinTokens (runs de
 - **Code:** a new workspace package, `packages/gpu-broker`, written in Node and TypeScript, with shared types in
   `packages/shared`.
 - **How it runs:** on the GPU PC as a long-lived process of its own. It does not start or stop with `npm run dev`,
-  so restarting development never drops production's work. A Task Scheduler task at logon starts it next to
-  ComfyUI; this needs nothing installed.
+  so restarting development never drops production's work. It is started by hand (`npm run broker`), like
+  ComfyUI, with no service or scheduled task. While it is not running, both installations' GPU work waits, and
+  their jobs say they are waiting for the GPU broker.
 - **Config:** `config/broker.json`, git-ignored:
 
 ```jsonc
@@ -217,12 +218,10 @@ slow, a `render` adapter on the GPU PC takes the rig files and returns the sheet
    - Measure rendering on the box's integrated graphics.
 4. **The admin GPU page on the broker.**
 
-## Open questions
+## Settled and open questions
 
-- **SeedVR2 and SAM 3 after `/free`:** do these custom nodes hand their memory back, or do they keep weights of
-  their own? Check before relying on `freeBetweenModels`. If they keep weights, they get their own unload in the
-  ComfyUI adapter.
-- **Rendering speed on the box:** how long eight directions of sheets take on its integrated graphics. That decides
-  whether `render` becomes an adapter.
-- **Starting the broker:** a Task Scheduler task at logon needs nothing installed. A real Windows service would
-  need a wrapper such as NSSM or WinSW, which is an install.
+- **SeedVR2 and SAM 3 after `/free`:** settled. They give their memory back, so `freeBetweenModels` with ComfyUI's
+  `/free` is enough.
+- **Starting the broker:** settled. It is started by hand, with no service or scheduled task.
+- **Rendering speed on the box:** to be tested. Integrated graphics of that generation are limited, so a `render`
+  adapter on the GPU PC is likely. Measure how long eight directions of sheets take on the box before deciding.
