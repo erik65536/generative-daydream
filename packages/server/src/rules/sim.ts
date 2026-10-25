@@ -4,7 +4,7 @@
  */
 import {
   Nav, Rng, makeNav, rx,
-  type BossDef, type CharacterState, type CombatMode, type DifficultyId, type FxEvent, type ItemInstance, type MonsterFamily, type MonsterRole,
+  type BossDef, type CharacterState, type DifficultyId, type FxEvent, type ItemInstance, type MonsterFamily, type MonsterRole,
   type MonsterRuntime, type Ruleset, type SkillDef, type SpawnDef, type Surface, type ZoneDef,
 } from '@gd/shared';
 import { Actor, CharActor, MonsterActor } from '../game/actors';
@@ -13,7 +13,7 @@ import { createCharacter, levelUpTo, restoreFully } from '../game/characters';
 import { makeItem } from '../game/loot';
 import type { ZoneMap } from '../game/worldctx';
 import { isFree, nearestFree } from '../game/space';
-import { partySizeFor, type PackMember } from './encounters';
+import type { PackMember } from './encounters';
 
 const ARENA_W = 22;
 const ARENA_H = 18;
@@ -152,13 +152,6 @@ export function makeParty(r: Ruleset, o: PartyOptions): CharacterState[] {
     restoreFully(r, ch, o.classes.length === 1);
     return ch;
   });
-}
-
-/** Class line-ups for a mode, rotating so every class is exercised. */
-export function partyLineups(r: Ruleset, mode: CombatMode, count: number): string[][] {
-  const size = partySizeFor(mode);
-  const ids = r.classes.map((c) => c.id);
-  return Array.from({ length: count }, (_, i) => Array.from({ length: size }, (_, j) => ids[(i + j) % ids.length]!));
 }
 
 // ------------------------------------------------------------------------------------ fights

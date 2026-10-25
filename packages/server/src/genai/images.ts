@@ -289,10 +289,3 @@ export async function produceAssets(recs: ImageRecord[], style: string, outDir: 
     if (shouldStop?.()) return;
   }
 }
-
-/** Generate (or regenerate) one asset; writes the PNG and returns the updated record. */
-export async function produceAsset(rec: ImageRecord, style: string, outDir: string, worldSeed: string): Promise<ImageRecord> {
-  let out: ImageRecord = { ...rec, status: 'failed' };
-  await produceAssets([rec], style, outDir, worldSeed, (r) => (out = r));
-  return out;
-}

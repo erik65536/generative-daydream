@@ -87,7 +87,6 @@ export function setProcessRole(role: ProcessRole, label?: string) {
   me.label = label ?? role;
   touch();
 }
-export const processRole = () => me.role;
 
 type Source = () => Partial<ProcessState>;
 const sources = new Set<Source>();

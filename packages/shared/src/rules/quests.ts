@@ -143,10 +143,3 @@ export interface NpcAction {
 
 export const EMOTIONS = ['neutral', 'happy', 'amused', 'sad', 'angry', 'afraid', 'surprised', 'suspicious', 'grateful', 'thoughtful'] as const;
 export type Emotion = (typeof EMOTIONS)[number];
-
-export interface NpcDecision {
-  thought?: string;
-  actions: NpcAction[];
-  emotion: Emotion;
-  speech: string;
-}

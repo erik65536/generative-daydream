@@ -28,14 +28,3 @@ export function sampleMotion(m: Motion, t: number): MotionSample {
   }
   return { x: px, y: py, index: m.path.length, done: true, facing };
 }
-
-export function motionDuration(m: Motion): number {
-  let len = 0;
-  let px = m.from.x, py = m.from.y;
-  for (const p of m.path) {
-    len += Math.hypot(p.x - px, p.y - py);
-    px = p.x;
-    py = p.y;
-  }
-  return (len / m.speed) * 1000;
-}

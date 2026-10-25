@@ -281,11 +281,6 @@ export async function readPlace(draft: PlaceDraft, map: Buffer, s: PlaceSketch, 
   };
 }
 
-/** Design, paint and read a place, and turn it into game data. */
-export async function buildPlace(w: WorldDefinition, z: ZoneDef, ctx: PlaceContext): Promise<void> {
-  await settlePlace(w, z, await paintAndRead(worldLook(w), sketchOf(w, z), ctx), ctx);
-}
-
 /**
  * Put everything in a made place (Luna decides where), bring the map to game scale and turn it into game data:
  * mutates the zone, the world's NPCs and its assets.

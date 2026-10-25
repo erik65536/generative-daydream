@@ -9,12 +9,6 @@ export function Glyph({ b }: { b: 'A' | 'B' | 'X' | 'Y' | 'LB' | 'RB' | 'LT' | '
   return <span className={`glyph-btn g-${b}`}>{b === 'Menu' ? '≡' : b === 'View' ? '⧉' : b}</span>;
 }
 
-/** Only rendered while the controller is the input in use. */
-export function PadOnly({ children }: { children: React.ReactNode }) {
-  const pad = useGame((s) => s.inputMode === 'pad');
-  return pad ? <>{children}</> : null;
-}
-
 export function PadPrompt() {
   const p = useGame((s) => (s.inputMode === 'pad' && !s.wheel ? s.padPrompt : null));
   if (!p) return null;

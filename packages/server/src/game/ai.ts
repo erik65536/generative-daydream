@@ -18,11 +18,6 @@ export interface AiMemory {
   moves: number;
 }
 
-/** Hosts that let AI-driven characters drink potions from their party's bag. */
-export interface AiInventoryHost {
-  aiPotions?(a: Actor): { item: ItemInstance; consume: () => void }[];
-}
-
 interface Plan {
   score: number;
   moveTo?: Vec2;

@@ -11,7 +11,6 @@ export const CELL = 0.25;
 export const CLEARANCE = 0.25;
 
 export type Side = 'top' | 'bottom' | 'left' | 'right';
-export const SIDES: readonly Side[] = ['top', 'right', 'bottom', 'left'];
 
 export interface Grid {
   cols: number;
@@ -74,12 +73,6 @@ export function neighbours(i: number, g: Grid): number[] {
   if (r > 0) out.push(i - g.cols);
   if (r < g.rows - 1) out.push(i + g.cols);
   return out;
-}
-
-/** The side a border cell lies on (corners count for the top and bottom). */
-export function sideOf(i: number, g: Grid): Side {
-  const r = Math.floor(i / g.cols), c = i % g.cols;
-  return r === 0 ? 'top' : r === g.rows - 1 ? 'bottom' : c === 0 ? 'left' : 'right';
 }
 
 /** Connected pieces of the cells where `on` holds (4-joined). */

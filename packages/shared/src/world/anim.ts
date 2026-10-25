@@ -9,7 +9,6 @@ import { PX_PER_METRE } from './nav';
 
 /** Screen directions, clockwise from straight down the screen (toward the viewer). */
 export const ANIM_DIRS = ['S', 'SW', 'W', 'NW', 'N', 'NE', 'E', 'SE'] as const;
-export type AnimDir = (typeof ANIM_DIRS)[number];
 
 /** What gameplay plays: standing, moving (walk below `RUN_SPEED`, run above), a blow, a spell, taking a hit, falling. */
 export const ACTOR_CLIPS = ['idle', 'walk', 'run', 'attack', 'cast', 'hit', 'die'] as const;

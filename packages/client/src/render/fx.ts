@@ -110,11 +110,3 @@ export class FxSystem {
     this.projectiles.push({ x0, y0, x1, y1, t: 0, dur: kind === 'beam' ? 0.12 : Math.max(0.15, d / (kind === 'arrow' ? 22 : 14)), color, kind, onHit, arc: kind === 'arrow' ? Math.min(1.2, d * 0.08) : 0.2 });
   }
 }
-
-export interface WeatherDrop {
-  x: number;
-  y: number;
-  z: number;
-  v: number;
-  phase: number;
-}

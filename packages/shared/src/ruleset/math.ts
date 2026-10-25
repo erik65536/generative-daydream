@@ -2,12 +2,6 @@
 import type { Effect, Ruleset, SkillDef } from './types';
 import { rx, type StatBlock } from './stats';
 
-export interface Combatant {
-  stats: StatBlock;
-  hp: number;
-  barrier: number;
-}
-
 export type DamageEffect = Extract<Effect, { kind: 'damage' }>;
 
 export function potency(skill: SkillDef, rank: number): number {

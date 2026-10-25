@@ -303,11 +303,6 @@ export function deleteSession(token: string) {
   q.deleteSession.run(token);
 }
 
-/** For tests. */
-export function _resetAuth() {
-  db.exec('DELETE FROM sessions; DELETE FROM users;');
-}
-
 // ------------------------------------------------------------------------------------ worlds
 
 export function worldDir(id: string) {
