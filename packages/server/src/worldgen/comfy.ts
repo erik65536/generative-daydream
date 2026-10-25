@@ -8,7 +8,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
-import { ROOT_DIR } from '../paths';
+import { DATA_DIR, ROOT_DIR } from '../paths';
 import { genai } from '../genai/service';
 import { callContext } from '../genai/context';
 import { promptBody } from '../gpu/presence';
@@ -21,7 +21,7 @@ const SEEDVR2 = 'seedvr2_7b_int8_convrot.safetensors';
 /** AnyPaint sees the whole window as a reference this many pixels across (its default 384 loses small objects). */
 const ANYPAINT_REFERENCE = 768;
 
-const CACHE = path.join(ROOT_DIR, 'data', 'cache');
+const CACHE = path.join(DATA_DIR, 'cache');
 
 const provider = () => Object.entries(genai().config.providers).find(([, p]) => p.type === 'comfyui');
 

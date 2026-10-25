@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, type Me, type SpendingSummary, type UserRow } from '../api';
+import { api, type Me, type SpendingSummary, type TrashEntry, type UserRow } from '../api';
 import { Backdrop } from '../ui/Backdrop';
 import { TopBar } from './Lobby';
 import { ChangePassword } from './Auth';
@@ -157,6 +157,60 @@ export function Users({ me }: { me: Me }) {
             <div className="hint">Change your own password on your account page. If every administrator is locked out, use the server console: npm run users -w @gd/server -- reset &lt;user id&gt;</div>
           </div>
         </div>
+        <Trash />
+      </div>
+    </div>
+  );
+}
+
+/** Deleted daydreams, with their saves: restore one, or remove it before its time in the trash runs out. */
+function Trash() {
+  const [trash, setTrash] = useState<{ days: number; entries: TrashEntry[] } | null>(null);
+  const [error, setError] = useState('');
+  const load = () => api.trash().then(setTrash).catch((e) => setError(e.message));
+  useEffect(() => {
+    load();
+  }, []);
+  const act = async (fn: () => Promise<unknown>) => {
+    setError('');
+    try {
+      await fn();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+    await load();
+  };
+  if (!trash) return null;
+  const left = (e: TrashEntry) => Math.max(0, Math.ceil(trash.days - (Date.now() - e.deletedAt) / 86400_000));
+  return (
+    <div className="panel" style={{ marginTop: 14 }}>
+      <div className="panel-head"><h3>Deleted daydreams</h3></div>
+      <div className="panel-body col" style={{ gap: 10 }}>
+        {error && <div className="error-text">{error}</div>}
+        {trash.entries.length ? (
+          <table className="table">
+            <thead>
+              <tr><th>Daydream</th><th>Owner</th><th>Deleted</th><th>Reveries</th><th /></tr>
+            </thead>
+            <tbody>
+              {trash.entries.map((e) => (
+                <tr key={e.id}>
+                  <td>{e.title}</td>
+                  <td className="small">{e.ownerName || '—'}</td>
+                  <td className="small muted">{new Date(e.deletedAt).toLocaleDateString()}{e.deletedBy ? ` by ${e.deletedBy}` : ''} · {left(e)} days left</td>
+                  <td className="small muted">{e.saves}</td>
+                  <td style={{ textAlign: 'right', whiteSpace: 'nowrap' }}>
+                    <button className="btn sm" onClick={() => act(() => api.restoreWorld(e.id))}>Restore</button>{' '}
+                    <button className="btn sm danger" onClick={() => confirm(`Remove "${e.title}" and its reveries for good? This cannot be undone.`) && act(() => api.purgeWorld(e.id))}>Remove now</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        ) : (
+          <div className="muted small">Nothing in the trash.</div>
+        )}
+        <div className="hint">A deleted daydream and its reveries are kept here for {trash.days} days, then removed for good.</div>
       </div>
     </div>
   );

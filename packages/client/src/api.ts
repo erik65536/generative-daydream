@@ -38,6 +38,9 @@ export interface UserRow extends Me {
   spentWeek: number;
 }
 
+/** A deleted daydream waiting in the trash. */
+export interface TrashEntry { id: string; title: string; ownerId: string; ownerName: string; deletedAt: number; deletedBy: string; saves: number }
+
 export interface SpendingSummary { today: number; dailyTotalUsd: number | null; dailyPerUserUsd: number | null; adminsUnlimited: boolean; systemWeek: number }
 
 /** The admin GPU page: everything that uses the GPU, across the server, the worker and CLI runs. */
@@ -208,6 +211,9 @@ export const api = {
   setUserAdmin: (id: string, isAdmin: boolean) => call<UserRow>('PATCH', `/api/admin/users/${id}`, { isAdmin }),
   setUserBudget: (id: string, dailyLimitUsd: number | null) => call<UserRow>('PATCH', `/api/admin/users/${id}`, { dailyLimitUsd }),
   spending: () => call<SpendingSummary>('GET', '/api/admin/spending'),
+  trash: () => call<{ days: number; entries: TrashEntry[] }>('GET', '/api/admin/trash'),
+  restoreWorld: (id: string) => call<{ ok: true; id: string }>('POST', `/api/admin/trash/${id}/restore`, {}),
+  purgeWorld: (id: string) => call<{ ok: true }>('DELETE', `/api/admin/trash/${id}`),
   gpu: (fresh = false) => call<GpuView>('GET', `/api/admin/gpu${fresh ? '?fresh=1' : ''}`),
   gpuPause: (scope: 'all' | 'animation', on: boolean) => call<GpuView['control']>('POST', '/api/admin/gpu/pause', { scope, on }),
   gpuPriority: (id: string, change: { priority: number } | { move: 'up' | 'down' }) => call<{ ok: true }>('POST', `/api/admin/gpu/jobs/${id}/priority`, change),

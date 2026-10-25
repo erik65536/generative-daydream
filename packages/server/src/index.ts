@@ -27,7 +27,12 @@ import { queueAnimation, requestRedo } from './anim/job';
 import { incompatibility, instances } from './game/manager';
 
 const PORT = Number(process.env.GD_PORT ?? 3000);
+/** The address to listen on: 127.0.0.1 behind a reverse proxy on the same machine; every interface when unset. */
+const HOST = process.env.GD_HOST || undefined;
 const app = express();
+// Behind a reverse proxy on this machine (Caddy), the client's address and https come from its X-Forwarded headers:
+// the sign-in lockout is per address, and the session cookie is marked Secure on https.
+app.set('trust proxy', 'loopback');
 app.use(express.json({ limit: '2mb' }));
 
 // ------------------------------------------------------------------------------ auth (middleware in auth.ts)
@@ -40,8 +45,8 @@ const aiOf = (u: store.User) => {
 
 const meOf = (u: store.User) => ({ id: u.id, username: u.username, isAdmin: u.isAdmin, mustChangePassword: u.mustChangePassword, ai: aiOf(u) });
 
-const setSession = (res: Response, token: string) =>
-  res.setHeader('Set-Cookie', `gd_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}`);
+const setSession = (req: Request, res: Response, token: string) =>
+  res.setHeader('Set-Cookie', `gd_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${30 * 24 * 3600}${req.secure ? '; Secure' : ''}`);
 
 const Credentials = z.object({ username: z.string().min(1).max(40), password: z.string().min(1).max(200) });
 
@@ -68,14 +73,14 @@ app.post('/api/auth/login', (req, res) => {
     return void res.status(401).json({ error: 'Wrong user id or password.' });
   }
   keys.forEach((k) => failures.delete(k));
-  setSession(res, store.createSession(u.id));
+  setSession(req, res, store.createSession(u.id));
   res.json(meOf(u));
 });
 
 app.post('/api/auth/logout', (req, res) => {
   const t = cookie(req, 'gd_session');
   if (t) store.deleteSession(t);
-  res.setHeader('Set-Cookie', 'gd_session=; Path=/; Max-Age=0');
+  res.setHeader('Set-Cookie', `gd_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${req.secure ? '; Secure' : ''}`);
   res.json({ ok: true });
 });
 
@@ -279,7 +284,28 @@ app.delete('/api/worlds/:id', auth, (req, res) => {
   const w = store.loadWorld(String(req.params.id));
   if (!w) return void res.status(404).json({ error: 'Not found.' });
   if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your daydream.' });
-  store.deleteWorld(w.id);
+  // Saves being played stop first, so a last autosave does not write them back outside the trash.
+  for (const s of store.listInstances(w.id)) if (instances.isLive(s.id)) instances.drop(s.id);
+  store.deleteWorld(w.id, u.username);
+  res.json({ ok: true });
+});
+
+/** Deleted daydreams wait in the trash for TRASH_DAYS days; administrators can restore them or remove them now. */
+app.get('/api/admin/trash', auth, adminOnly, (_req, res) => {
+  res.json({ days: store.TRASH_DAYS, entries: store.listTrash() });
+});
+
+app.post('/api/admin/trash/:id/restore', auth, adminOnly, (req, res) => {
+  try {
+    const w = store.restoreWorld(String(req.params.id));
+    res.json({ ok: true, id: w.id });
+  } catch (e) {
+    res.status(400).json({ error: (e as Error).message });
+  }
+});
+
+app.delete('/api/admin/trash/:id', auth, adminOnly, (req, res) => {
+  store.purgeTrashEntry(String(req.params.id));
   res.json({ ok: true });
 });
 
@@ -468,7 +494,7 @@ app.delete('/api/instances/:id', auth, (req, res) => {
 
 app.get('/api/genai', auth, (req, res) => {
   const g = genai();
-  res.json({ purposes: g.describe(), recent: g.recent.slice(-60).reverse(), gpu: g.gpu.status(), configFile: fs.existsSync(path.join(CONFIG_DIR, 'genai.json')) ? 'config/genai.json' : null });
+  res.json({ purposes: g.describe(), recent: g.recent.slice(-60).reverse(), gpu: g.gpu.status(), configFile: process.env.GD_GENAI_CONFIG ?? (fs.existsSync(path.join(CONFIG_DIR, 'genai.json')) ? 'config/genai.json' : null) });
 });
 
 app.post('/api/genai/release', auth, async (req, res) => {
@@ -582,16 +608,23 @@ wss.on('connection', (ws: WebSocket, req) => {
   });
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, HOST, () => {
   const g = genai();
   setProcessRole('server', `web server :${PORT}${process.env.GD_WORKER !== 'external' ? ' + worker' : ''}`);
-  console.log(`Generative Daydream server on http://localhost:${PORT}`);
+  console.log(`Generative Daydream server on http://${HOST ?? 'localhost'}:${PORT}`);
   // Jobs run here unless a separate worker process runs them (GD_WORKER=external, as `npm run dev` does).
   if (process.env.GD_WORKER !== 'external') {
     startWorker();
     console.log('Job worker: in this process');
   } else console.log('Job worker: separate process (npm run worker)');
   installSpendLedger();
+  // Deleted daydreams past their time in the trash are removed for good: now, then twice a day.
+  const purge = () => {
+    const n = store.purgeTrash();
+    if (n) console.log(`Trash: removed ${n} daydream(s) deleted more than ${store.TRASH_DAYS} days ago`);
+  };
+  purge();
+  setInterval(purge, 12 * 3600_000).unref();
   const first = store.ensureAdmin();
   if (first) console.log(`
 No accounts yet: created administrator "admin" with one-time password ${first}

@@ -19,7 +19,7 @@ export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | '
 export interface ProviderConfig {
   type: ProviderType;
   baseUrl?: string;
-  /** Literal key, or "env:VAR_NAME". */
+  /** Literal key, "env:VAR_NAME", or "credential:NAME" (a systemd credential; see docs/hosting.md). */
   apiKey?: string;
   model?: string;
   /** How to request JSON: native schema, JSON mode, or by prompting only. */

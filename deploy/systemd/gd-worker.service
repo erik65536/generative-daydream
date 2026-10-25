@@ -1,0 +1,36 @@
+# The job worker: world builds, painting (on the GPU PC's ComfyUI), rules and studio work. Lower CPU priority than
+# the game server, so a balance simulation never makes play stutter. Stopping it pauses jobs at a safe point; they
+# resume from their checkpoints when it starts again.
+[Unit]
+Description=Generative Daydream job worker
+After=network-online.target gd-server.service
+Wants=network-online.target
+
+[Service]
+User=gd
+Group=gd
+WorkingDirectory=/opt/gd/packages/server
+ExecStart=/opt/gd/node_modules/.bin/tsx src/worker.ts
+Environment=NODE_ENV=production GD_DATA_DIR=/var/lib/gd GD_GENAI_CONFIG=/etc/gd/genai.json
+LoadCredentialEncrypted=openai
+Restart=always
+RestartSec=2
+TimeoutStopSec=180
+Nice=10
+CPUWeight=30
+
+StateDirectory=gd
+StateDirectoryMode=0750
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target

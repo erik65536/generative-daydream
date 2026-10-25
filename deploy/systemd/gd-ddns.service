@@ -1,0 +1,17 @@
+# Points the game's host name at this home's current public address (Namecheap dynamic DNS).
+[Unit]
+Description=Update daydream.erik.engineer to the current public IP
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+DynamicUser=yes
+StateDirectory=gd-ddns
+Environment=DDNS_HOST=daydream DDNS_DOMAIN=erik.engineer
+LoadCredentialEncrypted=namecheap-ddns
+ExecStart=/opt/gd/deploy/ddns-namecheap.sh
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes

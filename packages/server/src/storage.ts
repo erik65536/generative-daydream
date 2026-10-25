@@ -22,6 +22,7 @@ import { InstanceFile } from './instancestore';
 const SCHEMA_VERSION = 3;
 const worldsDir = path.join(DATA_DIR, 'worlds');
 const instancesDir = path.join(DATA_DIR, 'instances');
+const trashDir = path.join(DATA_DIR, 'trash');
 fs.mkdirSync(worldsDir, { recursive: true });
 fs.mkdirSync(instancesDir, { recursive: true });
 
@@ -408,11 +409,102 @@ export function listWorlds(): WorldDefinition[] {
   return (q.worldIds.all() as { id: string }[]).map((r) => loadWorld(r.id)).filter((w): w is WorldDefinition => !!w);
 }
 
-export function deleteWorld(id: string) {
+// ------------------------------------------------------------------------------------ trash
+
+/** How long a deleted world waits in the trash before it is removed for good. */
+export const TRASH_DAYS = 30;
+
+/** A deleted world in data/trash/<id>/: its folder (world/), its saves (instances/) and this record (trash.json). */
+export interface TrashEntry {
+  id: string;
+  title: string;
+  ownerId: string;
+  ownerName: string;
+  deletedAt: number;
+  deletedBy: string;
+  saves: number;
+}
+
+const trashEntryDir = (id: string) => path.join(trashDir, id);
+
+/** Rename, or copy and remove when a rename is refused (another drive; on Windows, a file someone has open). */
+function movePath(from: string, to: string) {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  try {
+    fs.renameSync(from, to);
+  } catch {
+    fs.cpSync(from, to, { recursive: true });
+    fs.rmSync(from, { recursive: true, force: true });
+  }
+}
+
+/** Delete a world: it and its saves move to the trash, where an administrator can restore them for TRASH_DAYS days. */
+export function deleteWorld(id: string, deletedBy = '') {
+  const w = loadWorld(id);
   worldCache.delete(id);
-  for (const r of q.instanceIdsOfWorld.all(id) as { id: string }[]) deleteInstance(r.id);
+  const entry = trashEntryDir(id);
+  fs.rmSync(entry, { recursive: true, force: true });
+  const saves = q.instanceIdsOfWorld.all(id) as { id: string }[];
+  for (const r of saves) {
+    q.deleteInstance.run(r.id);
+    instanceFiles.get(r.id)?.close();
+    instanceFiles.delete(r.id);
+    if (fs.existsSync(instanceFile(r.id))) moveSqlite(instanceFile(r.id), path.join(entry, 'instances', `${r.id}.sqlite`));
+  }
   q.deleteWorld.run(id);
-  fs.rmSync(worldDir(id), { recursive: true, force: true });
+  if (fs.existsSync(worldDir(id))) movePath(worldDir(id), path.join(entry, 'world'));
+  const record: TrashEntry = { id, title: w?.concept.title ?? id, ownerId: w?.ownerId ?? '', ownerName: w?.ownerName ?? '', deletedAt: Date.now(), deletedBy, saves: saves.length };
+  writeJsonAtomic(path.join(entry, 'trash.json'), record);
+}
+
+function moveSqlite(file: string, to: string) {
+  for (const sfx of ['', '-wal', '-shm', '-journal']) if (fs.existsSync(file + sfx)) movePath(file + sfx, to + sfx);
+}
+
+/** Deleted worlds, most recently deleted first. */
+export function listTrash(): TrashEntry[] {
+  if (!fs.existsSync(trashDir)) return [];
+  return fs
+    .readdirSync(trashDir)
+    .map((id) => readJson<TrashEntry>(path.join(trashEntryDir(id), 'trash.json')))
+    .filter((e): e is TrashEntry => !!e)
+    .sort((a, b) => b.deletedAt - a.deletedAt);
+}
+
+/** Bring a deleted world and its saves back. */
+export function restoreWorld(id: string): WorldDefinition {
+  if (!/^[\w-]+$/.test(id)) throw new Error('Not in the trash.');
+  const entry = trashEntryDir(id);
+  if (!fs.existsSync(path.join(entry, 'trash.json'))) throw new Error('Not in the trash.');
+  if (fs.existsSync(worldDir(id))) throw new Error('A daydream with this id already exists.');
+  if (!fs.existsSync(path.join(entry, 'world'))) throw new Error('The deleted daydream has no files to restore.');
+  movePath(path.join(entry, 'world'), worldDir(id));
+  const w = readJson<WorldDefinition>(worldFile(id));
+  if (!w) throw new Error('The deleted daydream could not be read.');
+  catalogWorld(w);
+  const saves = path.join(entry, 'instances');
+  for (const name of fs.existsSync(saves) ? fs.readdirSync(saves) : []) {
+    if (!name.endsWith('.sqlite')) continue;
+    const sid = name.slice(0, -'.sqlite'.length);
+    moveSqlite(path.join(saves, name), instanceFile(sid));
+    const s = instanceDb(sid, false)?.load();
+    if (s) catalogInstance(s);
+  }
+  fs.rmSync(entry, { recursive: true, force: true });
+  return w;
+}
+
+/** Remove a deleted world for good. */
+export function purgeTrashEntry(id: string) {
+  if (!/^[\w-]+$/.test(id)) return;
+  fs.rmSync(trashEntryDir(id), { recursive: true, force: true });
+}
+
+/** Remove worlds deleted more than TRASH_DAYS days ago; returns how many. */
+export function purgeTrash(now = Date.now()): number {
+  const old = listTrash().filter((e) => now - e.deletedAt > TRASH_DAYS * 86400_000);
+  for (const e of old) purgeTrashEntry(e.id);
+  return old.length;
 }
 
 // ------------------------------------------------------------------------------------ instances

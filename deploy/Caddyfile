@@ -1,0 +1,15 @@
+# /etc/caddy/Caddyfile. Caddy gets and renews the certificate by itself; with only 443 forwarded it uses the
+# TLS-ALPN challenge. WebSockets (/ws) pass through reverse_proxy unchanged. Other sites get their own blocks.
+# Optional: a global block with `email you@example.com` gets certificate expiry notices.
+
+daydream.erik.engineer {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy same-origin
+		-Server
+	}
+	reverse_proxy 127.0.0.1:3000
+}

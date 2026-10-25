@@ -206,7 +206,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
                 </div>
               )}
               {w.ownerId === me.id && (
-                <button className="btn danger sm" onClick={() => confirm('Delete this daydream and its art? Its reveries will stop working.') && api.deleteWorld(w.id).then(() => navigate('#/'))}>Delete daydream</button>
+                <button className="btn danger sm" onClick={() => confirm('Delete this daydream, its art and its reveries? An administrator can restore it for 30 days.') && api.deleteWorld(w.id).then(() => navigate('#/'))}>Delete daydream</button>
               )}
             </div>
           </div>

@@ -11,9 +11,24 @@ import { callContext } from './context';
 import { promptBody } from '../gpu/presence';
 import { dropPrompt } from '../gpu/comfyqueue';
 
+/**
+ * A key from the config: "env:NAME" reads an environment variable (.env in development); "credential:NAME" reads a
+ * systemd credential (LoadCredentialEncrypted=NAME), a file only this service can read and that, unlike the
+ * environment, child processes (the animator's Python, Chromium) do not inherit. Anything else is the key itself.
+ */
 export function resolveSecret(v?: string): string | undefined {
   if (!v) return undefined;
   if (v.startsWith('env:')) return process.env[v.slice(4)] || undefined;
+  if (v.startsWith('credential:')) {
+    const name = v.slice(11);
+    const dir = process.env.CREDENTIALS_DIRECTORY;
+    if (!dir || !/^[\w.-]+$/.test(name)) return undefined;
+    try {
+      return fs.readFileSync(path.join(dir, name), 'utf8').trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  }
   return v;
 }
 
