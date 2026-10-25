@@ -2,7 +2,10 @@
  * Zod schemas for each world-generation LLM call.
  */
 import { z } from 'zod';
-import { MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES, type Ruleset } from '@gd/shared';
+import { MERCHANT_KINDS, MONSTER_ARCHETYPES, NPC_ROLES, OBJECTIVE_TYPES, type NpcRole, type Ruleset } from '@gd/shared';
+
+/** Roles the story and towns give their people (companions are made apart, with the final rules). */
+const PERSON_ROLES = NPC_ROLES.filter((r) => r !== 'companion') as [NpcRole, ...NpcRole[]];
 
 const str = (max: number, min = 1) => z.string().trim().min(min).max(max);
 /** Lenient color: models may answer '#a1b2c3', 'a1b2c3', '#abc' or a color name; normalized later by normColor(). */
@@ -79,7 +82,7 @@ export function storySchema(townSlots: string[], lairSlots: string[], allSlots: 
           key: str(40),
           name: str(60),
           title: str(80),
-          role: z.enum(NPC_ROLES),
+          role: z.enum(PERSON_ROLES),
           townSlot: z.enum(townSlots as [string, ...string[]]),
           pronouns: str(20).optional(),
           personality: str(300),
@@ -150,7 +153,7 @@ export type FamiliesOut = z.infer<typeof FamiliesSchema>;
 const npcSchema = z.object({
   name: str(60),
   title: str(80),
-  role: z.enum(NPC_ROLES),
+  role: z.enum(PERSON_ROLES),
   merchantKind: z.enum(MERCHANT_KINDS).optional(),
   pronouns: str(20).optional(),
   personality: str(300),

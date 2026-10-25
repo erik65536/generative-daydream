@@ -96,7 +96,7 @@ export async function mockModels(opts: { junkOnce?: string[]; npc?: (prompt: str
         }
         if (name === 'town_content') {
           const npcs = out.npcs as Json[];
-          const roles: [string, string | null][] = [['innkeeper', null], ['merchant', 'general'], ['merchant', 'weapons'], ['trainer', null], ['guard', null], ['companion', null], ['crafter', null]];
+          const roles: [string, string | null][] = [['innkeeper', null], ['merchant', 'general'], ['merchant', 'weapons'], ['trainer', null], ['guard', null], ['crafter', null]];
           roles.forEach(([role, kind], i) => (npcs[i] = { ...(npcs[i % npcs.length] ?? npcs[0]), name: `Resident ${++counter}`, role, merchantKind: kind }));
         }
         content = JSON.stringify(out);

@@ -178,7 +178,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
   const npcKey = new Map<string, string>();
   const usedNames = new Set<string>();
   const pickArchetype = (role: NpcRole): MonsterArchetype =>
-    role === 'guard' ? 'guardian' : role === 'mystic' ? 'caster' : role === 'companion' ? rng.pick(['skirmisher', 'archer', 'caster', 'healer', 'guardian'] as MonsterArchetype[]) : role === 'trainer' ? 'skirmisher' : 'brute';
+    role === 'guard' ? 'guardian' : role === 'mystic' ? 'caster' : role === 'trainer' ? 'skirmisher' : 'brute';
   /** Two people of the same name are told apart by where they live. */
   const uniqueName = (name: string, slot: string) => {
     let n = name;
@@ -208,7 +208,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       voice: o.voice ?? o.personality,
       greeting: o.greeting,
       barks: o.barks?.length ? o.barks : ['...'],
-      level: Math.max(1, slot.levelRange[0] + (role === 'guard' ? 3 : role === 'companion' ? 0 : 1)),
+      level: Math.max(1, slot.levelRange[0] + (role === 'guard' ? 3 : 1)),
       archetype: pickArchetype(role),
       essential: false,
       questIds: [],
@@ -595,12 +595,20 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
  */
 export function addCompanions(w: WorldDefinition, out: CompanionsOut) {
   const r = w.ruleset;
+  const before = w.npcs;
   w.npcs = w.npcs.filter((n) => !n.companion);
   out.companions.forEach((c, i) => {
     const cls = r.classes.find((x) => x.name === c.className) ?? r.classes[i % r.classes.length]!;
     const kin = r.kins.find((x) => x.name === c.kinName) ?? r.kins[0]!;
+    // A companion the story already wrote (as one of its people) becomes that person: their quests, the others'
+    // ties to them and their painting keep pointing at the same id.
+    const was = before.find((n) => n.name.toLowerCase() === c.name.toLowerCase());
+    if (was) {
+      w.npcs = w.npcs.filter((n) => n !== was);
+      for (const z of w.zones) if (z.buildings) z.buildings = z.buildings.filter((b) => b.npcId !== was.id);
+    }
     w.npcs.push({
-      id: `n_comp${i}_${slugify(c.name)}`,
+      id: was?.id ?? `n_comp${i}_${slugify(c.name)}`,
       name: c.name,
       title: c.title,
       role: 'companion',
@@ -612,7 +620,8 @@ export function addCompanions(w: WorldDefinition, out: CompanionsOut) {
       appearance: c.appearance,
       backstory: c.backstory,
       knowledge: c.knowledge,
-      secrets: [],
+      secrets: was?.secrets ?? [],
+      relations: was?.relations,
       voice: c.voice,
       greeting: c.greeting,
       barks: c.barks.length ? c.barks : ['...'],
@@ -620,7 +629,7 @@ export function addCompanions(w: WorldDefinition, out: CompanionsOut) {
       archetype: cls.aiRole,
       companion: { classId: cls.id, kinId: kin.id },
       essential: true,
-      questIds: [],
+      questIds: was?.questIds ?? [],
       wanders: false,
     });
   });

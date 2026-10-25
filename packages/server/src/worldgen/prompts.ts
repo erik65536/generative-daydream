@@ -154,7 +154,7 @@ Create "loreNotes": ${loreCount} readable documents found here (journals, carvin
 }
 
 /** The three heroes who travel with the player (a world played with companions). */
-export function companionsPrompt(input: WorldInput, concept: ConceptOut, r: Ruleset, start: { name: string; description: string }): string {
+export function companionsPrompt(input: WorldInput, concept: ConceptOut, r: Ruleset, start: { name: string; description: string }, people: string[]): string {
   return `${conceptSummary(concept)}
 
 ${brief(input, ['people', 'story'])}
@@ -163,5 +163,7 @@ ${rulesWords(r)}
 CLASSES: ${r.classes.map((c) => `${c.name} (${c.role}): ${c.description}`).join('; ')}.
 KINS: ${r.kins.map((k) => `${k.name} (${k.presentation === 'feminine' ? 'women' : k.presentation === 'masculine' ? 'men' : 'androgynous'}): ${k.description}`).join('; ')}.
 
-Create the three COMPANIONS who travel with the player from the start, setting out from ${start.name} (${start.description}). They are heroes of this world with their own reasons to join this journey, and they fight beside the player. Give the three different classes that make a well-rounded party (a front-liner, a damage dealer and a healer or support where the classes allow), and each a kin. Each needs a name, a short title, a personality with a want and a flaw, a backstory that ties them to the world and the story, a speaking voice, a greeting for when the player first talks to them, 2-3 short barks, 1-3 things they know, and an "appearance": what they look like and wear, in the style of their class, as a person of their kin (and so as that kin's gender).`;
+PEOPLE OF ${start.name.toUpperCase()}: ${people.join('; ') || 'none yet'}.
+
+Create the three COMPANIONS who travel with the player from the start, setting out from ${start.name} (${start.description}). Where the world above already names the heroes who set out with the player, or some of these people are clearly meant to, make those the companions under the same names; the rest are new people. They are heroes of this world with their own reasons to join this journey, and they fight beside the player. Give the three different classes that make a well-rounded party (a front-liner, a damage dealer and a healer or support where the classes allow), and each a kin. Each needs a name, a short title, a personality with a want and a flaw, a backstory that ties them to the world and the story, a speaking voice, a greeting for when the player first talks to them, 2-3 short barks, 1-3 things they know, and an "appearance": what they look like and wear, in the style of their class, as a person of their kin (and so as that kin's gender).`;
 }

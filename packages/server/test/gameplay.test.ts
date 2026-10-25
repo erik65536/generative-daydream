@@ -4,6 +4,8 @@ import { genWorld, hero } from './helpers';
 import { instances } from '../src/game/manager';
 import { Combat } from '../src/game/combat';
 import { MonsterActor, CharActor, NpcActor } from '../src/game/actors';
+import { addCompanions } from '../src/worldgen/assemble';
+import type { CompanionsOut } from '../src/worldgen/schemas';
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -83,6 +85,20 @@ describe('companions', () => {
     // They walk with the party, never stand about in town.
     const town = inst._live(w.startZoneId);
     expect(companions.some((n) => town.actors.has(n.id))).toBe(false);
+    // A companion the story already wrote as one of its people becomes that person: one of them, same id, quests kept.
+    const w2 = structuredClone(w);
+    const person = w2.npcs.find((n) => !n.companion && n.zoneId === w2.startZoneId)!;
+    person.questIds = ['q_kept'];
+    const out: CompanionsOut = {
+      companions: w2.npcs.filter((n) => n.companion).map((n, i) => ({
+        name: i === 0 ? person.name : n.name, title: n.title, personality: n.personality, appearance: n.appearance, backstory: n.backstory ?? '', voice: n.voice ?? '', greeting: n.greeting, barks: n.barks, knowledge: n.knowledge,
+        className: w2.ruleset.classes.find((c) => c.id === n.companion!.classId)!.name, kinName: w2.ruleset.kins.find((k) => k.id === n.companion!.kinId)!.name,
+      })),
+    };
+    addCompanions(w2, out);
+    expect(w2.npcs.filter((n) => n.name === person.name)).toHaveLength(1);
+    expect(w2.npcs.find((n) => n.id === person.id)).toMatchObject({ companion: expect.anything(), questIds: ['q_kept'] });
+    expect(w2.npcs.filter((n) => n.companion)).toHaveLength(3);
     expect(inst._charActors('uc').length).toBe(4);
     // Clicking one opens a conversation with them.
     const [lead, first] = inst._charActors('uc');

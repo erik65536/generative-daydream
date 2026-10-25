@@ -422,7 +422,7 @@ export async function runGeneration(job: WorldGenJob, fixedSeed?: string) {
       if (!sk.companions) return;
       const start = world.zones.find((z) => z.id === world.startZoneId)!;
       const out = await stage('companions', 'Meeting the companions', () => cp.get('companions', () => step(job, 'world.content', 'Companions', {
-        prompt: P.companionsPrompt(input, concept, world.ruleset, start),
+        prompt: P.companionsPrompt(input, concept, world.ruleset, start, world.npcs.filter((n) => n.zoneId === start.id && !n.companion).map((n) => `${n.name} (${n.title})`)),
         schema: S.companionsSchema(world.ruleset),
         name: 'companions',
         maxTokens: 5000,
