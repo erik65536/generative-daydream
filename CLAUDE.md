@@ -11,7 +11,7 @@ you touch.
 |---|---|
 | `README.md` | What the game is, package layout, storage, model purposes, quick start |
 | `docs/server-architecture.md` | Accounts, who may see or play what, jobs and workers, the model gateway, the admin GPU page |
-| `docs/hosting.md` | The production box (systemd, Caddy, credentials), deploying, one-time upgrades, console tools there, moving worlds |
+| `docs/hosting.md` | The production box (systemd, Caddy, credentials), deploying, console tools there, moving worlds |
 | `docs/gpu-broker.md` | The GPU broker: every installation's ComfyUI work goes through it |
 | `docs/places.md` | How a place is painted, read for walkable ground, and furnished |
 | `docs/world-art.md` | Characters, creatures, objects and icons: prompts, painting, cutting out, checks; animation |
@@ -46,10 +46,10 @@ you touch.
   - Keep spend deliberate and report it.
   - Prefer the saved steps of a build (`data/worlds/<id>/draft/`) and the peek tools over building again.
 - **No backwards compatibility.**
-  - Old worlds, saves and characters need not keep working.
-  - Every database change needs an upgrade path: a script in `deploy/` (see `deploy/upgrade-accounts.cjs`) and
-    steps in `docs/hosting.md`.
-  - Upgrade the user's dev database too (back it up first).
+  - The game is still in development and runs on one machine.
+  - Old worlds, saves, characters and database layouts need not keep working.
+  - When the database schema changes, bring the user's dev database (`data/gd.sqlite` in the main checkout) up to
+    date with a one-off script, after backing it up.
 - **Dependencies.** Ask the user before installing anything new.
 - **Security.**
   - What matters is authentication, access to other people's things, remote code execution and writing arbitrary

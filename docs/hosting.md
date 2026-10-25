@@ -131,40 +131,10 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
 From your account on the box, run `/opt/gd/deploy/deploy.sh`. It fast-forwards to `origin/main`, reinstalls
 packages, builds the client, then restarts the worker and the server.
 
-### Once: upgrading a box that ran a version from before October 2026
-
-The account system changed (invite links, passkeys, monthly budgets), and so did the model config. On a box that
-already has a database from an older version, do this before the first deploy of the new code. A fresh box
-needs none of it.
-
-1. Stop the services and back the database up:
-   ```bash
-   sudo systemctl stop gd-server gd-worker
-   sudo -u gd cp /var/lib/gd/gd.sqlite /var/lib/gd/gd.sqlite.before-accounts
-   ```
-2. Pull the new code by hand, without restarting yet:
-   ```bash
-   cd /opt/gd && git fetch && git merge --ff-only origin/main && npm ci && npm run build
-   ```
-3. Upgrade the users table:
-   ```bash
-   sudo -u gd node /opt/gd/deploy/upgrade-accounts.cjs /var/lib/gd/gd.sqlite
-   ```
-   - Each existing account stays active with its user name and password and gets a $10 monthly budget.
-   - An account that still had a one-time password becomes an invite again, and the script prints its code.
-   - Running the script twice does nothing.
-4. Edit `/etc/gd/genai.json` (`sudo nano /etc/gd/genai.json`) and remove these keys:
-   - `providers.llm` and `providers.decider`. The server refuses to start while these exist.
-   - `combineNpcDecisionAndDialogue`, `worldGenParallelism`, `gpuIdleUnloadMs`, `spending.dailyPerUserUsd` and
-     `purposes."npc.dialogue"`. These are ignored, but they are clutter.
-5. Start the services and check that they run:
-   ```bash
-   sudo systemctl start gd-server gd-worker
-   journalctl -u gd-server -n 30
-   ```
-6. On the GPU PC, restart the broker (`npm run broker`) with the new code.
-
-The tables `meta`, `gpu_lease` and `gpu_wait` in an old database are no longer read and can stay.
+Restarting is safe:
+- The server saves running games when it stops.
+- The worker pauses jobs at a safe point, and they resume from their checkpoints.
+- `/var/lib/gd` and `/etc/gd` are never touched by a deploy.
 
 ### Console tools on the box
 
@@ -183,11 +153,6 @@ sudo -u gd env GD_DATA_DIR=/var/lib/gd GD_GENAI_CONFIG=/etc/gd/genai.json ../../
   account that has not chosen a user name yet.
 - `users.ts admin <user name or id> on|off`: make an account an administrator, or a player again.
 - `worldpack.ts` moves worlds in and out (see below).
-
-Restarting is safe:
-- The server saves running games when it stops.
-- The worker pauses jobs at a safe point, and they resume from their checkpoints.
-- `/var/lib/gd` and `/etc/gd` are never touched by a deploy.
 
 ## Logs
 
