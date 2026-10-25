@@ -50,7 +50,10 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
    - The broker token is a long random string (`openssl rand -hex 32`). It is stored as the `gpu-broker`
      credential on the box, and under the client `prod` in the GPU PC's `config/broker.json`.
    - No `animation` block.
-   - Keep the `spending` caps.
+   - Keep `spending.dailyTotalUsd`, the whole server's daily ceiling. Each player's budget is monthly and is set
+     on the Users page, not in this file.
+   - Only the provider types `openai-responses`, `openai-decision`, `openai-transcribe` and `comfyui` exist. The
+     server refuses to start if the file names another, such as an old `llm` or `decider` provider.
 
    Make it readable by `gd` only:
    ```bash
@@ -78,6 +81,12 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
    sudo systemctl enable --now gd-server gd-worker gd-ddns.timer
    journalctl -u gd-server -n 50        # the first start prints the administrator's invite link
    ```
+   - The first start of an empty server prints an invite link (`<site>/#/invite/<code>`). It works for 5 days.
+     Open it on the real address, `https://daydream.erik.engineer`, after the DNS and HTTPS steps below, and pick
+     a user name and a password, a passkey or both. The first account set up becomes the administrator.
+   - Passkeys are tied to the site's host name, so set them up on the real address rather than a LAN IP. A
+     passkey made on one machine's `localhost` does not work on another site.
+   - If the link runs out, make a new one with the console tools (below): `list`, then `reset <id>`.
 6. **DNS (Namecheap).**
    - In *Domain List → erik.engineer → Advanced DNS*, turn on **Dynamic DNS**. Its password is the
      `namecheap-ddns` credential.
@@ -122,6 +131,59 @@ Files in `deploy/`: the systemd units, the `Caddyfile`, `ddns-namecheap.sh` and 
 From your account on the box, run `/opt/gd/deploy/deploy.sh`. It fast-forwards to `origin/main`, reinstalls
 packages, builds the client, then restarts the worker and the server.
 
+### Once: upgrading a box that ran a version from before October 2026
+
+The account system changed (invite links, passkeys, monthly budgets), and so did the model config. On a box that
+already has a database from an older version, do this before the first deploy of the new code. A fresh box
+needs none of it.
+
+1. Stop the services and back the database up:
+   ```bash
+   sudo systemctl stop gd-server gd-worker
+   sudo -u gd cp /var/lib/gd/gd.sqlite /var/lib/gd/gd.sqlite.before-accounts
+   ```
+2. Pull the new code by hand, without restarting yet:
+   ```bash
+   cd /opt/gd && git fetch && git merge --ff-only origin/main && npm ci && npm run build
+   ```
+3. Upgrade the users table:
+   ```bash
+   sudo -u gd node /opt/gd/deploy/upgrade-accounts.cjs /var/lib/gd/gd.sqlite
+   ```
+   - Each existing account stays active with its user name and password and gets a $10 monthly budget.
+   - An account that still had a one-time password becomes an invite again, and the script prints its code.
+   - Running the script twice does nothing.
+4. Edit `/etc/gd/genai.json` (`sudo nano /etc/gd/genai.json`) and remove these keys:
+   - `providers.llm` and `providers.decider`. The server refuses to start while these exist.
+   - `combineNpcDecisionAndDialogue`, `worldGenParallelism`, `gpuIdleUnloadMs`, `spending.dailyPerUserUsd` and
+     `purposes."npc.dialogue"`. These are ignored, but they are clutter.
+5. Start the services and check that they run:
+   ```bash
+   sudo systemctl start gd-server gd-worker
+   journalctl -u gd-server -n 30
+   ```
+6. On the GPU PC, restart the broker (`npm run broker`) with the new code.
+
+The tables `meta`, `gpu_lease` and `gpu_wait` in an old database are no longer read and can stay.
+
+### Console tools on the box
+
+The tools in `packages/server/src/cli/` work on the box's data when run as `gd`, with the same settings as the
+services. Run them from `/opt/gd/packages/server`:
+
+```bash
+cd /opt/gd/packages/server
+sudo -u gd env GD_DATA_DIR=/var/lib/gd GD_GENAI_CONFIG=/etc/gd/genai.json ../../node_modules/.bin/tsx src/cli/users.ts list
+```
+
+- `users.ts list`: every account with its id, user name, name, role and status (and its invite code while it is
+  invited).
+- `users.ts invite <name>`: a new invite, printing its code.
+- `users.ts reset <user name or id>`: the account becomes an invite again with a new code. Use the id for an
+  account that has not chosen a user name yet.
+- `users.ts admin <user name or id> on|off`: make an account an administrator, or a player again.
+- `worldpack.ts` moves worlds in and out (see below).
+
 Restarting is safe:
 - The server saves running games when it stops.
 - The worker pauses jobs at a safe point, and they resume from their checkpoints.
@@ -153,6 +215,17 @@ Copy the file over, then on the other machine (the server can be running):
 npm run worldpack -- import thimble.gdpack --owner <username>
 ```
 
+On the game box, copy the pack somewhere `gd` can read it (`/tmp` works) and run the tool as `gd` (see *Console
+tools on the box*):
+
+```bash
+scp thimble.gdpack <box>:/tmp/
+cd /opt/gd/packages/server
+sudo -u gd env GD_DATA_DIR=/var/lib/gd GD_GENAI_CONFIG=/etc/gd/genai.json ../../node_modules/.bin/tsx src/cli/worldpack.ts import /tmp/thimble.gdpack --owner <username>
+```
+
+The `--owner` account must already be set up there.
+
 The world belongs to `--owner`; with `--saves` its saves come along, each player given to the account of the same
 name there (or the owner). Something already there is kept unless `--replace`. `--rigs` adds the animation rigs (to
 animate again) and `--draft` the build's intermediate steps (to lay places out again); neither is needed to play.
@@ -177,6 +250,8 @@ removes entries older than 30 days when it starts and twice a day after that.
   - The server trusts `X-Forwarded-*` from loopback only. The lockout therefore sees each player's real address,
     and on https the session cookie is marked `Secure`.
   - Caddy adds HSTS, `nosniff`, `X-Frame-Options` and `Referrer-Policy`.
+- **Reveries:** each is its owner's alone. An administrator reaches someone else's only by asking for it
+  explicitly (see `docs/server-architecture.md`).
 - **Spending:** a monthly budget per account (set on the Users page), a daily ceiling for the whole server in
   `genai.json`, plus the project limit at OpenAI.
 - **Service sandbox:** the services run as `gd` with `ProtectSystem=strict`. They can write only `/var/lib/gd`

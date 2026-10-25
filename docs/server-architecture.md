@@ -9,8 +9,9 @@ while worlds are being built.
 
 - Invite only: there is no sign-up. An administrator creates an account on the **Users** page (or with
   `npm run users -w @gd/server -- invite <name>`) with a name saying who it is for and a monthly AI budget
-  ($10 by default). An invite is never an administrator; an account is made one after it is set up. That gives an invite link (`#/invite/<code>`) which works
-  for 5 days; administrators can see it until it is used and make a new one.
+  ($10 by default). An invite is never an administrator; an account is made one after it is set up. That gives
+  an invite link (`#/invite/<code>`) which works for 5 days; administrators can see it until it is used and make
+  a new one.
 - An account is **invited** until its player opens the link, picks a user name (fixed once chosen) and a name
   others see, and sets a password, a passkey or both. It is then **active**; administrators can disable it.
 - Passkeys are WebAuthn (SimpleWebAuthn), bound to the site's host name, so they need the real address (or
@@ -22,12 +23,30 @@ while worlds are being built.
   invited again with a new link, its password, passkeys and sessions gone, its user name, worlds and saves kept.
   At least one active administrator always remains; administrators change their own account on the account page.
 - A server without accounts prints an invite link on the console; the first account set up becomes the
-  administrator. When
-  locked out, `npm run users -w @gd/server -- list` and `reset <user name or id>` give a new link.
+  administrator. When locked out, `npm run users -w @gd/server -- list` and `reset <user name or id>` give a new
+  link.
 - Repeated failed sign-ins (and invite guesses) lock that user name and address out for a while.
 
 Code: `storage.ts` (users, passkeys, sessions), `accounts.ts` (account and sign-in routes, passkey ceremonies),
 `auth.ts` (session and admin middleware), `cli/users.ts`, client `screens/Auth.tsx` and `screens/Account.tsx`.
+
+## Daydreams and reveries: who may do what
+
+- **Daydreams (worlds):** anyone signed in sees the ready ones and can start reveries in them. Only the owner (or
+  an administrator) opens the studio, repaints, rebalances or deletes one. A deleted daydream goes to the trash for
+  30 days.
+- **Reveries (saves):** a reverie is its owner's alone. Only they list it, play it (the game socket checks the
+  owner) and delete it.
+- **Administrators** can play or delete someone else's reverie, but only by asking for it explicitly: the request
+  carries `admin=1` (`GET /api/worlds/:id/instances?admin=1` lists others' reveries, `DELETE
+  /api/instances/:id?admin=1`, and the socket's `&admin=1`). On the daydream page this is a folded-away
+  section; playing asks first, and deleting needs the reverie's name typed. An administrator playing someone's
+  reverie controls the owner's party, and the AI it uses is charged to the administrator.
+- **Multiplayer:** the engine holds several players per reverie (`InstanceState.players`, shared fights), but
+  there is no way in for anyone but the owner yet. Multiplayer daydreams and reveries are planned for later.
+
+Code: `index.ts` (the `instances` routes and the socket), `game/manager.ts` (`list`), client
+`screens/WorldPage.tsx` (`OthersReveries`) and `net/game.ts` (`asAdmin`).
 
 ## Jobs
 
