@@ -194,6 +194,9 @@ export function createFront(broker: Broker, comfy: ComfyAdapter, opts: FrontOpti
   };
 
   return http.createServer((req, res) => {
+    // Browsers are never callers: a web page open on this PC must not reach the GPU (or ComfyUI) through the
+    // broker, which would trust it as a local client and send its work on server-side, past ComfyUI's own checks.
+    if (req.headers.origin || req.headers['sec-fetch-site']) return json(res, 403, { error: 'the GPU broker does not take requests from web pages' });
     const client = clientOf(req);
     if (!client) return json(res, 401, { error: 'unknown client: send Authorization: Bearer <token> (config/broker.json "clients")' });
     routes(req, res, client).catch((e) => {

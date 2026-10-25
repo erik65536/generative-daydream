@@ -71,6 +71,12 @@ describe('GPU broker front (ComfyUI pass-through)', () => {
     await fetch(`${base}/broker/holds/${hold.id}`, { method: 'DELETE' });
   });
 
+  it('refuses requests from web pages, even from this PC', async () => {
+    const res = await post('/prompt', { prompt: { '1': { class_type: 'X', inputs: {} } } }, { origin: 'https://example.com' });
+    expect(res.status).toBe(403);
+    expect((await fetch(`${base}/broker/queue`, { headers: { 'sec-fetch-site': 'cross-site' } })).status).toBe(403);
+  });
+
   it("ignores callers' /free, refuses unknown tokens, and answers 404 for prompts it never saw", async () => {
     const frees = comfy.calls.filter((c) => c === 'POST /free').length;
     expect((await post('/free', { unload_models: true })).status).toBe(200);
