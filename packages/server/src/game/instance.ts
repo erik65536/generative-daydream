@@ -5,7 +5,6 @@ import {
   type CharacterSpec, type ClientMessage, type DialogState, type DifficultyId, type EntityView, type FeatureDef, type FeatureState, type FxEvent, type InstanceState, type ItemInstance,
   type JournalEntry, type LootPile, type Memory, type NpcRuntime, type PlayerState, type PlayerView, type QuestDef, type Ruleset, type ServerMessage, type Surface,
   type TradeState, type MonsterRuntime, type SpawnDef, type Vec2, type WorldDefinition, type ZoneDef, type ZoneRuntime, type CharacterState, type MonsterArchetype, type SlotKind,
-  wayDrawnInside,
 } from '@gd/shared';
 import { Actor, CharActor, MonsterActor, NpcActor, WALK_SPEED } from './actors';
 import { fitPack } from '../rules/encounters';
@@ -50,7 +49,6 @@ const SIGHT_RADIUS = 11;
 /** Stepping within this of a trap (metres) springs it. */
 const TRAP_RADIUS = 0.5;
 /** The leader stepping within this of a way out (metres) takes the party through. */
-const EXIT_RADIUS = 0.9;
 
 export class GameInstance implements CombatHost {
   readonly ctx: WorldCtx;
@@ -765,8 +763,8 @@ export class GameInstance implements CombatHost {
   }
 
   /**
-   * A character moved (from `before`, when it walked there): what it now sees, traps it spots or steps on, harmful
-   * ground, and ways out the leader walks into.
+   * A character moved (from `before`, when it walked there): what it now sees, traps it spots or steps on, and harmful
+   * ground. Ways to other places are taken only when used (clicked, or A on a controller), never by walking near.
    */
   private onStep(z: LiveZone, a: Actor, before?: Vec2) {
     if (!(a instanceof CharActor)) return;
@@ -780,14 +778,6 @@ export class GameInstance implements CombatHost {
     if (trap) this.triggerTrap(z, trap, a);
     const surf = newSquare && z.rt.surfaces.find((s) => s.x === Math.round(a.x) && s.y === Math.round(a.y));
     if (surf && !a.combatId && (surf.type === 'fire' || surf.type === 'poison')) applySurface(this, a, surf);
-    // Walking off the map through a way out at its edge takes the party through; a way in drawn inside the place (a
-    // door, a cave mouth) is used only when clicked, so one can walk round it.
-    if (before && (a.id === p.leaderId || a === this.leader(p))) {
-      const into = (f: FeatureDef, q: Vec2) => Math.hypot(f.x - q.x, f.y - q.y) < EXIT_RADIUS;
-      const acrossEdge = (f: FeatureDef) => !wayDrawnInside(def, f.targetZoneId ? this.ctx.zones.get(f.targetZoneId) : undefined);
-      const exit = def.features.find((f) => f.kind === 'exit' && acrossEdge(f) && into(f, a) && !into(f, before));
-      if (exit?.targetZoneId) this.transfer(p, exit.targetZoneId, exit.targetFeatureId);
-    }
   }
 
   /**

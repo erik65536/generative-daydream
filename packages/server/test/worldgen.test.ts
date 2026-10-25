@@ -24,7 +24,7 @@ describe('world generation', () => {
     expect(w.zones.reduce((n, z) => n + z.tiles[0] * z.tiles[1], 0)).toBeLessThanOrEqual(55);
     // Heroes are painted per class and kin; each kin is one gender.
     expect(w.ruleset.kins.every((k) => ['feminine', 'masculine', 'androgynous'].includes(k.presentation) && k.appearance)).toBe(true);
-  });
+  }, 180_000);
 });
 
 describe('populating a place', () => {

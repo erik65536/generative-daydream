@@ -364,7 +364,11 @@ export class Renderer {
     this.weather = [];
     this.reach = null;
     this.fogBytes = null;
+    this.chests.clear();
   }
+
+  /** Chests seen with something in them, and when each was emptied (it fades away then). */
+  private chests = new Map<string, number | null>();
 
   /** The place's painting, once loaded. */
   private painting(z: ZoneData): HTMLImageElement | null {
@@ -596,7 +600,20 @@ export class Renderer {
       const near = lp ? Math.hypot(lp.x - f.x, lp.y - f.y) : 99;
       const proximity = near < 10 ? 1 - Math.max(0, near - 4) / 6 : 0;
       const pulse = 0.5 + Math.sin(this.t * 3 + f.x * 0.7) * 0.5;
-      const art = this.objectArt(f, fs?.opened);
+      // An emptied chest fades away (one already empty when the place is entered is not drawn at all).
+      let fade = 1;
+      if (f.kind === 'chest') {
+        const emptied = !!(fs?.opened && fs.empty);
+        if (!emptied) this.chests.set(f.id, null);
+        else if (!this.chests.has(f.id)) continue;
+        else {
+          const t0 = this.chests.get(f.id) ?? this.t;
+          this.chests.set(f.id, t0);
+          fade = 1 - (this.t - t0) / 0.6;
+          if (fade <= 0) continue;
+        }
+      }
+      const art = this.objectArt(f);
       const depth = f.y + (art ? 0.03 : -0.2);
       list.push({
         depth,
@@ -605,10 +622,12 @@ export class Renderer {
             const x = p.x - art.width / 2, y = p.y - art.height + 3;
             const l = this.light.at(p.x, p.y);
             ctx.save();
+            ctx.globalAlpha = fade;
             ctx.translate(p.x, p.y);
             this.contactShadow(art.width / (2 * M), l);
             this.drawLit(art.width, art.height, l, (g) => g.drawImage(art, -art.width / 2, 3 - art.height));
             ctx.restore();
+            if (fade < 1) return;
             if (usable || hovered) drawOutline(ctx, art, x, y, HIGHLIGHT.use, hovered ? 1 : usable ? proximity * (0.35 + pulse * 0.35) : 0);
             const s = this.worldToScreen(x, y);
             this.hitRects.push({ id: f.id, kind: 'feature', x: s.x, y: s.y, w: art.width * this.zoom, h: art.height * this.zoom, depth });
@@ -625,13 +644,12 @@ export class Renderer {
     }
   }
 
-  /** A world object's art (a chest, open or shut; a sign; the waypoint; the crafting station), scaled to its height. */
-  private objectArt(f: FeatureDef, opened?: boolean): HTMLCanvasElement | null {
+  /** A world object's art (a chest, a sign, the waypoint, the crafting station), scaled to its height. */
+  private objectArt(f: FeatureDef): HTMLCanvasElement | null {
     const o = OBJECT_ART[f.kind];
     if (!o) return null;
-    const key = f.kind === 'chest' && opened && this.client.assetUrl(`${o.key}@open`) ? `${o.key}@open` : o.key;
-    const img = loadImage(this.client.assetUrl(key));
-    return img ? sizedSprite(img, key, o.height * PX_PER_METRE) : null;
+    const img = loadImage(this.client.assetUrl(o.key));
+    return img ? sizedSprite(img, o.key, o.height * PX_PER_METRE) : null;
   }
 
   /** The ground mark of a feature: a soft ring (with an arrow for ways through, a dashed red one for a trap). */
