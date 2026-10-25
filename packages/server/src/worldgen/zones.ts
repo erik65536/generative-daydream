@@ -84,7 +84,8 @@ export function sketchOf(w: WorldDefinition, z: ZoneDef): PlaceSketch {
 export function placeNeeds(w: WorldDefinition, z: ZoneDef): PlaceNeeds {
   return {
     ...sketchOf(w, z),
-    people: w.npcs.filter((n) => n.zoneId === z.id).map((n) => ({ id: n.id, name: n.name, title: n.title, role: n.role, works: z.buildings?.find((b) => b.npcId === n.id)?.name })),
+    // Companions travel in the party: they are not placed.
+    people: w.npcs.filter((n) => n.zoneId === z.id && !n.companion).map((n) => ({ id: n.id, name: n.name, title: n.title, role: n.role, works: z.buildings?.find((b) => b.npcId === n.id)?.name })),
     things: z.features.filter((f) => THING_KINDS.has(f.kind)).map((f) => ({ id: f.id, what: thingText(f) })),
     bosses: w.bosses.filter((b) => b.zoneId === z.id).map((b) => ({ id: b.id, name: `${b.name}, ${b.title}`, what: b.description.slice(0, 200) })),
   };
@@ -415,7 +416,7 @@ function furnish(w: WorldDefinition, z: ZoneDef, r: MapReading, spots: Map<strin
     taken.push(p);
   }
   // People who work in a building stand outside its entrance; everyone else where Luna put them.
-  for (const n of w.npcs.filter((x) => x.zoneId === z.id)) {
+  for (const n of w.npcs.filter((x) => x.zoneId === z.id && !x.companion)) {
     const work = z.buildings?.find((b) => b.npcId === n.id);
     const c = (work && spots.get(work.id)) || spots.get(n.id);
     const p = settle(c ? at(c) : fallbackSpot());

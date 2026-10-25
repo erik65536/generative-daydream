@@ -113,25 +113,19 @@ export class CharActor extends Actor {
   aiDriven(commandCompanions: boolean) { return !!this.ch.npcId && !commandCompanions; }
   view(w: WorldDefinition): EntityView {
     const s = this.stats();
-    const wSlot = this.r.slots.find((x) => x.kind === 'weapon');
-    const weapon = wSlot && this.ch.equipment[wSlot.id] ? rx(this.r).item.get(this.ch.equipment[wSlot.id]!.baseId)?.icon : undefined;
     const npc = this.ch.npcId ? w.npcs.find((n) => n.id === this.ch.npcId) : undefined;
     return {
       ...this.baseView(),
       kind: 'character',
-      presentation: this.ch.presentation,
       name: this.ch.name,
       title: npc ? npc.title : rx(this.r).cls.get(this.ch.classId)?.name,
       sprite: this.ch.sprite,
-      colors: this.ch.colors.length ? this.ch.colors : npc?.colors ?? [],
-      shape: 'humanoid',
       scale: 1,
       level: this.ch.level,
       maxHp: s.maxHp,
       hostile: false,
       ownerUserId: this.userId,
       downed: this.ch.downed,
-      weapon,
       archetype: this.ch.archetype ?? rx(this.r).cls.get(this.ch.classId)?.aiRole,
     };
     void this.world;
@@ -192,8 +186,6 @@ export class MonsterActor extends Actor {
       name: this.name,
       title: this.boss?.title,
       sprite: this.boss?.asset ?? this.member.asset,
-      colors: this.family.colors,
-      shape: v.shape,
       scale: v.scale * (this.boss ? 1.45 : this.elite ? 1.15 : 1),
       level: this.spawn.level,
       maxHp: s.maxHp,
@@ -257,8 +249,6 @@ export class NpcActor extends Actor {
       name: this.def.name,
       title: this.def.title,
       sprite: this.def.asset,
-      colors: this.def.colors,
-      shape: 'humanoid',
       scale: 1,
       level: this.def.level,
       maxHp: s.maxHp,

@@ -163,6 +163,11 @@ export class Job {
     if (this.log.length > 400) this.log.shift();
     this.pendingLog.push(e);
     if (kind !== 'preview') console.log(`[job ${this.worldId}] ${msg}`);
+    // A stage announcing itself is what the job is doing now (unless it waits on a model, which says so instead).
+    if (kind === 'step') {
+      if (this.stepBeforeWait) this.stepBeforeWait = msg;
+      else this.step = msg;
+    }
     this.touch();
   }
 

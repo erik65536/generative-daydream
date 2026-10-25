@@ -183,7 +183,7 @@ export interface FightResult {
   potionsUsed: number;
 }
 
-const fakeFamily = (subtypeId: string | undefined, roles: MonsterRole[]): MonsterFamily => ({ id: 'simfam', name: 'Sim', description: '', element: subtypeId ?? '', habitat: '', colors: [], members: roles.map((archetype) => ({ archetype, name: archetype, description: '', appearance: '' })) });
+const fakeFamily = (subtypeId: string | undefined, roles: MonsterRole[]): MonsterFamily => ({ id: 'simfam', name: 'Sim', description: '', element: subtypeId ?? '', habitat: '', members: roles.map((archetype) => ({ archetype, name: archetype, description: '', appearance: '' })) });
 
 export function runFight(r: Ruleset, spec: FightSpec): FightResult {
   const host = new SimHost(r, spec.seed, spec.telemetry);

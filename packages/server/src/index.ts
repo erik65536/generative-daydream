@@ -447,7 +447,7 @@ app.get('/api/worlds/:id/setup', auth, (req, res) => {
     combatMode: w.input.combatMode,
     difficulty: w.input.difficulty ?? 'normal',
     origins: w.origins,
-    companions: w.npcs.filter((n) => n.companion).map((n) => ({ id: n.id, name: n.name, title: n.title, classId: n.companion!.classId, kinId: n.companion!.kinId, asset: n.asset, colors: n.colors })),
+    companions: w.npcs.filter((n) => n.companion).map((n) => ({ id: n.id, name: n.name, title: n.title, classId: n.companion!.classId, kinId: n.companion!.kinId, asset: n.asset })),
     assets: Object.fromEntries(Object.values(w.assets).filter((a) => a.status === 'ok').map((a) => [a.key, a.file])),
   });
 });
@@ -464,7 +464,6 @@ const CharSpecSchema = z.object({
   name: z.string().trim().min(1).max(24),
   classId: z.string().max(60),
   kinId: z.string().max(60),
-  colors: z.array(z.string()).max(4).optional(),
 });
 
 app.get('/api/worlds/:id/instances', auth, (req, res) => {

@@ -94,7 +94,6 @@ export class DialogueEngine {
       npcName: def.name,
       npcTitle: def.title,
       sprite: def.asset,
-      colors: def.colors,
       messages: s.messages.slice(-40),
       thinking: s.thinking,
       canTrade: def.role === 'merchant' || def.role === 'innkeeper' || def.role === 'crafter',

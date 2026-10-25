@@ -9,20 +9,9 @@ import { setRules } from '../rules';
 import { loadImage } from '../render/sprites';
 import { applyWorldTheme } from '../ui/theme';
 
-const PALETTES = [
-  ['#4a6a9a', '#2a3448', '#e0c060'],
-  ['#8a3a32', '#3a2420', '#f0c070'],
-  ['#3e6a42', '#25332a', '#c8e070'],
-  ['#5a4a7a', '#2a2238', '#d0a0ff'],
-  ['#8a7a5a', '#3a3428', '#f0e0b0'],
-  ['#2a5a6a', '#1a2a32', '#80e0f0'],
-];
-
 const NAMES = ['Arin', 'Sela', 'Corvin', 'Mira', 'Tobin', 'Ysolde', 'Kael', 'Wren', 'Juno', 'Rook'];
 
-interface Draft extends CharSpec {
-  colors: string[];
-}
+type Draft = CharSpec;
 
 function starterGear(r: Ruleset, classId: string): Record<string, ItemInstance> {
   const cls = rx(r).cls.get(classId);
@@ -78,7 +67,7 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
   const start = async () => {
     setBusy(true);
     setError('');
-    const specs: CharSpec[] = party.map(({ name, classId, kinId, colors }) => ({ name: name.trim(), classId, kinId, colors }));
+    const specs: CharSpec[] = party.map(({ name, classId, kinId }) => ({ name: name.trim(), classId, kinId }));
     try {
       if (joinInstanceId) {
         await api.joinInstance(joinInstanceId, specs);
@@ -136,13 +125,6 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
                 <input className="input" style={{ width: '100%', textAlign: 'center', fontSize: 18 }} value={d.name} maxLength={24} placeholder="Type a name" autoFocus={idx === 0} onChange={(e) => update({ name: e.target.value })} />
               </div>
               <div className="tiny muted">{kin?.name} {cls.name}</div>
-              {!sprite && (
-                <div className="row" style={{ gap: 6 }}>
-                  {PALETTES.map((p) => (
-                    <div key={p.join()} onClick={() => update({ colors: p })} className={`swatch-btn ${d.colors[0] === p[0] ? 'on' : ''}`} style={{ background: `linear-gradient(135deg, ${p[0]}, ${p[1]})` }} />
-                  ))}
-                </div>
-              )}
               <div className="ornament" style={{ width: '100%' }} />
               <div className="label" style={{ alignSelf: 'flex-start' }}>At {t.level.toLowerCase()} 1</div>
               <div className="kv" style={{ width: '100%' }}>
@@ -259,6 +241,5 @@ function newDraft(s: WorldSetup, i: number): Draft {
     name: i === 0 ? '' : NAMES[(i * 3 + s.id.length) % NAMES.length]!,
     classId: r.classes[i % r.classes.length]!.id,
     kinId: r.kins[i % r.kins.length]!.id,
-    colors: PALETTES[i % PALETTES.length]!,
   };
 }

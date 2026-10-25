@@ -182,8 +182,6 @@ export interface MonsterFamily {
   /** Preferred habitat words, used to place families in matching zones. */
   habitat: string;
   members: MonsterMember[];
-  /** Hex color hints for procedural sprites. */
-  colors: string[];
 }
 
 export interface BossDef {
@@ -239,7 +237,6 @@ export interface NpcDef {
   relations?: string[];
   faction?: string;
   asset?: string;
-  colors: string[];
   /** Wanders around its spawn point. */
   wanders: boolean;
 }
@@ -362,6 +359,6 @@ export interface WorldDefinition {
 export type ClientWorld = Omit<WorldDefinition, 'zones' | 'npcs' | 'concept' | 'arcs' | 'quests' | 'ending' | 'generationLog' | 'worldFacts'> & {
   concept: Omit<WorldConcept, 'secret'>;
   zones: Omit<ZoneDef, 'nav' | 'design' | 'spawns' | 'lore'>[];
-  npcs: Pick<NpcDef, 'id' | 'name' | 'title' | 'role' | 'zoneId' | 'asset' | 'colors' | 'pronouns' | 'appearance' | 'archetype'>[];
+  npcs: Pick<NpcDef, 'id' | 'name' | 'title' | 'role' | 'zoneId' | 'asset' | 'pronouns' | 'appearance' | 'archetype'>[];
   arcs: Pick<ArcDef, 'index' | 'title'>[];
 };

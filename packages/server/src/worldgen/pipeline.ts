@@ -114,6 +114,8 @@ async function attempt<T>(job: WorldGenJob, label: string, fn: (problem: string)
     } catch (e) {
       const msg = (e as Error).message;
       if (job.cancelled) throw new Error('cancelled');
+      // A worker restart stops the work mid-step: it resumes from the checkpoints, so this is no failed try.
+      if (workerState.yieldRequested) throw new JobYield();
       if (e instanceof JobYield || e instanceof StepFailed) throw e;
       if (e instanceof BudgetExceeded) throw new StepFailed(`${label}: ${msg} Resume the build then.`);
       if (n >= STEP_TRIES) throw new StepFailed(`${label} failed ${STEP_TRIES} times (last: ${msg.slice(0, 200)}). Resume the build once the service is working.`);

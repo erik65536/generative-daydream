@@ -18,8 +18,6 @@ export interface Motion {
 export type EntityKind = 'character' | 'npc' | 'monster';
 
 export interface EntityView {
-  /** Player characters: chosen presentation (procedural figures use it). */
-  presentation?: string;
   id: string;
   kind: EntityKind;
   name: string;
@@ -28,10 +26,8 @@ export interface EntityView {
   y: number;
   motion?: Motion;
   facing: number;
-  /** Asset key, or empty for procedural art. */
+  /** Asset key of its painting (its clip sheets are `<key>@anim-<clip>`). */
   sprite?: string;
-  colors: string[];
-  shape: 'humanoid' | 'beast' | 'blob' | 'flyer' | 'hulk';
   scale: number;
   level: number;
   hp: number;
@@ -46,8 +42,6 @@ export interface EntityView {
   dead?: boolean;
   boss?: boolean;
   elite?: boolean;
-  /** Visual weapon hint. */
-  weapon?: string;
   /** NPC has something for the player (quest marker). */
   marker?: 'quest' | 'turnin' | 'progress' | 'trade';
   inCombat?: string;
@@ -122,7 +116,6 @@ export interface DialogState {
   npcName: string;
   npcTitle: string;
   sprite?: string;
-  colors: string[];
   messages: DialogMessage[];
   thinking: boolean;
   canTrade: boolean;
@@ -252,8 +245,8 @@ export interface CharacterSpec {
   name: string;
   classId: string;
   kinId: string;
+  /** People who are not players (the companions) keep their own painting. */
   sprite?: string;
-  colors?: string[];
 }
 
 export type { CharacterState };

@@ -173,7 +173,7 @@ export class GameInstance implements CombatHost {
     // A world played with companions: its three heroes travel with the player from the start (the AI plays them).
     if (w.input.combatMode === 'party_npc')
       for (const def of w.npcs.filter((n) => n.companion)) {
-        const { ch } = createCharacter(this.r, w, { name: def.name, classId: def.companion!.classId, kinId: def.companion!.kinId, sprite: def.asset ?? '', colors: def.colors }, new Rng(`${this.state.id}:${userId}:${def.id}`));
+        const { ch } = createCharacter(this.r, w, { name: def.name, classId: def.companion!.classId, kinId: def.companion!.kinId, sprite: def.asset ?? '' }, new Rng(`${this.state.id}:${userId}:${def.id}`));
         ch.npcId = def.id;
         ch.aiControlled = true;
         party.push(ch);
@@ -268,7 +268,7 @@ export class GameInstance implements CombatHost {
       concept: publicConcept,
       // A place's walkable ground comes with the place itself, when the player enters it.
       zones: zones.map(({ nav, design, spawns, lore, ...z }) => (void nav, void design, void spawns, void lore, z)),
-      npcs: npcs.map((n) => ({ id: n.id, name: n.name, title: n.title, role: n.role, zoneId: n.zoneId, asset: n.asset, colors: n.colors, pronouns: n.pronouns, appearance: n.appearance, archetype: n.archetype })),
+      npcs: npcs.map((n) => ({ id: n.id, name: n.name, title: n.title, role: n.role, zoneId: n.zoneId, asset: n.asset, pronouns: n.pronouns, appearance: n.appearance, archetype: n.archetype })),
       arcs: arcs.map((a) => ({ index: a.index, title: a.title })),
     } as ServerMessage extends never ? never : Extract<ServerMessage, { t: 'welcome' }>['world'];
   }

@@ -25,10 +25,6 @@ export function normColor(c: string | undefined): string | undefined {
   return undefined;
 }
 
-export function normColors(list: string[] | undefined): string[] {
-  return (list ?? []).map(normColor).filter((x): x is string => !!x);
-}
-
 export const ConceptSchema = z.object({
   title: str(80, 2),
   pitch: str(700, 10),
@@ -144,7 +140,6 @@ export const FamiliesSchema = z.object({
         description: str(300),
         element: z.string().max(40).describe('Name of the damage subtype (or damage type) they deal'),
         habitat: str(120).describe('Space-separated words for where they live, e.g. "forest cave swamp".'),
-        colors: z.array(hex).min(1).max(4),
         members: z.array(z.object({ archetype: z.enum(MONSTER_ARCHETYPES), name: str(48), description: str(240), appearance: str(240) })).min(2).max(5),
       }),
     )

@@ -10,7 +10,7 @@ import {
 import { bindWorld, resolveElement, uniqueBase } from '../rules/bind';
 import type { Genre } from '../rules/genre';
 import type { RulesetIntent } from '../rules/intent';
-import { normColor, normColors, type AreaContentOut, type AtlasOut, type CompanionsOut, type ConceptOut, type FamiliesOut, type NpcOut, type StoryOut, type TownContentOut } from './schemas';
+import { normColor, type AreaContentOut, type AtlasOut, type CompanionsOut, type ConceptOut, type FamiliesOut, type NpcOut, type StoryOut, type TownContentOut } from './schemas';
 import type { WorldSkeleton, ZoneSlot } from './structure';
 import { fitTiles } from './mapdraw';
 
@@ -114,8 +114,7 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
     // Every family needs at least a melee and a ranged option for interesting fights.
     if (!members.some((m) => r.monsters[m.archetype].range < 2)) members.push({ archetype: 'skirmisher', name: `${f.name} Warrior`, description: '', appearance: `${f.name} warrior` });
     if (!members.some((m) => r.monsters[m.archetype].range >= 2)) members.push({ archetype: 'archer', name: `${f.name} Hunter`, description: '', appearance: `${f.name} hunter` });
-    const colors = normColors(f.colors);
-    return { id: `f${i}_${slugify(f.name)}`, name: f.name, description: f.description, element: resolveElement(r, f.element, i), habitat: f.habitat, colors: colors.length ? colors : ['#6a6a6a', '#3a3a3a', '#d0c080'], members };
+    return { id: `f${i}_${slugify(f.name)}`, name: f.name, description: f.description, element: resolveElement(r, f.element, i), habitat: f.habitat, members };
   });
 
   // Each wild place and dungeon gets the two families whose habitat best fits it (spread across places).
@@ -213,7 +212,6 @@ export function assembleWorld(d: Draft, owner: { id: string; name: string }): Wo
       archetype: pickArchetype(role),
       essential: false,
       questIds: [],
-      colors: [rng.pick(['#7a4a3a', '#3a5a7a', '#5a7a3a', '#7a6a3a', '#6a3a6a', '#3a6a6a', '#8a8a8a']), rng.pick(['#d0b090', '#a07850', '#704830', '#e0c0a0'])],
       wanders: role === 'commoner' || role === 'guard',
       ...extra,
     };
@@ -623,7 +621,6 @@ export function addCompanions(w: WorldDefinition, out: CompanionsOut) {
       companion: { classId: cls.id, kinId: kin.id },
       essential: true,
       questIds: [],
-      colors: ['#4a6a9a', '#d0b090'],
       wanders: false,
     });
   });

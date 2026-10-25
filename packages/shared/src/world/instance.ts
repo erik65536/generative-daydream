@@ -56,7 +56,6 @@ export interface CharacterState {
   presentation: Presentation;
   /** Asset key for the sprite. */
   sprite: string;
-  colors: string[];
   level: number;
   xp: number;
   /** Upgrade tree: node id -> rank. */

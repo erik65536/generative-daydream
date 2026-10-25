@@ -23,7 +23,6 @@ export function createCharacter(r: Ruleset, w: WorldDefinition | null, spec: Cha
     kinId: kin.id,
     presentation: kin.presentation,
     sprite: spec.sprite ?? heroSprite(cls.id, kin.id),
-    colors: spec.colors ?? [],
     level: 1,
     xp: 0,
     tree: {},

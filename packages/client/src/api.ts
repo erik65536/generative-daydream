@@ -160,7 +160,7 @@ export interface WorldSetup {
   /** Look of each class (id = class id), and its heroes' sprites by kin id. */
   origins: { id: string; name: string; description: string; appearance: string; assets?: Record<string, string> }[];
   /** The three heroes who travel with the player (a world played with companions). */
-  companions: { id: string; name: string; title: string; classId: string; kinId: string; asset?: string; colors: string[] }[];
+  companions: { id: string; name: string; title: string; classId: string; kinId: string; asset?: string }[];
   assets: Record<string, string>;
 }
 
