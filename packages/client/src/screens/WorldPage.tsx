@@ -69,6 +69,8 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
 
   if (!w) return <div className="page"><Backdrop /><TopBar me={me} /><div className="page-inner">{error || <div className="spinner" />}</div></div>;
   const generating = w.status === 'generating' || jobActive(job?.status);
+  // The owner, or an administrator looking after someone else's daydream (the server allows both).
+  const canManage = w.ownerId === me.id || me.isAdmin;
   const mine = saves;
   return (
     <div className="page">
@@ -105,7 +107,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
               {job.status === 'waiting' && <span className="badge">waiting for a model</span>}
               <div className="spacer" />
               <span className="muted small">{Math.round(job.progress * 100)}%</span>
-              {w.ownerId === me.id && <button className="btn sm danger" onClick={() => api.cancelJob(worldId)}>Stop</button>}
+              {canManage && <button className="btn sm danger" onClick={() => api.cancelJob(worldId)}>Stop</button>}
             </div>
             <div className="progress"><div style={{ width: `${job.progress * 100}%` }} /></div>
             {job.phases && job.phases.length > 0 && <PhaseList phases={job.phases} />}
@@ -176,7 +178,7 @@ export function WorldPage({ me, worldId }: { me: Me; worldId: string }) {
             </div>
             <div className="col" style={{ width: 340 }}>
               <RulesPanel w={w} me={me} ruleset={ruleset} canRebalance={canRebalance} hasSaves={saves.length > 0} onView={setView} />
-              {w.ownerId === me.id && (
+              {canManage && (
                 <div className="panel">
                   <div className="panel-head"><h3>Art</h3></div>
                   <div className="panel-body col">
