@@ -93,7 +93,8 @@ export class Job {
     const prev = new Map(this.phases.map((p) => [p.id, p]));
     this.phases = phases.map((p) => {
       const old = prev.get(p.id);
-      return old && old.status === 'done' ? { ...p, ...old } : { ...p, status: 'pending' as const };
+      // A resumed build keeps when its unfinished stages started.
+      return old && old.status === 'done' ? { ...p, ...old } : { ...p, status: 'pending' as const, startedAt: old?.startedAt };
     });
     this.touch();
   }
@@ -103,7 +104,7 @@ export class Job {
     const now = Date.now();
     for (const p of this.phases) {
       if (p.id === id) {
-        if (p.status !== 'active') p.startedAt = now;
+        p.startedAt ??= now;
         p.status = 'active';
         if (counts) Object.assign(p, counts);
         break;
@@ -121,7 +122,7 @@ export class Job {
   begin(id: string, counts?: { done?: number; total?: number }) {
     const p = this.phases.find((x) => x.id === id);
     if (!p || p.status === 'done') return;
-    if (p.status !== 'active') p.startedAt = Date.now();
+    p.startedAt ??= Date.now();
     p.status = 'active';
     if (counts) Object.assign(p, counts);
     this.touch();
