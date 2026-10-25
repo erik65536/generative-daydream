@@ -102,7 +102,9 @@ export class FxSystem {
 
   damage(x: number, y: number, amount: number, type: string, crit?: boolean) {
     const color = kindColor(type, '#ffffff');
-    this.text(x, y, `${type === 'heal' || type === 'barrier' ? '+' : ''}${amount}${crit ? '!' : ''}`, color, !!crit);
+    // Amounts are fractional on the server: whole numbers here, and a real hit never reads as 0.
+    const shown = amount > 0 ? Math.max(1, Math.round(amount)) : Math.round(amount);
+    this.text(x, y, `${type === 'heal' || type === 'barrier' ? '+' : ''}${shown}${crit ? '!' : ''}`, color, !!crit);
   }
 
   projectile(x0: number, y0: number, x1: number, y1: number, color: string, kind: Projectile['kind'], onHit?: () => void) {

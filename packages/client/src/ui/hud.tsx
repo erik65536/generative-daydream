@@ -331,7 +331,7 @@ export function TurnBar() {
         // Downed allies stay in the order (they can be revived); unseen combatants get a placeholder.
         const downed = !!e && e.hp <= 0;
         return (
-          <div key={o.id} className={`tp ${o.team} ${o.id === combat.activeId ? 'active' : ''} ${downed ? 'dead' : ''}`} {...tip(<div><b>{o.name}</b>{e ? <div className="tsub">{e.hp}/{e.maxHp} · {o.controllerUserId === userId ? 'you' : o.team === 'players' ? 'ally' : 'enemy'}</div> : <div className="tsub">out of sight</div>}</div>)}>
+          <div key={o.id} className={`tp ${o.team} ${o.id === combat.activeId ? 'active' : ''} ${downed ? 'dead' : ''}`} {...tip(<div><b>{o.name}</b>{e ? <div className="tsub">{Math.ceil(e.hp)}/{Math.round(e.maxHp)} · {o.controllerUserId === userId ? 'you' : o.team === 'players' ? 'ally' : 'enemy'}</div> : <div className="tsub">out of sight</div>}</div>)}>
             {e ? <Portrait size={42} sprite={c.assetUrl(e.sprite)} /> : <span className="tp-unseen">{o.name.slice(0, 1)}</span>}
           </div>
         );
