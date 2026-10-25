@@ -5,6 +5,7 @@
  * turned into ground metres (the navigation grid, every door, exit, person, chest, trap and monster pack). See
  * docs/places.md.
  */
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
@@ -315,13 +316,17 @@ export async function settlePlace(w: WorldDefinition, z: ZoneDef, { plan, seed, 
   furnish(w, z, reading, spots, { k, width: FW, height: FH, image: key });
 }
 
-/** Write a place's image into the world's assets (replacing its earlier file) and record it; returns its key. */
+/**
+ * Write a place's image into the world's assets (replacing its earlier file) and record it; returns its key. The file
+ * is named by its content: the same picture keeps its name when a resumed build lays the place out again (pages
+ * showing it go on finding it, browsers keep it cached), and a new one gets a new name.
+ */
 function saveAsset(w: WorldDefinition, key: string, image: Buffer, rec: Pick<AssetRecord, 'kind' | 'prompt' | 'width' | 'height'>): string {
   const dir = worldAssetDir(w.id);
   fs.mkdirSync(dir, { recursive: true });
-  const file = `${key}_${Date.now().toString(36)}.webp`;
-  for (const f of fs.readdirSync(dir)) if (f.startsWith(`${key}_`)) fs.rmSync(path.join(dir, f));
-  fs.writeFileSync(path.join(dir, file), image);
+  const file = `${key}_${crypto.createHash('sha256').update(image).digest('hex').slice(0, 12)}.webp`;
+  for (const f of fs.readdirSync(dir)) if (f.startsWith(`${key}_`) && f !== file) fs.rmSync(path.join(dir, f));
+  if (!fs.existsSync(path.join(dir, file))) fs.writeFileSync(path.join(dir, file), image);
   w.assets[key] = { key, file, status: 'ok', ...rec };
   return key;
 }

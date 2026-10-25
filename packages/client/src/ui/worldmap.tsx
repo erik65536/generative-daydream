@@ -84,14 +84,33 @@ function territories(zones: Zone[], seed: number): Territories {
 
 // ---------------------------------------------------------------------------- painting
 
-function loadImage(url: string): Promise<HTMLImageElement | null> {
-  return new Promise((res) => {
-    const im = new Image();
-    im.onload = () => res(im);
-    im.onerror = () => res(null);
-    im.src = url;
-  });
+/** A place's painting at the size the chart needs (the full one is thousands of pixels), loaded once per session. */
+const small = new Map<string, Promise<HTMLCanvasElement | null>>();
+function smallPainting(url: string): Promise<HTMLCanvasElement | null> {
+  let p = small.get(url);
+  if (!p) {
+    p = new Promise((res) => {
+      const im = new Image();
+      im.onload = () => {
+        const s = Math.min(1, 512 / Math.max(im.width, im.height));
+        const c = document.createElement('canvas');
+        c.width = Math.round(im.width * s);
+        c.height = Math.round(im.height * s);
+        c.getContext('2d')!.drawImage(im, 0, 0, c.width, c.height);
+        res(c);
+      };
+      im.onerror = () => res(null);
+      im.src = url;
+    });
+    small.set(url, p);
+    // A failed load is tried again next time.
+    void p.then((c) => c || small.delete(url));
+  }
+  return p;
 }
+
+/** Charts already drawn, by world and what the party knows: opening the map again shows one at once. */
+const charts = new Map<string, HTMLCanvasElement>();
 
 /** A gentle curve between two places (bent the same way every time). */
 function roadPath(a: { x: number; y: number }, b: { x: number; y: number }, key: string) {
@@ -102,7 +121,7 @@ function roadPath(a: { x: number; y: number }, b: { x: number; y: number }, key:
 }
 
 /** Average brightness of an image, 0..1 (so very light or very dark ground art can be brought to a common tone). */
-function luminance(img: HTMLImageElement): number {
+function luminance(img: HTMLCanvasElement): number {
   const c = document.createElement('canvas');
   c.width = c.height = 16;
   const x = c.getContext('2d')!;
@@ -111,6 +130,20 @@ function luminance(img: HTMLImageElement): number {
   let sum = 0;
   for (let i = 0; i < d.length; i += 4) sum += (0.2126 * d[i]! + 0.7152 * d[i + 1]! + 0.0722 * d[i + 2]!) / 255;
   return sum / (d.length / 4);
+}
+
+/** Show the chart on `view`: drawn once for what the party knows, then copied. */
+async function showMap(view: HTMLCanvasElement, key: string, world: ClientWorld, zones: Zone[], player: PlayerView, t: Territories) {
+  let chart = charts.get(key);
+  if (!chart) {
+    chart = document.createElement('canvas');
+    await paintMap(chart, world, zones, player, t);
+    charts.set(key, chart);
+    if (charts.size > 4) charts.delete(charts.keys().next().value!);
+  }
+  view.width = chart.width;
+  view.height = chart.height;
+  view.getContext('2d')!.drawImage(chart, 0, 0);
 }
 
 async function paintMap(canvas: HTMLCanvasElement, world: ClientWorld, zones: Zone[], player: PlayerView, t: Territories) {
@@ -132,7 +165,7 @@ async function paintMap(canvas: HTMLCanvasElement, world: ClientWorld, zones: Zo
 
   const paintings = await Promise.all(zones.map((z) => {
     const url = c.assetUrl(z.painting?.image);
-    return url ? loadImage(url) : Promise.resolve(null);
+    return url ? smallPainting(url) : Promise.resolve(null);
   }));
 
   // Each territory: the place's own painting, masked to its shape.
@@ -313,7 +346,7 @@ export function WorldMapView({ world, player, here, canTravelTo, onTravel, terms
   const [hover, setHover] = useState<Zone | null>(null);
   const knownKey = `${player.knownZones.join(',')}|${player.visitedZones.join(',')}`;
   useEffect(() => {
-    if (canvas.current) void paintMap(canvas.current, world, zones, player, terr);
+    if (canvas.current) void showMap(canvas.current, `${world.id}|${zones.map((z) => z.painting?.image).join(',')}|${knownKey}`, world, zones, player, terr);
     // Repaint only when what the party knows changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [world, zones, terr, knownKey]);
