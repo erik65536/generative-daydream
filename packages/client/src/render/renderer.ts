@@ -908,7 +908,8 @@ export class Renderer {
       a.face += dFace * Math.min(1, dt * 14);
       a.hurt = Math.max(0, a.hurt - dt);
       a.attack = Math.max(0, a.attack - dt * 2.5);
-      if (e.dead) a.death = Math.min(1, a.death + dt * 1.2);
+      // Dying fades a figure out; one alive again (a game reloaded from before it fell) is whole at once.
+      a.death = e.dead ? Math.min(1, a.death + dt * 1.2) : 0;
       a.fade = Math.min(1, a.fade + dt * 3);
       const p = pic(a.px, a.py);
       // A still sprite faces left or right as it goes (the map is top-down: ground x is screen x).
