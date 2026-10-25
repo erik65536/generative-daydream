@@ -9,7 +9,7 @@
 
 import { report, touch, type WorkTag } from '../gpu/presence';
 
-/** Which model a task mostly loads (a place's reading uses SAM 3 and Qwen's edit; its repairs Krea and Qwen). */
+/** Which model a task mostly loads (a place's reading uses Qwen's edit; its repairs Krea and Qwen). */
 export type GpuModel = 'krea' | 'reader' | 'seedvr2';
 
 interface Task {

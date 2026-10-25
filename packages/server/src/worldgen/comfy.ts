@@ -87,6 +87,9 @@ export async function kreaMasked(init: Buffer, mask: Buffer, prompt: string, see
  * Qwen-Image 2.1 Turbo, edit: the model sees `ref` and paints what `prompt` asks of it at the reference's size (a
  * multiple of 16). `more` are further references at the same size ("Picture 2", ...). Deterministic for a seed, so
  * cached like the reader's answers.
+ *
+ * Nothing passes `more` yet: the extra references are kept on purpose (from an experiment) so a later step can show
+ * Qwen a second picture, such as a style or a character to match, without rebuilding the workflow.
  */
 export async function qwenEdit(ref: Buffer, prompt: string, seed: number, more: Buffer[] = []): Promise<Buffer> {
   const meta = await sharp(ref).metadata();

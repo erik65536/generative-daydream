@@ -219,6 +219,10 @@ Owners open `#/world/<id>/studio` to see and change everything a world is made o
   its clips playing in turn while it turns through the eight directions (or one clip and direction picked), or that
   it waits its turn or failed and why; "Render the clips again" and "Make a new 3D model" queue it again.
 
+Qwen's edit (`qwenEdit` in `src/worldgen/comfy.ts`) can take extra reference pictures ("Picture 2", ...) besides
+the one it edits. Nothing uses them yet; they are kept on purpose, from an experiment, for a step that needs Qwen to
+match a second picture (a style, a character).
+
 ## Tools
 
 - `src/cli/genlive.ts`: build a world end to end outside the web server.

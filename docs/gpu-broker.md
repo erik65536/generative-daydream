@@ -32,7 +32,7 @@ A **broker** runs on the GPU PC and is **the only way to reach the GPU**:
 - Adding a GPU tool later means writing one adapter. The callers do not change.
 
 ```
-game box (prod) ──┐                       ┌─ ComfyUI 127.0.0.1:8188   (Krea, SAM 3, Qwen edit, SeedVR2,
+game box (prod) ──┐                       ┌─ ComfyUI 127.0.0.1:8188   (Krea, Qwen edit, SeedVR2,       
                   ├─▶ broker :8190 (LAN) ─┤                            Pixal3D, SAM 3D Body, BiRefNet)
 GPU PC (dev) ─────┘   one queue, one      └─ SkinTokens (runs demo.py in its venv, one task at a time)
                       program on the GPU     … later: any other GPU tool as one more adapter
