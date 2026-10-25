@@ -61,8 +61,10 @@ like the painting they stand in. The game never paints past the walkable ground;
   the camera, for depth). The *ground pass*, right after the painting, fills everything past its edge, so there
   is never a border, and figures drawn after it stay crisp when they walk out to a way at the edge. The *air
   pass*, over the figures, covers unexplored ground (a dim veil over ground out of sight) and lays a veil inside
-  the edge, solid over the last half metre (paintings often darken their outer rows), thinning over about two
-  metres, and clear around the party, so the painting sinks softly into the mist. The mist's density erodes the coverage, so it breaks into wisps rather than a blur. Its
+  the edge, solid over the last half metre (paintings often darken their outer rows), then reaching in an uneven
+  two to five metres (the tile's large-scale density, held still), thickest over ground no one can walk (the
+  painted barrier) and thin over the ways out, and clear around the party, so the painting sinks into the mist with
+  no straight line. The mist's density erodes the coverage, so it breaks into wisps rather than a blur. Its
   thin parts take the place's fog colour, its wisps the measured light; the view's light (night, gloom, the
   party's light) falls on both passes alike. Places without a tile get generated noise. Without WebGL the fog of
   war is a plain veil. The minimap fades the painting's edge.

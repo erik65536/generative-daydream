@@ -4,8 +4,9 @@
  * - the ground pass, right after the painting: everything past the painting's edge, so there is never a border.
  *   Figures are drawn after it, so people walking out to a way at the edge stay crisp.
  * - the air pass, over the figures: unexplored ground (fog of war), a dim veil over ground out of sight, and a veil
- *   inside the edge, solid at the edge itself and thinning over a couple of metres (clear around the party), so the
- *   painting sinks softly into the mist past it.
+ *   inside the edge, solid at the edge itself and reaching in an uneven two to five metres, thickest over the ground
+ *   no one can walk (the barrier painted round the place) and thin over the ways out (clear around the party), so
+ *   the painting sinks into the mist past it with no straight line.
  *
  * The view's light (night, gloom, the party's light) falls on both alike, after them.
  *
@@ -43,12 +44,14 @@ void main() {
   vec3 m2 = texture2D(u_mist, (w + u_cam * 0.18) / (u_tile * 1.7) + u_t * vec2(-0.004, 0.0035) + 0.37).rgb;
   float n = (luma(m1) + luma(m2)) * 0.5;
   vec3 col = mix(u_base, (m1 + m2) * 0.5 * u_tint, clamp(n * 1.1, 0.0, 1.0) * 0.8);
-  // Fog of war: r = unexplored, a = remembered but out of sight (a dim veil). A few taps soften the metre grid.
-  float unseen = 0.0, dim = 0.0;
+  // Per square metre: r = unexplored, g = ground no one can walk, a = remembered but out of sight (a dim veil). A
+  // few taps soften the metre grid.
+  float unseen = 0.0, dim = 0.0, blocked = 1.0;
   if (u_hasFog > 0.5) {
     vec2 uv = (g + 0.5) / u_fogSize, o = 0.8 / u_fogSize;
     vec4 f = (2.0 * texture2D(u_fog, uv) + texture2D(u_fog, uv + vec2(o.x, 0.0)) + texture2D(u_fog, uv - vec2(o.x, 0.0)) + texture2D(u_fog, uv + vec2(0.0, o.y)) + texture2D(u_fog, uv - vec2(0.0, o.y))) / 6.0;
     unseen = f.r;
+    blocked = f.g;
     dim = f.a;
   }
   // Distance inside the painting's edge (px).
@@ -64,15 +67,17 @@ void main() {
   }
   if (seam <= 0.0) discard;
   // The veil inside the edge: solid over the last half metre (a painting's own outer rows are often darkened, as if
-  // closed off), thinning over a couple of metres, where the ways out are.
-  float e = 1.0 - smoothstep(0.0, u_feather * 0.45, d), rim = 1.0 - smoothstep(0.0, u_feather * 0.1, d);
+  // closed off), then reaching in an uneven distance (the mist's own large-scale density, still, so the line does
+  // not crawl), as thick as the barrier it lies on and thin over the walkable ways out.
+  float reach = u_feather * (0.5 + 0.75 * luma(texture2D(u_mist, w / (u_tile * 0.45)).rgb));
+  float e = (1.0 - smoothstep(0.0, reach, d)) * mix(0.4, 1.0, blocked), rim = 1.0 - smoothstep(0.0, u_feather * 0.1, d);
   for (int i = 0; i < ${PARTY}; i++) {
     vec2 q = (w - u_party[i] - vec2(0.0, -40.0)) / vec2(42.0, 64.0);
     float clear = smoothstep(0.6, 1.0, length(q));
     e *= clear;
     rim *= clear;
   }
-  float cover = max(erode(unseen, n), max(rim, e * e * (0.5 + 0.35 * n)));
+  float cover = max(erode(unseen, n), max(rim, erode(e, n) * 0.95));
   float veil = dim * (1.0 - cover);
   gl_FragColor = vec4(col * cover + u_base * veil, cover + veil) * seam;
 }`;
@@ -85,7 +90,7 @@ export interface MistFrame {
   camY: number;
   zoom: number;
   t: number;
-  /** Fog of war per square metre (two bytes each: unexplored, remembered-but-unseen), or null for none. */
+  /** Per square metre, four bytes: unexplored, ground no one can walk, (unused), remembered-but-unseen. */
   fog: { data: Uint8Array; w: number; h: number } | null;
   /** The painting's rectangle in picture px. */
   rect: [number, number, number, number];
@@ -171,7 +176,7 @@ export class Mist {
     gl.bindTexture(gl.TEXTURE_2D, this.fogTex);
     if (f.fog) {
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE_ALPHA, f.fog.w, f.fog.h, 0, gl.LUMINANCE_ALPHA, gl.UNSIGNED_BYTE, f.fog.data);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, f.fog.w, f.fog.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, f.fog.data);
       gl.uniform2f(L.u_fogSize!, f.fog.w, f.fog.h);
     }
     gl.uniform1f(L.u_hasFog!, f.fog ? 1 : 0);
@@ -180,7 +185,7 @@ export class Mist {
     gl.uniform2f(L.u_cam!, f.camX, f.camY);
     gl.uniform1f(L.u_zoom!, f.zoom);
     gl.uniform1f(L.u_t!, f.t);
-    // The veil inside the edge spans about two metres; a tile spans 16 m.
+    // The veil inside the edge reaches in two to five metres; a tile spans 16 m.
     gl.uniform1f(L.u_feather!, 4 * PX_PER_METRE);
     gl.uniform1f(L.u_tile!, f.tile ? 1024 : 640);
     gl.uniform4f(L.u_rect!, ...f.rect);

@@ -26,6 +26,8 @@ const pic = (x: number, y: number) => ({ x: x * M, y: y * M });
  * contact shadow, the rings under them) is drawn flattened by this, as that camera sees it.
  */
 const SHADOW_FLAT = 0.6;
+/** Size (m) of the squares the walkable outline is filed under, so a frame draws only the part near the mouse. */
+const OUTLINE_BUCKET = 4;
 
 /** Objects the game draws over every painting (one look per world), and how tall they stand in metres. */
 const OBJECT_ART: Record<string, { key: string; height: number }> = {
@@ -458,12 +460,12 @@ export class Renderer {
     const ctx = this.ctx, nav = z.walk;
     if (st.inputMode === 'pad') {
       const leader = this.client.leaderEntity();
-      if (leader) this.walkEdges(nav, this.client.entityPos(leader), 3, 0.5);
+      if (leader) this.walkEdges(z, this.client.entityPos(leader), 3, 0.5);
       return;
     }
     const h = this.hover.point;
     if (!h || this.hover.entityId || this.hover.featureId || this.hover.lootId) return;
-    this.walkEdges(nav, h, 2.2, 0.42);
+    this.walkEdges(z, h, 2.2, 0.42);
     const ok = nav.walkable(h.x, h.y);
     ctx.save();
     ctx.strokeStyle = ok ? 'rgba(255,248,225,0.5)' : 'rgba(255,105,85,0.7)';
@@ -474,34 +476,86 @@ export class Renderer {
     ctx.restore();
   }
 
-  /** The sides walkable ground shares with ground no one can stand on, within `R` metres of `at`, fading outward. */
-  private walkEdges(nav: ZoneData['walk'], at: Vec2, R: number, alpha: number) {
-    const ctx = this.ctx;
-    const [ax, ay] = nav.cellOf(at.x, at.y), n = Math.ceil(R / NAV_CELL);
+  /** The walkable ground's outline: smooth segments in metres, bucketed by OUTLINE_BUCKET-metre squares. */
+  private outline: { key: string; seg: Float32Array; buckets: Map<number, number[]>; bw: number } | null = null;
+
+  /**
+   * The edge of the walkable ground as a smooth line: marching squares at the half-way level over the walk grid
+   * softened twice (cell corners, then a 3×3 blur), so it follows the ground in slopes and curves, not cell steps.
+   * Made once per place.
+   */
+  private walkOutline(z: ZoneData) {
+    const key = `${this.zoneKey}`;
+    if (this.outline?.key === key) return this.outline;
+    const nav = z.walk, C = nav.cols + 1, R = nav.rows + 1;
+    const corner = new Float32Array(C * R);
+    for (let y = 0; y < R; y++)
+      for (let x = 0; x < C; x++) {
+        let open = 0;
+        for (const [i, j] of [[x - 1, y - 1], [x, y - 1], [x - 1, y], [x, y]] as const) if (nav.walkableCell(i, j)) open++;
+        corner[y * C + x] = open / 4;
+      }
+    const f = new Float32Array(C * R);
+    for (let y = 0; y < R; y++)
+      for (let x = 0; x < C; x++) {
+        let sum = 0, n = 0;
+        for (let j = Math.max(0, y - 1); j <= Math.min(R - 1, y + 1); j++)
+          for (let i = Math.max(0, x - 1); i <= Math.min(C - 1, x + 1); i++) (sum += corner[j * C + i]!), n++;
+        f[y * C + x] = sum / n;
+      }
+    const out: number[] = [];
+    const at = (x0: number, y0: number, v0: number, x1: number, y1: number, v1: number) => {
+      const t = (0.5 - v0) / (v1 - v0);
+      return [(x0 + (x1 - x0) * t) * NAV_CELL, (y0 + (y1 - y0) * t) * NAV_CELL];
+    };
+    for (let y = 0; y < R - 1; y++)
+      for (let x = 0; x < C - 1; x++) {
+        const a = f[y * C + x]!, b = f[y * C + x + 1]!, c = f[(y + 1) * C + x + 1]!, d = f[(y + 1) * C + x]!;
+        // Crossings on the top, right, bottom and left sides of this square (or none).
+        const top = (a >= 0.5) !== (b >= 0.5) ? at(x, y, a, x + 1, y, b) : null;
+        const right = (b >= 0.5) !== (c >= 0.5) ? at(x + 1, y, b, x + 1, y + 1, c) : null;
+        const bottom = (d >= 0.5) !== (c >= 0.5) ? at(x, y + 1, d, x + 1, y + 1, c) : null;
+        const left = (a >= 0.5) !== (d >= 0.5) ? at(x, y, a, x, y + 1, d) : null;
+        const pts = [top, right, bottom, left].filter((q): q is number[] => !!q);
+        if (pts.length === 2) out.push(...pts[0]!, ...pts[1]!);
+        else if (pts.length === 4) {
+          // A saddle: the centre decides which corners join.
+          const joinAB = ((a + b + c + d) / 4 >= 0.5) === (a >= 0.5);
+          if (joinAB) out.push(...top!, ...right!, ...bottom!, ...left!);
+          else out.push(...top!, ...left!, ...bottom!, ...right!);
+        }
+      }
+    const seg = Float32Array.from(out), bw = Math.ceil((nav.cols * NAV_CELL) / OUTLINE_BUCKET) + 1;
+    const buckets = new Map<number, number[]>();
+    for (let i = 0; i < seg.length; i += 4) {
+      const k = Math.floor((seg[i + 1]! + seg[i + 3]!) / 2 / OUTLINE_BUCKET) * bw + Math.floor((seg[i]! + seg[i + 2]!) / 2 / OUTLINE_BUCKET);
+      (buckets.get(k) ?? buckets.set(k, []).get(k)!).push(i);
+    }
+    return (this.outline = { key, seg, buckets, bw });
+  }
+
+  /** The walkable ground's edge within `R` metres of `at`, fading outward. */
+  private walkEdges(z: ZoneData, at: Vec2, R: number, alpha: number) {
+    const ctx = this.ctx, o = this.walkOutline(z);
     ctx.save();
     ctx.lineWidth = 2;
     ctx.lineCap = 'round';
     ctx.shadowColor = 'rgba(255,240,200,0.6)';
     ctx.shadowBlur = 4;
-    const edge = (x0: number, y0: number, x1: number, y1: number) => {
-      const d = Math.hypot((x0 + x1) / 2 - at.x, (y0 + y1) / 2 - at.y);
-      if (d >= R) return;
-      const a = pic(x0, y0), b = pic(x1, y1);
-      ctx.strokeStyle = `rgba(255,244,215,${(alpha * (1 - d / R)).toFixed(3)})`;
-      ctx.beginPath();
-      ctx.moveTo(a.x, a.y);
-      ctx.lineTo(b.x, b.y);
-      ctx.stroke();
-    };
-    for (let cy = ay - n; cy <= ay + n; cy++)
-      for (let cx = ax - n; cx <= ax + n; cx++) {
-        if (!nav.walkableCell(cx, cy)) continue;
-        const x0 = cx * NAV_CELL, y0 = cy * NAV_CELL, x1 = x0 + NAV_CELL, y1 = y0 + NAV_CELL;
-        if (!nav.walkableCell(cx - 1, cy)) edge(x0, y0, x0, y1);
-        if (!nav.walkableCell(cx + 1, cy)) edge(x1, y0, x1, y1);
-        if (!nav.walkableCell(cx, cy - 1)) edge(x0, y0, x1, y0);
-        if (!nav.walkableCell(cx, cy + 1)) edge(x0, y1, x1, y1);
-      }
+    const bx0 = Math.floor((at.x - R) / OUTLINE_BUCKET), bx1 = Math.floor((at.x + R) / OUTLINE_BUCKET);
+    const by0 = Math.floor((at.y - R) / OUTLINE_BUCKET), by1 = Math.floor((at.y + R) / OUTLINE_BUCKET);
+    for (let by = by0; by <= by1; by++)
+      for (let bx = bx0; bx <= bx1; bx++)
+        for (const i of o.buckets.get(by * o.bw + bx) ?? []) {
+          const s = o.seg, d = Math.hypot((s[i]! + s[i + 2]!) / 2 - at.x, (s[i + 1]! + s[i + 3]!) / 2 - at.y);
+          if (d >= R) continue;
+          const p = pic(s[i]!, s[i + 1]!), q = pic(s[i + 2]!, s[i + 3]!);
+          ctx.strokeStyle = `rgba(255,244,215,${(alpha * (1 - d / R)).toFixed(3)})`;
+          ctx.beginPath();
+          ctx.moveTo(p.x, p.y);
+          ctx.lineTo(q.x, q.y);
+          ctx.stroke();
+        }
     ctx.restore();
   }
 
@@ -1497,17 +1551,30 @@ export class Renderer {
   /** This frame's mist (see mist.ts), shared by its two passes. */
   private mistFrame: MistFrame | null = null;
 
-  /** The fog of war per square metre for the mist (null where there is none). */
+  /**
+   * Per square metre for the mist (null where there is no fog of war): unexplored, how much of it no one can walk
+   * (set once per place: the edge's veil lies thickest there), and remembered-but-unseen.
+   */
   private fogOfWar(z: ZoneData): { data: Uint8Array; w: number; h: number } | null {
     if (!this.client.state.explored) return null;
     const { w, h } = fogSize(z);
     const key = `${this.zoneKey}:${w}x${h}`;
-    if (this.fogBytes?.key !== key) this.fogBytes = { key, data: new Uint8Array(w * h * 2).fill(255), w, h };
+    if (this.fogBytes?.key !== key) {
+      const data = new Uint8Array(w * h * 4);
+      const nav = z.walk, per = Math.round(1 / NAV_CELL);
+      for (let y = 0; y < h; y++)
+        for (let x = 0; x < w; x++) {
+          let open = 0;
+          for (let j = 0; j < per; j++) for (let i = 0; i < per; i++) if (nav.walkableCell(x * per + i, y * per + j)) open++;
+          data.set([255, Math.round(255 * (1 - open / (per * per))), 0, 0], (y * w + x) * 4);
+        }
+      this.fogBytes = { key, data, w, h };
+    }
     const data = this.fogBytes.data;
-    for (let i = 1; i < data.length; i += 2) data[i] = 0;
+    for (let i = 3; i < data.length; i += 4) data[i] = 0;
     this.visibleFog(w, h, (x, y, unseen, dim) => {
-      data[(y * w + x) * 2] = unseen ? 255 : 0;
-      data[(y * w + x) * 2 + 1] = Math.round(dim * 255);
+      data[(y * w + x) * 4] = unseen ? 255 : 0;
+      data[(y * w + x) * 4 + 3] = Math.round(dim * 255);
     });
     return this.fogBytes;
   }
@@ -1557,7 +1624,7 @@ export class Renderer {
     [canvas.width, canvas.height] = [w, h];
     const img = canvas.getContext('2d')!.createImageData(w, h);
     const [r, g, b] = hexToRgb(z.look.fogColor);
-    for (let i = 0; i < w * h; i++) img.data.set([r * 0.35, g * 0.35, b * 0.35, fog.data[i * 2]! || fog.data[i * 2 + 1]!], i * 4);
+    for (let i = 0; i < w * h; i++) img.data.set([r * 0.35, g * 0.35, b * 0.35, fog.data[i * 4]! || fog.data[i * 4 + 3]!], i * 4);
     canvas.getContext('2d')!.putImageData(img, 0, 0);
     const fc = this.fogCanvas;
     const f = fc.getContext('2d')!;
