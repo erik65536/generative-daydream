@@ -1,22 +1,20 @@
 /**
- * The one ComfyUI client: where ComfyUI is (or the GPU broker in front of it), its token, and queueing a workflow
- * and waiting for it. Behind the broker (provider "broker": true) a prompt can wait for its turn: the broker says so
- * in an X-Broker-State header, and that time does not count against the deadline; the job is told it is waiting.
- * A broker that restarted no longer knows a prompt (404), which is then sent again. See docs/gpu-broker.md.
+ * The one ComfyUI client: where the GPU broker in front of ComfyUI is, its token, and queueing a workflow and
+ * waiting for it. A prompt can wait for its turn: the broker says so in an X-Broker-State header, and that time
+ * does not count against the deadline; the job is told it is waiting. A broker that restarted no longer knows a
+ * prompt (404), which is then sent again. While an administrator pauses GPU work (or background animation), work of
+ * that kind waits before it is sent. See docs/gpu-broker.md.
  */
 import crypto from 'node:crypto';
 import { genai } from './service';
 import { callContext } from './context';
 import { resolveSecret } from './providers';
 import type { ProviderConfig } from './types';
-import { promptBody } from '../gpu/presence';
-import { dropPrompt } from '../gpu/comfyqueue';
+import { pausedFor, promptBody, promptTag } from '../gpu/presence';
 
 export interface ComfyTarget {
   base: string;
   headers: Record<string, string>;
-  /** The GPU broker, not ComfyUI itself. */
-  broker: boolean;
 }
 
 export interface ComfyImage {
@@ -38,9 +36,9 @@ export function comfyProvider(): [string, ProviderConfig] | undefined {
 }
 
 export function comfyTarget(cfg: ProviderConfig | undefined = comfyProvider()?.[1]): ComfyTarget {
-  const base = (process.env.COMFY_URL ?? cfg?.baseUrl ?? 'http://127.0.0.1:8188').replace(/\/+$/, '');
+  const base = (process.env.COMFY_URL ?? cfg?.baseUrl ?? 'http://127.0.0.1:8190').replace(/\/+$/, '');
   const token = resolveSecret(cfg?.apiKey);
-  return { base, headers: token ? { authorization: `Bearer ${token}` } : {}, broker: !!cfg?.broker };
+  return { base, headers: token ? { authorization: `Bearer ${token}` } : {} };
 }
 
 export const comfyBase = () => comfyTarget().base;
@@ -61,10 +59,25 @@ export function waitReason(state: string): string | null {
   return `Waiting for the GPU${down ? `: ${down}` : pos > 1 ? ` (${pos - 1} ahead)` : pos === 1 ? ' (next)' : ''}`;
 }
 
-/** Take a prompt off: the broker removes or interrupts it itself; plain ComfyUI is read first (see dropPrompt). */
+/** Take a prompt off: the broker removes it while queued or interrupts it while running. */
 async function cancelPrompt(t: ComfyTarget, id: string) {
-  if (t.broker) await comfyFetch('/queue', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ delete: [id] }), signal: AbortSignal.timeout(10_000) }, t);
-  else await dropPrompt(t.base, id);
+  await comfyFetch('/queue', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ delete: [id] }), signal: AbortSignal.timeout(10_000) }, t);
+}
+
+/** Wait while an administrator has paused this kind of work (players' own calls are never held). */
+async function waitWhilePaused(): Promise<void> {
+  const ctx = callContext();
+  const tag = promptTag();
+  for (let told = false; ; told = true) {
+    const why = pausedFor(tag.rank ?? 2, tag.kind);
+    if (!why) {
+      if (told) ctx?.onWait?.(null);
+      return;
+    }
+    if (ctx?.cancelled?.()) throw new ComfyError('cancelled');
+    if (!told) ctx?.onWait?.(why);
+    await sleep(1000);
+  }
 }
 
 /**
@@ -75,6 +88,7 @@ async function cancelPrompt(t: ComfyTarget, id: string) {
 export async function submitAndWait(prompt: unknown, opts: { workflow?: string; timeoutMs: number; pollMs?: number; target?: ComfyTarget }): Promise<ComfyEntry> {
   const t = opts.target ?? comfyTarget();
   const ctx = callContext();
+  await waitWhilePaused();
   for (let attempt = 1; ; attempt++) {
     const res = await comfyFetch('/prompt', { method: 'POST', headers: { 'content-type': 'application/json' }, body: promptBody(prompt, opts.workflow, crypto.randomUUID()), signal: AbortSignal.timeout(30_000) }, t);
     const queued = (await res.json().catch(() => ({}))) as { prompt_id?: string };
@@ -94,7 +108,7 @@ export async function submitAndWait(prompt: unknown, opts: { workflow?: string; 
       let entry: ComfyEntry | undefined;
       try {
         const h = await comfyFetch(`/history/${id}`, { signal: AbortSignal.timeout(15_000) }, t);
-        if (h.status === 404 && t.broker) {
+        if (h.status === 404) {
           forgotten = true;
           break;
         }
@@ -144,6 +158,7 @@ export async function viewImage(img: ComfyImage, t: ComfyTarget = comfyTarget())
  */
 export async function withBrokerHold<T>(model: string, rank: number, fn: () => Promise<T>, t: ComfyTarget = comfyTarget()): Promise<T> {
   const ctx = callContext();
+  await waitWhilePaused();
   const json = { 'content-type': 'application/json' };
   const res = await comfyFetch('/broker/holds', { method: 'POST', headers: json, body: JSON.stringify({ model, rank, tag: { ...ctx?.tag, workflow: model } }) }, t);
   if (!res.ok) throw new ComfyError(`the GPU broker refused a hold: ${res.status} ${await res.text()}`);

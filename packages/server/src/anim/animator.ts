@@ -54,8 +54,6 @@ export interface ActorJob {
 export interface AnimateOptions {
   /** Run a GPU step in its turn: wraps every model call (a build's GPU queue). */
   gpuTurn?: <T>(fn: () => Promise<T>) => Promise<T>;
-  /** Scheduler urgency (0 = most urgent). */
-  rank?: number;
   onStep?: (msg: string) => void;
   /** Redo from this step on, even if its files exist. */
   redoFrom?: 'mesh' | 'rig' | 'clips' | 'render';
@@ -109,18 +107,6 @@ function comfyProvider(cfg: AnimationConfig): [string, ProviderConfig] | undefin
   return (cfg.comfyProvider ? providers.find(([n]) => n === cfg.comfyProvider) : undefined) ?? providers.find(([, p]) => p.type === 'comfyui');
 }
 
-/** Run `fn` holding the GPU scheduler for `model` on `provider` (when it belongs to a GPU group). */
-function onGpu<T>(provider: [string, ProviderConfig] | undefined, model: string, rank: number, fn: () => Promise<T>): Promise<T> {
-  if (!provider?.[1].gpu) return fn();
-  return genai().gpu.group(provider[1].gpu).run(provider[0], model, provider[1], fn, rank);
-}
-
-/** The animator as its own "provider" in the ComfyUI GPU group: taking a turn unloads ComfyUI and the local LLM. */
-function exclusive(cfg: AnimationConfig): [string, ProviderConfig] | undefined {
-  const comfy = comfyProvider(cfg);
-  return comfy?.[1].gpu ? ['animator', { type: 'procedural', gpu: comfy[1].gpu }] : undefined;
-}
-
 const has = (dir: string, ...files: string[]) => files.every((f) => fs.existsSync(path.join(dir, f)));
 /** Below this, a mesh's height-to-width ratio over the picture's means it lost parts (see animator/mesh.py). Good meshes score 0.93-1.01. */
 const MIN_SHAPE = 0.9;
@@ -135,7 +121,6 @@ export async function animateActor(job: ActorJob, opts: AnimateOptions = {}): Pr
   const dir = jobDir(job.worldId, job.key);
   fs.mkdirSync(dir, { recursive: true });
   const turn = opts.gpuTurn ?? (<T>(fn: () => Promise<T>) => fn());
-  const rank = opts.rank ?? 3;
   const say = opts.onStep ?? (() => undefined);
   const comfy = comfyProvider(cfg);
 
@@ -152,7 +137,8 @@ export async function animateActor(job: ActorJob, opts: AnimateOptions = {}): Pr
   }
 
   const seed = job.seed ?? 56;
-  const mesh = (s: number) => turn(() => onGpu(comfy, 'pixal3d', rank, () => runStep(cfg, 'mesh', dir, { comfyUrl: comfy?.[1].baseUrl, seed: s })));
+  // Meshing and the body fit send ComfyUI prompts through the GPU broker, which takes their turns on the GPU.
+  const mesh = (s: number) => turn(() => runStep(cfg, 'mesh', dir, { comfyUrl: comfyTarget(comfy?.[1]).base, seed: s }));
   /** Set the current mesh (and what was made from it) aside, or bring it back. */
   const MADE = ['mesh.glb', 'mesh_input.png', 'rig.json', 'tex.png'];
   const stash = () => MADE.forEach((f) => has(dir, f) && fs.renameSync(path.join(dir, f), path.join(dir, `first_${f}`)));
@@ -177,7 +163,7 @@ export async function animateActor(job: ActorJob, opts: AnimateOptions = {}): Pr
   if (redo.has('rig') || !has(dir, 'rig.json', 'tex.png')) {
     say('Rigging');
     if (job.body === 'humanoid') {
-      if (redo.has('mesh') || !has(dir, 'body.glb')) await turn(() => onGpu(comfy, 'sam3d-body', rank, () => runStep(cfg, 'body', dir, { comfyUrl: comfy?.[1].baseUrl })));
+      if (redo.has('mesh') || !has(dir, 'body.glb')) await turn(() => runStep(cfg, 'body', dir, { comfyUrl: comfyTarget(comfy?.[1]).base }));
       const first = await runStep(cfg, 'rig-human', dir, { height: ACTOR_HEIGHT });
       // An ankle with no mesh around it: the model made the lower body one mass (a coat down to the ground).
       // The same picture with another seed usually gets the legs; keep whichever covers the ankles better.
@@ -191,9 +177,8 @@ export async function animateActor(job: ActorJob, opts: AnimateOptions = {}): Pr
     } else {
       const st = cfg.skintokens!;
       const run = () => runStep(cfg, 'skintokens', dir, { dir: st.dir, python: st.python, device: st.device ?? 'cuda' });
-      // On the GPU it needs the GPU alone: a turn from the broker (which unloads everything else), or this process's GPU group.
-      const broker = comfy?.[1].broker;
-      await (st.device === 'cpu' ? run() : turn(() => (broker ? withBrokerHold('skintokens', promptTag().rank ?? 3, run, comfyTarget(comfy[1])) : onGpu(exclusive(cfg), 'skintokens', rank, run))));
+      // On the GPU it needs the GPU alone: a turn from the broker, which unloads everything else first.
+      await (st.device === 'cpu' ? run() : turn(() => withBrokerHold('skintokens', promptTag().rank ?? 3, run, comfyTarget(comfy?.[1]))));
       await runStep(cfg, 'rig-auto', dir, { body: job.body, height: ACTOR_HEIGHT });
     }
     redo.add('clips');

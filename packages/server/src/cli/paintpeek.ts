@@ -51,7 +51,6 @@ for (const r of recs)
     attempts.set(rec.key, [...(attempts.get(rec.key) ?? []), a]);
     log(`  attempt ${rec.key} on ${a.key}: score ${a.score.toFixed(1)}, cut ${a.cut.judgeable ? '' : 'unjudgeable, '}left ${(a.cut.leftover * 100).toFixed(1)}%, missing ${(a.cut.missing * 100).toFixed(1)}%${a.problems.length ? ` (${a.problems.join('; ')})` : ''}`);
   });
-await genai().releaseGpu();
 fs.writeFileSync(path.join(out, 'records.json'), JSON.stringify([...done.values()], null, 1));
 
 // Sheet: one row per attempt: painting | cutout on dark | cutout on a loud colour far from the key | label.

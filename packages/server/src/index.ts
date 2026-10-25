@@ -86,12 +86,12 @@ app.post('/api/auth/logout', (req, res) => {
 
 /** Speech to text for conversations: a short recording in, its words out (charged to the speaker's AI budget). */
 app.get('/api/voice', auth, (_req, res) => {
-  res.json({ speechInput: !genai().isProcedural('speech.input') });
+  res.json({ speechInput: genai().configured('speech.input') });
 });
 
 app.post('/api/voice/transcribe', auth, express.raw({ type: ['audio/*', 'application/octet-stream'], limit: '6mb' }), async (req, res) => {
   const u = (req as AuthedRequest).user;
-  if (genai().isProcedural('speech.input')) return void res.status(404).json({ error: 'No speech model is configured.' });
+  if (!genai().configured('speech.input')) return void res.status(404).json({ error: 'No speech model is configured.' });
   const audio = req.body as Buffer;
   if (!Buffer.isBuffer(audio) || audio.length < 400) return void res.status(400).json({ error: 'No audio received.' });
   try {
@@ -342,7 +342,7 @@ app.post('/api/worlds/:id/art', auth, (req, res) => {
   const w = store.loadWorld(String(req.params.id));
   if (!w || w.status !== 'ready') return void res.status(404).json({ error: 'Not found.' });
   if (w.ownerId !== u.id && !u.isAdmin) return void res.status(403).json({ error: 'Not your daydream.' });
-  if (genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
+  if (!genai().configured('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
   const level = req.body?.level === 'full' ? 'full' : 'essential';
   if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this daydream; wait for it to finish.' });
   if (req.body?.retryFailed) {
@@ -408,7 +408,7 @@ app.post('/api/worlds/:id/studio/task', auth, (req, res) => {
     return void res.json(studioView(w));
   }
   if (activeJob(w.id)) return void res.status(409).json({ error: 'Something is already being made for this daydream.' });
-  if (task.data.kind === 'paint' && genai().isProcedural('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
+  if (task.data.kind === 'paint' && !genai().configured('image.sprite')) return void res.status(400).json({ error: 'No image model is configured (config/genai.json).' });
   const u = (req as AuthedRequest).user;
   if (!queueJob(res, 'studio', w, u, { task: task.data }, 3)) return;
   res.json({ ok: true });
@@ -492,19 +492,12 @@ app.delete('/api/instances/:id', auth, (req, res) => {
 
 // ------------------------------------------------------------------------------ GenAI admin
 
-app.get('/api/genai', auth, (req, res) => {
+app.get('/api/genai', auth, adminOnly, (_req, res) => {
   const g = genai();
-  res.json({ purposes: g.describe(), recent: g.recent.slice(-60).reverse(), gpu: g.gpu.status(), configFile: process.env.GD_GENAI_CONFIG ?? (fs.existsSync(path.join(CONFIG_DIR, 'genai.json')) ? 'config/genai.json' : null) });
+  res.json({ purposes: g.describe(), recent: g.recent.slice(-60).reverse(), configFile: process.env.GD_GENAI_CONFIG ?? (fs.existsSync(path.join(CONFIG_DIR, 'genai.json')) ? 'config/genai.json' : null) });
 });
 
-app.post('/api/genai/release', auth, async (req, res) => {
-  if (!(req as AuthedRequest).user.isAdmin) return void res.status(403).json({ error: 'Admins only.' });
-  await genai().releaseGpu();
-  res.json({ gpu: genai().gpu.status() });
-});
-
-app.post('/api/genai/reload', auth, (req, res) => {
-  if (!(req as AuthedRequest).user.isAdmin) return void res.status(403).json({ error: 'Admins only.' });
+app.post('/api/genai/reload', auth, adminOnly, (_req, res) => {
   try {
     res.json({ purposes: reloadGenAI().describe() });
   } catch (e) {
@@ -512,17 +505,16 @@ app.post('/api/genai/reload', auth, (req, res) => {
   }
 });
 
-app.post('/api/genai/test', auth, async (req, res) => {
-  if (!(req as AuthedRequest).user.isAdmin) return void res.status(403).json({ error: 'Admins only.' });
+app.post('/api/genai/test', auth, adminOnly, async (req, res) => {
   const purpose = String(req.body?.purpose ?? '');
   const g = genai();
   const t0 = Date.now();
   try {
-    if (g.isDecision(purpose as 'image.check')) {
-      const answers = await g.decide(purpose as 'image.check', {
-        state: 'A weary traveler stumbles into the inn, soaked and bleeding, and asks the innkeeper for help.',
+    if (purpose === 'image.check') {
+      const answers = await g.decide('image.check', {
+        state: 'A weary traveller stumbles into the inn, soaked through, and asks the innkeeper for a seat by the fire.',
         questions: {
-          action: { type: 'choice', instructions: 'What does the kind innkeeper do?', criteria: { heal_player: 'Tend their wounds', ignore: 'Ignore them', attack: 'Attack them' } },
+          action: { type: 'choice', instructions: 'What does the kind innkeeper do?', criteria: { welcome: 'Make room by the fire', ignore: 'Ignore them', refuse: 'Turn them away' } },
           concern: { type: 'score', instructions: 'How concerned is the innkeeper?', criteria: ['indifferent', 'mildly', 'very', 'alarmed'] },
         },
       });
@@ -537,8 +529,8 @@ app.post('/api/genai/test', auth, async (req, res) => {
       const buf = (await finishCutout(await cutout(painting), 512)).png;
       return void res.json({ ok: true, ms: Date.now() - t0, image: `data:image/png;base64,${buf.toString('base64')}` });
     }
-    if (purpose === 'image.check' || purpose === 'npc.dialogue' || purpose === 'narration') {
-      const text = await g.text(purpose === 'image.check' ? 'narration' : (purpose as 'narration'), { messages: [{ role: 'user', content: 'Say hello as a gruff innkeeper in one sentence.' }], maxTokens: 120 });
+    if (purpose === 'narration') {
+      const text = await g.text('narration', { messages: [{ role: 'user', content: 'Say hello as a gruff innkeeper in one sentence.' }], maxTokens: 120 });
       return void res.json({ ok: true, ms: Date.now() - t0, text });
     }
     const out = await g.structured(purpose as 'npc.decision', { prompt: 'Invent a tavern. Return JSON.', schema: z.object({ name: z.string(), mood: z.string(), patrons: z.array(z.string()).max(3) }), name: 'tavern', maxTokens: 400 });

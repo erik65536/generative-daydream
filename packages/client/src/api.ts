@@ -64,7 +64,6 @@ export interface GpuJob {
   worker?: string;
 }
 export interface GpuTag { jobId?: string; worldId?: string; kind?: string }
-export interface GpuCallView { group: string; provider: string; model: string; rank: number; running: boolean; since: number; tag?: GpuTag }
 export interface GpuProcess {
   holder: string;
   role: 'server' | 'worker' | 'cli';
@@ -76,7 +75,6 @@ export interface GpuProcess {
   stale: boolean;
   isThis: boolean;
   state: {
-    calls: GpuCallView[];
     builds: { tag?: GpuTag; running?: { model: string; priority: number; since: number }; pending: { model: string; priority: number }[] }[];
     tasks: { tag: GpuTag; step: string; progress: number; since: number }[];
   };
@@ -87,19 +85,14 @@ export interface ComfyPromptView {
   workflow: string;
   origin: { kind: 'server' | 'worker' | 'cli' | 'animator' | 'untagged' | 'external'; label: string; holder?: string; jobId?: string; worldId?: string; jobKind?: string };
 }
+export interface BrokerWork { id: string; adapter: string; model: string; rank: number; client: string; tag?: GpuTag & { label?: string }; state: string; submittedAt: number; startedAt?: number; progress?: number }
 export interface GpuView {
   now: number;
   thisProcess: string;
   control: { paused: { by: string; at: number } | null; animationPaused: { by: string; at: number } | null };
   device: { name: string; vramUsedMb: number; vramTotalMb: number; utilization?: number; source: string } | null;
-  groups: {
-    group: string;
-    holder: { id: string; label: string; role: string } | null;
-    lastModel: string | null;
-    routerLoaded: string[];
-    running: (GpuCallView & { holder: string; process: string; role: string })[];
-    waiting: { holder: string; rank: number; since: number; label: string; role: string }[];
-  }[];
+  /** The GPU broker's queue: every installation's work (production, development, CLI runs). */
+  broker: { up: boolean; error?: string; resident?: { adapter: string; model: string } | null; running?: BrokerWork | null; queued?: BrokerWork[]; down?: string[] };
   processes: GpuProcess[];
   jobs: { running: GpuJob[]; queued: GpuJob[]; recent: GpuJob[] };
   comfy: { url: string; up: boolean; error?: string; running: ComfyPromptView[]; pending: ComfyPromptView[]; failures: { id: string; at: number; message: string; origin: ComfyPromptView['origin']; workflow: string }[] };
@@ -219,7 +212,6 @@ export const api = {
   gpuPriority: (id: string, change: { priority: number } | { move: 'up' | 'down' }) => call<{ ok: true }>('POST', `/api/admin/gpu/jobs/${id}/priority`, change),
   gpuCancel: (id: string) => call<{ ok: true; stopped: boolean; promptsCleared: number }>('POST', `/api/admin/gpu/jobs/${id}/cancel`, { confirm: true }),
   gpuClearPrompt: (id: string) => call<{ ok: true; outcome: string }>('POST', `/api/admin/gpu/comfy/${id}/clear`, { confirm: true }),
-  gpuUnload: () => call<{ ok: true; groups: string[] }>('POST', '/api/admin/gpu/unload', { confirm: true }),
   gpuRetryActor: (worldId: string, key: string) => call<{ ok: true }>('POST', '/api/admin/gpu/actors/retry', { worldId, key }),
   logout: () => call<{ ok: true }>('POST', '/api/auth/logout', {}),
   worlds: () => call<WorldSummary[]>('GET', '/api/worlds'),
@@ -242,8 +234,7 @@ export const api = {
   studioEdit: (id: string, edits: StudioEdit | StudioEdit[]) => call<StudioView>('POST', `/api/worlds/${id}/studio/edit`, edits),
   studioTask: (id: string, task: StudioTask) => call<{ ok: true }>('POST', `/api/worlds/${id}/studio/task`, task),
   studioAnimate: (id: string, keys: string[], from: 'render' | 'clips' | 'rig' | 'mesh') => call<StudioView>('POST', `/api/worlds/${id}/studio/task`, { kind: 'animate', keys, from }),
-  genai: () => call<{ purposes: { purpose: string; provider: string; type: string; model?: string; gpu?: string }[]; recent: { at: number; purpose: string; provider: string; ms: number; ok: boolean; error?: string; attempt: number; preview?: string }[]; gpu: { group: string; resident: string | null; switches: number }[]; configFile: string | null }>('GET', '/api/genai'),
-  genaiRelease: () => call<{ gpu: { group: string; resident: string | null; switches: number }[] }>('POST', '/api/genai/release'),
+  genai: () => call<{ purposes: { purpose: string; provider: string; type: string; model?: string }[]; recent: { at: number; purpose: string; provider: string; ms: number; ok: boolean; error?: string; attempt: number; preview?: string }[]; configFile: string | null }>('GET', '/api/genai'),
   genaiReload: () => call<unknown>('POST', '/api/genai/reload', {}),
   genaiTest: (purpose: string) => call<{ ok: boolean; ms: number; text?: string; json?: unknown; image?: string; error?: string }>('POST', '/api/genai/test', { purpose }),
 };

@@ -19,7 +19,7 @@ export interface LegendContext {
 
 export async function forgeLegend(r: Ruleset, item: ItemInstance, ctx: LegendContext): Promise<{ def: UniqueItemDef; mods: Modifier[] } | null> {
   const g = genai();
-  if (g.isProcedural('narration')) return null;
+  if (!g.configured('narration')) return null;
   const ix = rx(r);
   const base = ix.item.get(item.baseId);
   const kind = base?.slotId ? ix.slot.get(base.slotId)?.kind : undefined;

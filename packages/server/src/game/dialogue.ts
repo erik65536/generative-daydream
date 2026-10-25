@@ -1,7 +1,8 @@
 /**
  * NPC conversations. Each player turn asks the decision model to choose from a closed set of actions
  * (with ids constrained by dynamic enums) and to speak; the engine validates and executes the actions.
- * Without a model, a rule-based "procedural brain" keeps NPCs useful and quests completable.
+ * Without a model (none configured, out of budget, or failing), simple rule-based replies keep NPCs useful and quests
+ * completable.
  */
 import { z } from 'zod';
 import {
@@ -11,7 +12,7 @@ import {
 } from '@gd/shared';
 import { genai } from '../genai/service';
 import { BudgetExceeded } from '../genai/spend';
-import type { DecisionQuestion } from '../genai/types';
+import { NotConfigured } from '../genai/types';
 import { currentObjectiveIndex, objectivesOf, type QuestEngine } from './quests';
 import type { WorldCtx } from './worldctx';
 
@@ -294,34 +295,19 @@ export class DialogueEngine {
     if (!s || !p) return;
     const def = this.npc(s.npcId)!;
     const rt = this.h.npcRt(s.npcId)!;
-    let decision: { actions: NpcAction[]; emotion: Emotion; speech: string; needsSpeech?: boolean };
-    const g = genai();
+    let decision: { actions: NpcAction[]; emotion: Emotion; speech: string };
     try {
-      if (g.isProcedural('npc.decision')) throw new Error('procedural');
-      decision = g.isDecision('npc.decision') ? await this.decisionModelTurn(userId, p, def, rt, input) : await this.llmDecision(userId, p, def, rt, input);
+      decision = await this.llmDecision(userId, p, def, rt, input);
     } catch (e) {
       if (e instanceof BudgetExceeded) {
         // Out of AI budget: say so once, and let people answer simply until it resets.
         if (!s.messages.some((m) => m.speaker === 'narrator' && m.text === e.message)) s.messages.push({ speaker: 'narrator', text: e.message });
-      } else if ((e as Error).message !== 'procedural') console.warn('[dialogue] model failed, using procedural brain:', (e as Error).message);
-      decision = this.proceduralDecision(userId, p, def, rt, input);
+      } else if (!(e instanceof NotConfigured)) console.warn('[dialogue] model failed, answering simply:', (e as Error).message);
+      decision = this.simpleDecision(userId, p, def, rt, input);
     }
     if (!this.sessions.has(userId)) return;
     const narration = this.execute(userId, p, def, rt, decision.actions, input);
-    // Optional separate speech model.
-    let speech = decision.speech;
-    if ((decision.needsSpeech || !g.config.combineNpcDecisionAndDialogue) && !g.isProcedural('npc.dialogue')) {
-      try {
-        speech = await g.text('npc.dialogue', {
-          system: this.persona(p, def, rt),
-          messages: [{ role: 'user', content: `${this.transcript(p, def)}\n\n${input.text ? `${p.name} just said: "${input.text}"\n` : ''}${input.event ? `[SITUATION: ${input.event}]\n` : ''}You decided to: ${decision.actions.map((a) => NPC_ACTION_INFO[a.type]).join(' ') || 'just talk'} You feel ${decision.emotion}. ${narration.join(' ')}\nWrite only what ${def.name} says now (1-4 sentences, in character, no quotation marks).` }],
-          maxTokens: 300,
-        });
-      } catch {
-        /* keep decision speech */
-      }
-    }
-    speech = sanitizeSpeech(speech, def.name);
+    const speech = sanitizeSpeech(decision.speech, def.name);
     s.thinking = false;
     if (speech) {
       s.messages.push({ speaker: 'npc', text: speech, emotion: decision.emotion });
@@ -386,7 +372,7 @@ export class DialogueEngine {
       .join('\n');
   }
 
-  /** Everything the NPC may know and do this turn; shared by the LLM and decision-model paths. */
+  /** Everything the NPC may know and do this turn. */
   private turnContext(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: TurnInput) {
     const w = this.h.ctx.world;
     const available = this.availableQuests(p, def);
@@ -504,44 +490,6 @@ export class DialogueEngine {
     }));
     if (this.acceptsJoin(p, def, rt, input.text) && !actions.some((a) => a.type === 'join_party')) actions.push({ type: 'join_party' });
     return { actions, emotion: out.emotion as Emotion, speech: out.speech };
-  }
-
-  /** Decision-model path: actions chosen by a decision model (choice/score/yes-no), speech by a text model. */
-  private async decisionModelTurn(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: TurnInput): Promise<{ actions: NpcAction[]; emotion: Emotion; speech: string; needsSpeech: boolean }> {
-    const g = genai();
-    const c = this.turnContext(userId, p, def, rt, input);
-    const simple = c.allowed.filter((a) => a !== 'create_quest' && a !== 'modify_objective' && a !== 'add_objective' && a !== 'remember' && a !== 'change_disposition' && a !== 'share_lead');
-    const questions: Record<string, DecisionQuestion> = {
-      action: { type: 'choice', instructions: `Which single action should ${def.name} take right now, in response to what the player just said and did? Prefer "none" unless the conversation clearly calls for something.`, criteria: Object.fromEntries(simple.map((a) => [a, NPC_ACTION_INFO[a]])) },
-      emotion: { type: 'choice', instructions: `How does ${def.name} feel right now?`, criteria: Object.fromEntries(EMOTIONS.map((e) => [e, null])) },
-      attitude: { type: 'score', instructions: `After this exchange, how does ${def.name} feel about the player compared to before?`, criteria: ['much worse', 'worse', 'unchanged', 'better', 'much better'] },
-      remember: { type: 'noul', instructions: `Did the player just share something ${def.name} would remember later (a promise, a personal detail, a date, a deed)?` },
-    };
-    const questChoices = [...c.available.map((q) => [q.id, q.title] as const), ...c.involved.map((q) => [q.def.id, q.def.title] as const)];
-    if (questChoices.length) questions.quest = { type: 'choice', instructions: 'If the action involves a quest, which one?', criteria: Object.fromEntries(questChoices) };
-    if (c.npcItems.length) questions.item = { type: 'choice', instructions: 'If giving an item, which one?', criteria: Object.fromEntries(c.npcItems.map((it, i) => [`item${i}`, this.h.ctx.itemName(it)])) };
-    if (this.teachList(def, p).length) questions.skill = { type: 'choice', instructions: 'If teaching a skill, which one?', criteria: Object.fromEntries(this.teachList(def, p).map((sk) => [sk, this.h.ctx.skillName(sk)])) };
-    if (c.knownZones.length) questions.zone = { type: 'choice', instructions: 'If revealing a location, which place?', criteria: Object.fromEntries(c.knownZones.map((zz) => [zz.id, zz.name])) };
-    if (c.allowed.includes('give_gift')) questions.gift = { type: 'choice', instructions: 'If giving a gift, what kind?', criteria: { supplies: 'remedies and consumables', gear: 'a piece of equipment', material: 'crafting stock', keepsake: 'something of small value' } };
-    if (c.untold.length) questions.secret = { type: 'choice', instructions: 'If confiding a secret, which one?', criteria: Object.fromEntries(c.untold.map((i) => [`secret${i}`, def.secrets[i]!])) };
-    const ans = await g.decide('npc.decision', { state: `${this.persona(p, def, rt)}\n\n${c.lines.join('\n\n')}`, questions });
-    const pick = (k: string) => (ans[k]?.type === 'choice' ? (ans[k] as { choice: string }).choice : undefined);
-    const type = (this.acceptsJoin(p, def, rt, input.text) ? 'join_party' : pick('action') ?? 'none') as NpcActionType;
-    const actions: NpcAction[] = [];
-    const quest = pick('quest');
-    const prog = quest ? c.involved.find((q) => q.def.id === quest) : undefined;
-    actions.push({ type, questId: quest, objectiveId: prog?.objectives[prog.current]?.id, itemRef: pick('item'), skillId: pick('skill'), zoneId: pick('zone'), gift: pick('gift') as NpcGift | undefined, secretRef: pick('secret') });
-    const att = ans.attitude?.type === 'score' ? ans.attitude.score : 2;
-    if (Math.abs(att - 2) > 0.4) actions.push({ type: 'change_disposition', amount: Math.round((att - 2) * 8) });
-    if (ans.remember?.type === 'noul' && ans.remember.noul > 0.6 && input.text) {
-      const t = input.text.toLowerCase();
-      const due = /\btomorrow\b/.test(t) ? 1 : /\bnext week\b/.test(t) ? 7 : /\bin (\d+) days?\b/.test(t) ? Number(t.match(/in (\d+) days?/)![1]) : undefined;
-      actions.push({ type: 'remember', memory: `${p.name} told me: "${input.text.slice(0, 200)}"`, dueInDays: due, spread: 'town', gathering: due !== undefined && /birthday|wedding|festival|anniversary/.test(t) });
-    }
-    const emotion = (pick('emotion') ?? 'neutral') as Emotion;
-    // Speech comes from the text model; without one, the procedural brain words it.
-    const fallback = this.proceduralDecision(userId, p, def, rt, input);
-    return { actions, emotion, speech: fallback.speech, needsSpeech: true };
   }
 
   private knownZones(def: NpcDef, rt: NpcRuntime): ZoneDef[] {
@@ -826,9 +774,9 @@ export class DialogueEngine {
     }
   }
 
-  // ------------------------------------------------------------------ procedural brain
+  // ------------------------------------------------------------------ simple replies (no model, or out of budget)
 
-  private proceduralDecision(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: { text: string; offered?: ItemInstance; gold?: number; skillId?: string; event?: string }): { actions: NpcAction[]; emotion: Emotion; speech: string } {
+  private simpleDecision(userId: string, p: PlayerState, def: NpcDef, rt: NpcRuntime, input: { text: string; offered?: ItemInstance; gold?: number; skillId?: string; event?: string }): { actions: NpcAction[]; emotion: Emotion; speech: string } {
     const t = input.text.toLowerCase();
     const w = this.h.ctx.world;
     const actions: NpcAction[] = [];

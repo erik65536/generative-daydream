@@ -1,6 +1,7 @@
 /**
- * The admin GPU page's API: administrators only, one view of the job queue, every process's GPU work and
- * ComfyUI's queue, and controls that act through those layers. ComfyUI is a fake server here.
+ * The admin GPU page's API: administrators only, one view of the job queue, every process's GPU work, the GPU
+ * broker's and ComfyUI's queues, and controls that act through those layers. The broker in front of ComfyUI is a
+ * fake server here.
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import http from 'node:http';
@@ -24,14 +25,13 @@ import { changePassword, createSession, inviteUser, saveWorld, worldDir } from '
 import { mountGpuAdmin } from '../src/gpu/admin';
 import { control, flush, pausedFor, promptBody, setProcessRole } from '../src/gpu/presence';
 import { claimNext, enqueue, enqueueAnimation, getJobRecord, queuedJobs, type JobRecord } from '../src/jobs/queue';
-import { GpuScheduler } from '../src/genai/gpu';
 import { GpuQueue } from '../src/worldgen/gpu';
 import { withCallContext } from '../src/genai/context';
 import { genai } from '../src/genai/service';
+import { submitAndWait } from '../src/genai/comfyclient';
 import { DATA_DIR } from '../src/paths';
-import type { ProviderConfig } from '../src/genai/types';
 
-/** A ComfyUI that answers the calls the admin page makes and records the rest. */
+/** A GPU broker (and the ComfyUI behind it) that answers the calls the admin page makes and records the rest. */
 function fakeComfy() {
   const calls: { path: string; body: unknown }[] = [];
   const tagged = (n: number, id: string, extra: unknown, unet = 'krea2_turbo_fp8_scaled.safetensors') => [n, id, { '1': { class_type: 'UNETLoader', inputs: { unet_name: unet } } }, extra, []];
@@ -65,7 +65,12 @@ function fakeComfy() {
         });
       }
       if (url === '/system_stats') return json({ devices: [{ name: 'Fake GPU', vram_total: 24 * 2 ** 30, vram_free: 8 * 2 ** 30 }] });
-      if (url === '/free') return json({});
+      if (url === '/broker/queue') return json({ resident: { adapter: 'comfyui', model: 'krea' }, running: null, queued: [{ id: 'b1', adapter: 'comfyui', model: 'krea', rank: 2, client: 'prod' }], down: [] });
+      if (url === '/prompt') return json({ prompt_id: body?.prompt_id ?? 'p_new' });
+      if (url.startsWith('/history/')) {
+        const id = url.slice('/history/'.length);
+        return json({ [id]: { outputs: {}, status: { status_str: 'success', completed: true } } });
+      }
       res.writeHead(404).end();
     });
   });
@@ -120,7 +125,6 @@ describe('admin GPU page', () => {
       ['POST', '/jobs/j_none/priority', { move: 'up' }],
       ['POST', '/jobs/j_none/cancel', { confirm: true }],
       ['POST', '/comfy/p_cli/clear', { confirm: true }],
-      ['POST', '/unload', { confirm: true }],
       ['POST', '/actors/retry', { worldId: 'w', key: 'k' }],
     ];
     for (const [m, p, b] of routes) {
@@ -130,7 +134,7 @@ describe('admin GPU page', () => {
     // Nothing a refused request asked for happened.
     expect(control('paused')).toBeNull();
     expect(comfy.state.running).toHaveLength(1);
-    expect(comfy.calls.some((c) => c.path === '/free' || c.path === '/interrupt')).toBe(false);
+    expect(comfy.calls.some((c) => c.path === '/interrupt')).toBe(false);
   });
 
   it('shows the queue, ComfyUI prompts by origin, the GPU memory and throughput', async () => {
@@ -214,18 +218,18 @@ describe('admin GPU page', () => {
     expect((await call('POST', '/pause', admin, { scope: 'everything', on: true })).status).toBe(400);
   });
 
-  it("holds GPU calls while paused, lets players' calls past, and a stopped job gives up its turn", async () => {
-    const cfg = { type: 'openai-chat', gpu: 'g' } as ProviderConfig;
-    const g = new GpuScheduler(() => 0).group(`pause_${Date.now()}`);
+  it("holds GPU work while paused, lets players' work past, and a stopped job gives up its turn", async () => {
     await call('POST', '/pause', admin, { scope: 'all', on: true });
     const order: string[] = [];
     const waits: (string | null)[] = [];
-    const build = withCallContext({ priority: 'background', tag: { jobId: 'j_b', worldId: 'w_b', kind: 'art' } }, () => g.run('p', 'm', cfg, async () => void order.push('build'), 2, (w) => waits.push(w)));
+    const prompt = (tag: { kind?: string }, priority: 'background' | 'interactive', name: string, onWait?: (w: string | null) => void, cancelled?: () => boolean) =>
+      withCallContext({ priority, tag, onWait, cancelled }, () => submitAndWait({}, { workflow: 'krea', timeoutMs: 10_000, pollMs: 20 })).then(() => void order.push(name));
+    const build = prompt({ kind: 'art' }, 'background', 'build', (w) => waits.push(w));
     await new Promise((r) => setTimeout(r, 700));
     expect(order).toEqual([]);
     expect(waits).toEqual(['Paused by an administrator']);
-    // A player's call (rank 0) goes past the paused build call.
-    await g.run('p', 'm', cfg, async () => void order.push('player'), 0);
+    // A player's work (rank 0) goes past the paused build.
+    await prompt({}, 'interactive', 'player');
     expect(order).toEqual(['player']);
     await call('POST', '/pause', admin, { scope: 'all', on: false });
     await build;
@@ -234,8 +238,8 @@ describe('admin GPU page', () => {
 
     // Background animation alone: other work goes on.
     await call('POST', '/pause', admin, { scope: 'animation', on: true });
-    const anim = withCallContext({ priority: 'background', tag: { kind: 'animate' } }, () => g.run('p', 'm', cfg, async () => void order.push('animate'), 4));
-    await withCallContext({ priority: 'background', tag: { kind: 'art' } }, () => g.run('p', 'm', cfg, async () => void order.push('art'), 2));
+    const anim = prompt({ kind: 'animate' }, 'background', 'animate');
+    await prompt({ kind: 'art' }, 'background', 'art');
     expect(order.slice(2)).toEqual(['art']);
     await call('POST', '/pause', admin, { scope: 'animation', on: false });
     await anim;
@@ -243,29 +247,24 @@ describe('admin GPU page', () => {
 
     let stop = false;
     await call('POST', '/pause', admin, { scope: 'all', on: true });
-    const stopped = withCallContext({ priority: 'background', cancelled: () => stop }, () => g.run('p', 'm', cfg, async () => 'ran', 2));
+    const stopped = prompt({ kind: 'art' }, 'background', 'stopped', undefined, () => stop);
     stop = true;
     await expect(stopped).rejects.toThrow('cancelled');
     await call('POST', '/pause', admin, { scope: 'all', on: false });
   });
 
-  it('reports each process\'s GPU work: its scheduler calls and a build\'s GPU queue', async () => {
-    const cfg = { type: 'openai-chat', gpu: 'g' } as ProviderConfig;
-    const g = new GpuScheduler(() => 0).group(`report_${Date.now()}`);
+  it("reports each process's GPU work (a build's GPU queue) and the broker's queue", async () => {
     const q = new GpuQueue(() => false, { jobId: 'j_rep', worldId: 'w_rep', kind: 'world' });
     let release!: () => void;
     const hold = new Promise<void>((r) => (release = r));
-    const first = q.run('krea', 1, () => withCallContext({ priority: 'background', tag: { jobId: 'j_rep', kind: 'world' } }, () => g.run('comfy', 'krea2', cfg, () => hold, 2)));
+    const first = q.run('krea', 1, () => hold);
     const second = q.run('reader', 2, async () => undefined);
     await new Promise((r) => setTimeout(r, 100));
     flush();
     const { body } = await call('GET', '/', admin);
     const me = body.processes.find((p: { isThis: boolean }) => p.isThis);
     expect(me.state.builds.find((b: { tag?: { jobId?: string } }) => b.tag?.jobId === 'j_rep')).toMatchObject({ tag: { jobId: 'j_rep' }, running: { model: 'krea', priority: 1 }, pending: [{ model: 'reader', priority: 2 }] });
-    expect(me.state.calls.find((c: { group: string }) => c.group === g.name)).toMatchObject({ model: 'krea2', running: true, tag: { jobId: 'j_rep' } });
-    const grp = body.groups.find((x: { group: string }) => x.group === g.name);
-    expect(grp.running[0]).toMatchObject({ model: 'krea2', tag: { jobId: 'j_rep' } });
-    expect(grp.holder.label).toMatch(/this process/);
+    expect(body.broker).toMatchObject({ up: true, resident: { model: 'krea' }, queued: [{ client: 'prod' }] });
     release();
     await Promise.all([first, second]);
   });
@@ -278,7 +277,7 @@ describe('admin GPU page', () => {
     setProcessRole('server', 'test server');
   });
 
-  it('clears a stuck ComfyUI prompt of any origin, and unloads the models, with confirmation', async () => {
+  it('clears a stuck ComfyUI prompt of any origin, with confirmation', async () => {
     expect((await call('POST', '/comfy/p_cli/clear', admin, {})).status).toBe(400);
     expect(comfy.state.running).toHaveLength(1);
     expect((await call('POST', '/comfy/p_cli/clear', admin, { confirm: true })).body).toMatchObject({ outcome: 'interrupted' });
@@ -286,16 +285,6 @@ describe('admin GPU page', () => {
     expect((await call('POST', '/comfy/p_anim/clear', admin, { confirm: true })).body).toMatchObject({ outcome: 'removed' });
     expect((await call('POST', '/comfy/p_anim/clear', admin, { confirm: true })).status).toBe(404);
 
-    expect((await call('POST', '/unload', admin, {})).status).toBe(400);
-    const cfg = genai().config;
-    const saved = cfg.providers;
-    cfg.providers = { ...saved, comfy: { type: 'comfyui', baseUrl: process.env.COMFY_URL, gpu: 'local' } as ProviderConfig };
-    try {
-      expect((await call('POST', '/unload', admin, { confirm: true })).body).toMatchObject({ ok: true, groups: ['local'] });
-      expect(comfy.calls.find((c) => c.path === '/free')?.body).toEqual({ unload_models: true, free_memory: true });
-    } finally {
-      cfg.providers = saved;
-    }
   });
 
   it('retries a failed animation actor', async () => {
@@ -328,7 +317,7 @@ describe('admin GPU page', () => {
   it('logs what each administrator did', async () => {
     const { body } = await call('GET', '/', admin);
     const actions = body.audit.map((a: { action: string }) => a.action);
-    for (const a of ['pause', 'resume', 'cancel', 'stop', 'move up', 'set priority', 'interrupt prompt', 'remove prompt', 'unload models', 'retry animation']) expect(actions).toContain(a);
+    for (const a of ['pause', 'resume', 'cancel', 'stop', 'move up', 'set priority', 'interrupt prompt', 'remove prompt', 'retry animation']) expect(actions).toContain(a);
     expect(body.audit.every((a: { adminName: string }) => a.adminName === admin.user.username)).toBe(true);
   });
 });

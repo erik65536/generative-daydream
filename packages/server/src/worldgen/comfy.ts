@@ -1,20 +1,17 @@
 /**
  * ComfyUI calls for painting and reading places: Krea 2 (paint, repaint from a guide, continue), Qwen-Image 2.1 (edit:
- * a map redrawn as a walk plan), SAM 3 (find things) and SeedVR2 (upscale). Everything goes over ComfyUI's HTTP API, so ComfyUI can run on another machine:
- * its address is the configured comfyui provider's baseUrl (COMFY_URL overrides it). Calls take turns on the GPU
- * with every other model through genai's GPU scheduler, which unloads one model before the next needs the memory;
- * behind the GPU broker (provider "broker": true) the broker orders and unloads instead, for every installation.
+ * a map redrawn as a walk plan, door marks) and SeedVR2 (upscale). Everything goes over ComfyUI's HTTP API through
+ * the GPU broker (the configured comfyui provider's baseUrl, COMFY_URL overrides it), which gives every
+ * installation's work its turn on the GPU and unloads one model before the next needs the memory.
  */
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import sharp from 'sharp';
 import { DATA_DIR, ROOT_DIR } from '../paths';
-import { genai } from '../genai/service';
-import { ComfyError, comfyFetch, comfyProvider, savedImages, submitAndWait, viewImage } from '../genai/comfyclient';
+import { ComfyError, comfyFetch, savedImages, submitAndWait, viewImage } from '../genai/comfyclient';
 
 const KREA = 'krea2_turbo_fp8_scaled.safetensors';
-const SAM = 'sam3.1_multiplex_fp16.safetensors';
 const QWEN = 'qwen_image_2.1_turbo_int8_convrot.safetensors';
 const SEEDVR2 = 'seedvr2_7b_int8_convrot.safetensors';
 /** AnyPaint sees the whole window as a reference this many pixels across (its default 384 loses small objects). */
@@ -23,14 +20,6 @@ const ANYPAINT_REFERENCE = 768;
 const CACHE = path.join(DATA_DIR, 'cache');
 
 export { comfyBase, ComfyError } from '../genai/comfyclient';
-
-const provider = comfyProvider;
-
-/** Run on the GPU when it is free and `model` is loaded (SAM 3 runs as "reader"). */
-function onGpu<T>(model: string, fn: () => Promise<T>): Promise<T> {
-  const p = provider();
-  return p?.[1].gpu ? genai().gpu.group(p[1].gpu).run(p[0], model, p[1], fn) : fn();
-}
 
 type Workflow = Record<string, { class_type: string; inputs: Record<string, unknown> }>;
 
@@ -60,25 +49,12 @@ async function upload(png: Buffer): Promise<string> {
   return out.subfolder ? `${out.subfolder}/${out.name}` : out.name;
 }
 
-/** Queue a workflow and return every image it saved (empty when it saved none). */
-function run(model: string, wf: unknown, timeoutMs = 900_000): Promise<Buffer[]> {
-  return onGpu(model, () => execute(wf, timeoutMs, model));
-}
-
-async function execute(wf: unknown, timeoutMs: number, model: string): Promise<Buffer[]> {
+/** Queue a workflow (the broker gives it its turn on the GPU) and return every image it saved (empty when it saved none). */
+async function run(model: string, wf: unknown, timeoutMs = 900_000): Promise<Buffer[]> {
   const entry = await submitAndWait(wf, { workflow: model, timeoutMs });
   const out: Buffer[] = [];
   for (const img of savedImages(entry)) out.push(await viewImage(img));
   return out;
-}
-
-/** Whether ComfyUI answers. */
-export async function comfyAlive(): Promise<boolean> {
-  try {
-    return (await comfyFetch('/system_stats', { signal: AbortSignal.timeout(4000) })).ok;
-  } catch {
-    return false;
-  }
 }
 
 const one = (imgs: Buffer[], what: string) => {
@@ -126,7 +102,7 @@ export async function kreaContinue(init: Buffer, mask: Buffer, prompt: string, s
   return one(await run(KREA, workflow('krea2_anypaint.json', { init: await upload(init), mask: await upload(mask), prompt, seed, redraw, refmax: ANYPAINT_REFERENCE, checkpoint: KREA })), 'AnyPaint');
 }
 
-/** A disk cache keyed by the image and the request (SAM, Qwen edits and SeedVR2 are deterministic). */
+/** A disk cache keyed by the image and the request (Qwen edits and SeedVR2 are deterministic). */
 function cached(kind: string, png: Buffer, key: string) {
   const dir = path.join(CACHE, kind, crypto.createHash('sha1').update(png).update(`|${key}`).digest('hex'));
   return {
@@ -138,20 +114,6 @@ function cached(kind: string, png: Buffer, key: string) {
       return imgs;
     },
   };
-}
-
-/** SAM 3: one mask per detected object for a prompt ("door", or "tree:40" for up to 40). */
-export async function segment(png: Buffer, prompt: string, threshold = 0.35): Promise<Buffer[]> {
-  const c = cached('sam', png, `${prompt}|${threshold}`);
-  const hit = c.get();
-  if (hit) return hit;
-  try {
-    return c.put(await run('reader', workflow('sam3_detect.json', { ref_1: await upload(png), prompt, threshold, checkpoint: SAM })));
-  } catch (e) {
-    // Nothing found: the empty mask batch fails to save.
-    if (e instanceof ComfyError && /size|empty|shape|0 elements|cannot/i.test(e.message)) return c.put([]);
-    throw e;
-  }
 }
 
 /**

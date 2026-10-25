@@ -59,11 +59,9 @@ const MistSchema = z.object({
   prompt: z.string().min(80).max(900).describe('What drifts in the air of this place, for the image model'),
 });
 
-/** Luna's description of the place's mist, for Krea (a plain one when no model is configured). */
+/** Luna's description of the place's mist, for Krea. */
 export async function designMist(b: MistBrief): Promise<string> {
   const g = genai();
-  const plain = `Drifting ${b.weather === 'none' ? (b.indoor ? 'dusty haze' : 'mist') : `${b.weather} haze`} in tones of ${b.fogColor} and ${b.lightColor}.`;
-  if (g.isProcedural('world.design')) return `${plain} ${FRAMING}`;
   const out = await g.structured('world.design', {
     system: 'You are the art director of a 2D top-down RPG. Each place has a layer of drifting air painted as a tileable texture, laid over unexplored ground and the edges of the place.',
     prompt: `PLACE: ${b.name} (${b.kind}${b.indoor ? ', indoors' : ''}): ${b.description}

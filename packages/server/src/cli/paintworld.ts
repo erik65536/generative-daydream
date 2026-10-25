@@ -27,6 +27,5 @@ await generateArt(w, level === 'essential' ? 'essential' : 'full', {
 });
 linkAssets(w);
 saveWorld(w);
-await genai().releaseGpu();
 const assets = Object.values(w.assets);
 console.log(`Done in ${((Date.now() - t0) / 60000).toFixed(1)} min: ${assets.filter((a) => a.status === 'ok').length} ok, ${assets.filter((a) => a.status === 'failed').length} failed of ${assets.length}.`);

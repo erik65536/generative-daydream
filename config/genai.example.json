@@ -1,63 +1,24 @@
 {
-  "_comment": "Copy to config/genai.json. Each purpose names a provider; 'procedural' needs no model and is always the fallback. Providers sharing a 'gpu' group run one model at a time: the engine unloads one (llama.cpp router /models/unload, ComfyUI /free) before using another.",
+  "_comment": "Copy to config/genai.json. Every text, decision and speech purpose runs on OpenAI (put OPENAI_API_KEY in .env at the repository root, or use \"credential:NAME\" for a systemd credential); every image is painted with ComfyUI behind the GPU broker (docs/gpu-broker.md), which must be running before a world is built. A purpose with no provider is simply off: worlds cannot be built without the world, image and check purposes, and people answer with simple stock replies without npc.decision.",
   "providers": {
-    "llm": {
-      "type": "openai-chat",
-      "baseUrl": "http://127.0.0.1:9931/v1",
-      "model": "qwen3.8-27b",
-      "structured": "json_schema",
-      "vision": true,
-      "concurrency": 1,
-      "timeoutMs": 600000,
-      "gpu": "local",
-      "extraBody": {
-        "chat_template_kwargs": {
-          "enable_thinking": false
-        }
-      }
-    },
-    "decider": {
-      "type": "llamacpp-decision",
-      "baseUrl": "http://127.0.0.1:9931",
-      "model": "vllm-d3-flash",
-      "concurrency": 1,
-      "timeoutMs": 120000,
-      "gpu": "local"
-    },
-    "comfy": {
-      "type": "comfyui",
-      "baseUrl": "http://127.0.0.1:8188",
-      "_comment": "Places, mist and every asset are painted with Krea 2 here. Assets (characters, creatures, objects, icons) use the workflow below: Krea paints the subject on the chroma-key backdrop the prompt writer picked and the cutter model (BiRefNet, ComfyUI's built-in Remove Background) marks it, in one job; the engine cuts it out against the known backdrop and scores the cut. Models: diffusion_models/krea2_turbo_fp8_scaled.safetensors, background_removal/birefnet.safetensors (Comfy-Org/BiRefNet).",
-      "workflow": "config/comfyui/krea2_cutout.json",
-      "checkpoint": "krea2_turbo_fp8_scaled.safetensors",
-      "cutter": "birefnet.safetensors",
-      "steps": 8,
-      "cfg": 1,
-      "concurrency": 1,
-      "timeoutMs": 300000,
-      "gpu": "local"
-    },
     "openai": {
       "type": "openai-responses",
       "apiKey": "env:OPENAI_API_KEY",
       "model": "gpt-6-luna",
       "serviceTier": "flex",
-      "structured": "strict",
-      "vision": true,
       "concurrency": 8,
       "timeoutMs": 900000,
       "reasoningTokens": 12000,
-      "_comment": "Hosted text and structured output. Put OPENAI_API_KEY in .env at the repository root. 'flex' is half price; busy capacity is waited out. 'strict' enforces the schema while decoding."
+      "_comment": "Building worlds: Luna writes and plans; strict structured output enforces each answer's schema while decoding. 'flex' is half price; busy capacity is waited out."
     },
-    "anthropic": {
-      "type": "anthropic",
-      "apiKey": "env:ANTHROPIC_API_KEY",
-      "model": "claude-opus-5-5"
-    },
-    "gemini": {
-      "type": "google",
-      "apiKey": "env:GEMINI_API_KEY",
-      "model": "gemini-2.5-flash"
+    "openai-live": {
+      "type": "openai-responses",
+      "apiKey": "env:OPENAI_API_KEY",
+      "model": "gpt-6-luna",
+      "concurrency": 8,
+      "timeoutMs": 60000,
+      "reasoningTokens": 2000,
+      "_comment": "Play-time calls (conversations, item legends): the standard tier, for low latency."
     },
     "openai-decide": {
       "type": "openai-decision",
@@ -65,95 +26,62 @@
       "model": "gpt-6-luna",
       "concurrency": 8,
       "timeoutMs": 120000,
-      "_comment": "OpenAI decisions endpoint (/v1/decisions), e.g. for image.check."
-    },
-    "openai-live": {
-      "type": "openai-responses",
-      "apiKey": "env:OPENAI_API_KEY",
-      "model": "gpt-6-luna",
-      "structured": "strict",
-      "vision": true,
-      "concurrency": 8,
-      "timeoutMs": 60000,
-      "reasoningTokens": 2000,
-      "_comment": "Play-time calls (NPC conversations): the standard tier, for low latency."
+      "_comment": "OpenAI's decisions endpoint (/v1/decisions): checks of painted art and places."
     },
     "openai-stt": {
       "type": "openai-transcribe",
+      "apiKey": "env:OPENAI_API_KEY",
       "model": "gpt-4o-mini-transcribe",
       "concurrency": 4,
       "timeoutMs": 30000,
-      "_comment": "Speech to text for talking to people (OPENAI_API_KEY from .env). gpt-transcribe also works."
+      "_comment": "Speech to text for talking to people."
+    },
+    "comfy": {
+      "type": "comfyui",
+      "baseUrl": "http://127.0.0.1:8190",
+      "_comment": "The GPU broker in front of ComfyUI (production: the GPU PC's LAN address, with \"apiKey\": \"credential:gpu-broker\"). Places, mist and every asset are painted with Krea 2. Assets use the workflow below: Krea paints the subject on the chroma-key backdrop the prompt writer picked and BiRefNet marks it, in one job; the engine cuts it out against the known backdrop and scores the cut. Models: diffusion_models/krea2_turbo_fp8_scaled.safetensors, background_removal/birefnet.safetensors; places also need Qwen-Image 2.1 Turbo, SeedVR2 and the Krea 2 AnyPaint LoRA (docs/places.md).",
+      "workflow": "config/comfyui/krea2_cutout.json",
+      "checkpoint": "krea2_turbo_fp8_scaled.safetensors",
+      "cutter": "birefnet.safetensors",
+      "steps": 8,
+      "cfg": 1,
+      "concurrency": 1,
+      "timeoutMs": 300000
     }
   },
   "purposes": {
     "world.design": {
-      "provider": "llm",
-      "temperature": 0.9,
+      "provider": "openai",
       "maxTokens": 8000,
       "retries": 2,
-      "strongModel": "gpt-6.1-sol",
-      "_comment": "strongModel: asked once, only when a painted place still cannot be used after Luna's reading check, before it is repainted. Defaults to gpt-6.1-sol on an OpenAI provider; null turns it off. It is charged at its OpenAI list price ($2 input, $0.10 cached, $10 output per million tokens; flex halves them); a provider can override that with \"modelPricing\": {\"gpt-6.1-sol\": {\"inputPerM\", \"cachedPerM\", \"outputPerM\"}}."
+      "extraBody": { "reasoning": { "effort": "medium" } },
+      "_comment": "Concept, world plan, story, places' plans and checks. strongModel (default gpt-6.1-sol, null turns it off) checks whole paintings, exits and level reviews, at its list price ($2 input, $0.10 cached, $10 output per million tokens; flex halves them)."
     },
-    "world.content": {
-      "provider": "llm",
-      "temperature": 0.85,
-      "maxTokens": 9000,
-      "retries": 2
-    },
-    "npc.decision": {
-      "provider": "llm",
-      "temperature": 0.7,
-      "maxTokens": 900,
-      "retries": 1
-    },
-    "npc.dialogue": {
-      "provider": "llm",
-      "temperature": 0.8,
-      "maxTokens": 400
-    },
-    "narration": {
-      "provider": "llm",
-      "temperature": 0.8,
-      "maxTokens": 400
-    },
+    "world.content": { "provider": "openai", "maxTokens": 9000, "retries": 2, "extraBody": { "reasoning": { "effort": "low" } } },
     "image.prompt": {
-      "provider": "llm",
-      "temperature": 0.7,
+      "provider": "openai",
       "maxTokens": 4000,
       "retries": 1,
+      "extraBody": { "reasoning": { "effort": "low" } },
       "_comment": "Writes each asset's Krea prompt and picks its chroma-key backdrop (green, blue or magenta) and, for creatures, the view (front or side)."
     },
-    "image.sprite": {
-      "provider": "comfy",
-      "maxAttempts": 3
-    },
-    "image.icon": {
-      "provider": "comfy",
-      "maxAttempts": 2
-    },
-    "image.check": {
-      "provider": "decider",
-      "minScore": 6,
-      "_comment": "Judges each painting's content (subject, framing, pose). The cut itself is scored without a model, against the known backdrop."
-    },
-    "speech.input": {
-      "provider": "openai-stt"
-    }
+    "npc.decision": { "provider": "openai-live", "maxTokens": 900, "retries": 1, "extraBody": { "reasoning": { "effort": "low" } } },
+    "narration": { "provider": "openai-live", "maxTokens": 400, "extraBody": { "reasoning": { "effort": "low" } } },
+    "image.sprite": { "provider": "comfy", "width": 832, "height": 1216, "maxAttempts": 3 },
+    "image.icon": { "provider": "comfy", "width": 1024, "height": 1024, "maxAttempts": 2 },
+    "image.check": { "provider": "openai-decide", "minScore": 3.5, "_comment": "Judges each painting's content (subject, framing, pose). The cut itself is scored without a model, against the known backdrop." },
+    "speech.input": { "provider": "openai-stt" }
   },
-  "combineNpcDecisionAndDialogue": true,
-  "worldGenParallelism": 1,
-  "gpuIdleUnloadMs": 120000,
   "jobConcurrency": 1,
   "waitForModelsMs": 1800000,
   "spending": {
     "dailyPerUserUsd": 0.5,
     "dailyTotalUsd": 3,
     "adminsUnlimited": true,
-    "_comment": "Daily budgets for paid (cloud) models in dollars: per player (an administrator can set each player's own on the Users page) and for the whole server. Administrators are unlimited unless given their own budget. Providers may set \"pricing\": {\"inputPerM\", \"cachedPerM\", \"outputPerM\"}; OpenAI providers default to gpt-6-luna prices."
+    "_comment": "Daily budgets for OpenAI in dollars: per player (an administrator can set each player's own on the Users page) and for the whole server. Administrators are unlimited unless given their own budget. Providers may set \"pricing\": {\"inputPerM\", \"cachedPerM\", \"outputPerM\"}; OpenAI providers default to gpt-6-luna prices."
   },
   "animation": {
-    "_comment": "Actor animation (docs/world-art.md, Characters in motion): a 3D model, rig and clip sheets in eight directions per character and creature, made in the background after the art. Paths are this machine's. python: one with numpy, scipy and Pillow (ComfyUI's embedded Python). library: Quaternius' Universal Animation Library (CC0, the glTF from its Unreal-Godot folder). skintokens (optional, for animals and other bodies): a SkinTokens checkout with its own venv; device cuda takes the GPU alone (about 14 GB), cpu takes 12-18 minutes per creature. pitch: degrees the sprite camera looks down at figures standing on the top-down maps (35, a classic three-quarter view). Leave this block out to keep still images.",
+    "_comment": "Actor animation (docs/world-art.md, Characters in motion): a 3D model, rig and clip sheets in eight directions per character and creature, made in the background after the art. Paths are this machine's. python: one with numpy, scipy and Pillow (ComfyUI's embedded Python has them). library: Quaternius' Universal Animation Library (CC0, the glTF from its Unreal-Godot folder). skintokens (optional, for animals and other bodies): a SkinTokens checkout with its own venv; on the GPU it takes a hold on the whole GPU from the broker (about 14 GB), cpu takes 12-18 minutes per creature. pitch: degrees the sprite camera looks down at figures standing on the top-down maps (35, a classic three-quarter view). Leave this block out to keep still images.",
     "python": "C:/path/to/ComfyUI/python_embeded/python.exe",
     "library": "C:/path/to/UAL1_Standard.glb",
     "skintokens": { "dir": "C:/path/to/skintokens", "python": "C:/path/to/skintokens/.venv/Scripts/python.exe", "device": "cuda" },

@@ -36,5 +36,4 @@ try {
   process.exitCode = 1;
 } finally {
   clearInterval(timer);
-  await genai().releaseGpu();
 }

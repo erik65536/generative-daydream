@@ -63,7 +63,7 @@ export interface MockModels {
 }
 
 /**
- * A mock OpenAI-compatible server for the text purposes. It answers like a weak model would: valid JSON with filler
+ * A mock of OpenAI's Responses API for the text purposes. It answers like a weak model would: valid JSON with filler
  * text, a real model's sense only where the build checks it (the atlas names each slot, towns have their services).
  * `junkOnce` names schemas whose first answer is broken JSON (to exercise retries).
  */
@@ -74,30 +74,30 @@ export async function mockModels(opts: { junkOnce?: string[]; npc?: (prompt: str
     req.on('data', (d) => (body += d));
     req.on('end', () => {
       const data = JSON.parse(body);
-      const rf = data.response_format;
-      const name: string = rf?.json_schema?.name ?? 'text';
+      const format = data.text?.format;
+      const name: string = format?.name ?? 'text';
       let content: string;
-      if (!rf) content = 'Well met, traveler.';
-      else if (name === 'npc_turn' && opts.npc) content = JSON.stringify(opts.npc(JSON.stringify(data.messages)));
+      if (!format) content = 'Well met, traveler.';
+      else if (name === 'npc_turn' && opts.npc) content = JSON.stringify(opts.npc(JSON.stringify(data.input)));
       else if (opts.junkOnce?.includes(name) && !seen.includes(name)) content = 'Sure! Here it is: {"arcs": [ oops';
       else {
-        const out = fake(rf.json_schema.schema, rf.json_schema.schema, name) as Json;
+        const out = fake(format.schema, format.schema, name) as Json;
         if (name === 'world_atlas') {
-          const zones = ((rf.json_schema.schema as Json).properties as Record<string, Json>).zones!.items as Json;
+          const zones = ((format.schema as Json).properties as Record<string, Json>).zones!.items as Json;
           const slots = (zones.properties as Record<string, Json>).slotId!.enum as string[];
           out.zones = slots.map((slotId, i) => ({ ...((out.zones as Json[])[i % (out.zones as Json[]).length] as Json), slotId }));
           (out.regions as Json[]).forEach((r, i) => (r.index = i));
         }
         if (name === 'town_content') {
           const npcs = out.npcs as Json[];
-          const roles: [string, string | null][] = [['innkeeper', null], ['merchant', 'general'], ['merchant', 'weapons'], ['trainer', null], ['guard', null], ['companion', null]];
+          const roles: [string, string | null][] = [['innkeeper', null], ['merchant', 'general'], ['merchant', 'weapons'], ['trainer', null], ['guard', null], ['companion', null], ['crafter', null]];
           roles.forEach(([role, kind], i) => (npcs[i] = { ...(npcs[i % npcs.length] ?? npcs[0]), name: `Resident ${++counter}`, role, merchantKind: kind }));
         }
-        content = '```json\n' + JSON.stringify(out) + '\n```';
+        content = JSON.stringify(out);
       }
       seen.push(name);
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content } }] }));
+      res.end(JSON.stringify({ status: 'completed', output_text: content, usage: { input_tokens: 100, output_tokens: 50 } }));
     });
   });
   await new Promise<void>((r) => server.listen(0, () => r()));
@@ -105,10 +105,9 @@ export async function mockModels(opts: { junkOnce?: string[]; npc?: (prompt: str
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'gd-models-'));
   const before = process.env.GD_GENAI_CONFIG;
   fs.writeFileSync(path.join(dir, 'genai.json'), JSON.stringify({
-    providers: { mock: { type: 'openai-chat', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'mock', structured: 'json_schema', concurrency: 8 } },
+    // A local mock: free (no pricing), so no budget applies.
+    providers: { mock: { type: 'openai-responses', baseUrl: `http://127.0.0.1:${port}/v1`, model: 'mock', apiKey: 'test', concurrency: 8, pricing: { inputPerM: 0, outputPerM: 0 } } },
     purposes: Object.fromEntries(['world.design', 'world.content', ...(opts.npc ? ['npc.decision', 'narration'] : [])].map((p) => [p, { provider: 'mock', retries: 1 }])),
-    combineNpcDecisionAndDialogue: true,
-    worldGenParallelism: 6,
   }));
   process.env.GD_GENAI_CONFIG = path.join(dir, 'genai.json');
   reloadGenAI();

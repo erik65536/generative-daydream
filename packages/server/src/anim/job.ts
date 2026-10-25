@@ -78,7 +78,7 @@ export async function runAnimateJob(job: WorldGenJob, worldId: string): Promise<
   job.push(`Animating ${rec.key} as a ${body}`, 'step');
   try {
     const image = fs.readFileSync(path.join(worldAssetDir(worldId), rec.file!));
-    const r = await animateActor({ worldId, key: rec.key, image, body }, { redoFrom: redoOf(worldId, rec.key), onStep: (m) => job.push(m), rank: 4 });
+    const r = await animateActor({ worldId, key: rec.key, image, body }, { redoFrom: redoOf(worldId, rec.key), onStep: (m) => job.push(m) });
     // Onto the world as it is now (a build or the studio may have saved it meanwhile), and only if the picture
     // is still the one animated.
     const w = loadWorld(worldId);

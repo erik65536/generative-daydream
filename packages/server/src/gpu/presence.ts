@@ -1,8 +1,8 @@
 /**
- * What each process is doing on the GPU, where every other process can see it. The schedulers that order GPU work
- * live in memory (genai's GPU scheduler, a build's GPU queue, a CLI run's jobs), and in development the job worker
- * and CLI runs are separate processes from the web server: each process publishes a snapshot of its GPU calls,
- * build queues and running jobs to the shared database every second or so, and the admin GPU page reads them all.
+ * What each process is doing on the GPU, where every other process can see it. A build's GPU queue and a CLI run's
+ * jobs live in memory, and in development the job worker and CLI runs are separate processes from the web server:
+ * each process publishes a snapshot of its build queues and running jobs to the shared database every second or so,
+ * and the admin GPU page reads them all (the GPU broker reports its own queue).
  * Nothing here orders work; it only reports it.
  *
  * Also here: the admins' switches every process obeys (pause GPU work, pause background animation), the log of
@@ -23,17 +23,6 @@ export interface WorkTag {
   kind?: string;
 }
 
-export interface GpuCall {
-  group: string;
-  provider: string;
-  model: string;
-  rank: number;
-  /** Running on the GPU now (else waiting for its turn). */
-  running: boolean;
-  since: number;
-  tag?: WorkTag;
-}
-
 export interface BuildQueueState {
   tag?: WorkTag;
   running?: { model: string; priority: number; since: number };
@@ -48,7 +37,6 @@ export interface TaskState {
 }
 
 export interface ProcessState {
-  calls: GpuCall[];
   builds: BuildQueueState[];
   tasks: TaskState[];
 }
@@ -114,7 +102,7 @@ function schedule(ms: number) {
   timer.unref?.();
 }
 
-/** Add something that reports GPU work (a scheduler group, a build queue, a job); returns its removal. */
+/** Add something that reports GPU work (a build queue, a job); returns its removal. */
 export function report(src: Source): () => void {
   sources.add(src);
   touch();
@@ -132,11 +120,10 @@ export function touch() {
 }
 
 export function snapshot(): ProcessState {
-  const out: ProcessState = { calls: [], builds: [], tasks: [] };
+  const out: ProcessState = { builds: [], tasks: [] };
   for (const s of sources) {
     try {
       const p = s();
-      out.calls.push(...(p.calls ?? []));
       out.builds.push(...(p.builds ?? []));
       out.tasks.push(...(p.tasks ?? []));
     } catch {
@@ -196,7 +183,7 @@ export interface Control {
 
 const controlCache = new Map<ControlKey, { v: Control | null; t: number }>();
 
-/** A switch, read at most every half second (the GPU scheduler asks often). */
+/** A switch, read at most every half second (waiting work asks often). */
 export function control(key: ControlKey): Control | null {
   const c = controlCache.get(key);
   if (c && Date.now() - c.t < 500) return c.v;

@@ -104,11 +104,7 @@ export function startWorker(opts: { concurrency?: number; quiet?: boolean } = {}
       const rec = claimNext(HOLDER, { noAnimation: !!control('animationPaused') });
       if (!rec) break;
       if (!opts.quiet) console.log(`[worker ${HOLDER}] ${rec.attempts > 1 ? 'resuming' : 'starting'} ${rec.kind} job ${rec.id} for ${rec.worldId}`);
-      const p = run(rec).finally(async () => {
-        running.delete(p);
-        // Free the GPU once there is nothing left to do (the next job may need other models).
-        if (!running.size) await genai().releaseGpu().catch(() => undefined);
-      });
+      const p = run(rec).finally(() => running.delete(p));
       running.add(p);
     }
   };

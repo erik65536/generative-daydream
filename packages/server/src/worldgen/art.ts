@@ -63,14 +63,6 @@ async function tries<T>(label: string, report: (msg: string) => void, fn: () => 
   }
 }
 
-/** Run tasks with at most `n` in flight. */
-async function pool<T>(items: T[], n: number, fn: (item: T) => Promise<void>): Promise<void> {
-  let next = 0;
-  await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => {
-    while (next < items.length) await fn(items[next++]!);
-  }));
-}
-
 // ------------------------------------------------------------------------------------ plan
 
 /** One asset the world uses, with its brief as derived from the world and as the owner customised it. */
@@ -151,15 +143,15 @@ export const PromptBatch = z.object({ prompts: z.array(promptEntry(['key'])) });
  * backdrop and view. Assets the writer leaves out fall back to a template.
  */
 export async function writeImagePrompts(w: WorldDefinition, plan: AssetRecord[], report: (msg: string) => void, shouldStop?: () => boolean, onCount?: (done: number, total: number) => void, notes?: Map<string, string>): Promise<void> {
-  if (genai().isProcedural('image.prompt')) return;
+  if (!genai().configured('image.prompt')) return;
   const todo = plan.filter((r) => !r.imagePrompt || !r.backdrop);
   const system = imagePromptSystem();
   const BATCH = 6;
   let written = 0, finished = 0;
   const batches: AssetRecord[][] = [];
   for (let i = 0; i < todo.length; i += BATCH) batches.push(todo.slice(i, i + BATCH));
-  // Batches run side by side (a hosted model answers several at once); each is kept as soon as it is written.
-  await pool(batches, Math.max(1, genai().config.worldGenParallelism), async (batch) => {
+  // Batches run side by side (as many as the provider's concurrency allows); each is kept as soon as it is written.
+  await Promise.all(batches.map(async (batch) => {
     if (shouldStop?.()) return;
     const briefs = batch
       .map((r) => `[${r.key}] ${assetBrief(r, w.concept.artStyle)}${r.imagePrompt ? `\nTHE PROMPT IS GIVEN (return it unchanged; choose only its backdrop and view): ${r.imagePrompt}` : ''}${notes?.get(r.key) ? `\nEARLIER ATTEMPTS WERE REJECTED: ${notes.get(r.key)}. Write the prompt so the image avoids this.` : ''}`)
@@ -188,7 +180,7 @@ export async function writeImagePrompts(w: WorldDefinition, plan: AssetRecord[],
       onCount?.(Math.min(todo.length, ++finished * BATCH), todo.length);
     }
     report(`Wrote ${written}/${todo.length} image prompts`);
-  });
+  }));
 }
 
 // ------------------------------------------------------------------------------------ production
@@ -235,7 +227,7 @@ export async function generateArt(w: WorldDefinition, level: 'essential' | 'full
  * scores better, so nothing gets worse; after the last pass the best attempt stays.
  */
 async function repairWeak(w: WorldDefinition, plan: AssetRecord[], o: ArtOptions, gpu: (work: () => Promise<void>) => Promise<void>) {
-  const minScore = genai().purpose('image.check').minScore ?? 6;
+  const minScore = genai().config.purposes['image.check']?.minScore ?? 6;
   const outDir = worldAssetDir(w.id);
   const tmp = path.join(outDir, '.repair');
   const fileFor = (key: string) => `${key.replace(/[^a-z0-9_.-]/gi, '_')}.png`;

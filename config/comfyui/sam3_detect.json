@@ -1,8 +1,0 @@
-{
-  "1": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "{{checkpoint}}" } },
-  "2": { "class_type": "CLIPTextEncode", "inputs": { "clip": ["1", 1], "text": "{{prompt}}" } },
-  "3": { "class_type": "LoadImage", "inputs": { "image": "{{ref_1}}" } },
-  "4": { "class_type": "SAM3_Detect", "inputs": { "model": ["1", 0], "image": ["3", 0], "conditioning": ["2", 0], "threshold": "{{threshold}}", "refine_iterations": 2, "individual_masks": true } },
-  "5": { "class_type": "MaskToImage", "inputs": { "mask": ["4", 0] } },
-  "6": { "class_type": "SaveImage", "inputs": { "filename_prefix": "gd_analysis/sam", "images": ["5", 0] } }
-}

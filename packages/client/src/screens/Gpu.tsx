@@ -173,9 +173,6 @@ export function GpuAdmin({ me }: { me: Me }) {
           >
             {v?.control.animationPaused ? 'Resume animation' : 'Pause animation'}
           </button>
-          <button className="btn danger" disabled={busy || !v} onClick={() => act(() => api.gpuUnload(), 'Unload every model on the GPU (ComfyUI and the local LLM servers)?\n\nWork in progress reloads what it needs, which takes time.', 'Models unloaded.')}>
-            Unload models
-          </button>
           <div className="spacer" />
           {notice && <span className="small muted">{notice}</span>}
           {error && <span className="error-text">{error}</span>}
@@ -205,44 +202,37 @@ export function GpuAdmin({ me }: { me: Me }) {
               ) : (
                 <Empty>GPU memory unknown (no nvidia-smi, and ComfyUI is not answering).</Empty>
               )}
-              {!v.groups.length && <Empty>No GPU groups configured.</Empty>}
-              {v.groups.map((g) => (
-                <div key={g.group} className="gpu-group">
+              {!v.broker.up ? (
+                <Empty>{v.broker.error ?? 'The GPU broker is not answering.'}</Empty>
+              ) : (
+                <div className="gpu-group">
                   <div className="row small wrap" style={{ gap: 8 }}>
-                    <span className="badge gray">{g.group}</span>
-                    {g.holder ? (
-                      <>
-                        <span>held by</span> <Role role={g.holder.role} /> <span className="muted">{g.holder.label}</span>
-                      </>
-                    ) : (
-                      <span className="muted">free</span>
-                    )}
-                    {g.lastModel && <span className="dim">· last model <b className="muted">{g.lastModel}</b></span>}
+                    <span className="badge gray">broker</span>
+                    {v.broker.resident ? <span>loaded: <b>{v.broker.resident.model}</b> <span className="dim">({v.broker.resident.adapter})</span></span> : <span className="muted">nothing loaded</span>}
+                    {!!v.broker.down?.length && <span className="badge red">down: {v.broker.down.join(', ')}</span>}
                   </div>
-                  {g.running.map((c, i) => (
-                    <div key={i} className="gpu-running">
+                  {v.broker.running && (
+                    <div className="gpu-running">
                       <div className="row small" style={{ gap: 8 }}>
                         <span className="badge green">running</span>
-                        <b>{c.model}</b>
-                        <span className="dim">{c.provider}</span>
+                        <b>{v.broker.running.model}</b>
+                        <span className="dim">{v.broker.running.client}</span>
                         <div className="spacer" />
-                        <span className="muted">{ago(now - c.since)}</span>
+                        {v.broker.running.startedAt && <span className="muted">{ago(now - v.broker.running.startedAt)}</span>}
                       </div>
-                      <div className="small" style={{ marginTop: 4 }}>{describeTag(c.tag)} <span className="dim">· {c.process}</span></div>
+                      <div className="small" style={{ marginTop: 4 }}>{describeTag(v.broker.running.tag)}</div>
                     </div>
-                  ))}
-                  {!g.running.length && g.holder && <div className="small dim" style={{ marginTop: 4 }}>No call reported running (a process on older code reports none).</div>}
-                  {!!g.routerLoaded.length && <div className="small muted" style={{ marginTop: 4 }}>LLM router has loaded: {g.routerLoaded.join(', ')}</div>}
-                  {!!g.waiting.length && (
+                  )}
+                  {!!v.broker.queued?.length && (
                     <div className="small" style={{ marginTop: 4 }}>
-                      Waiting for it:{' '}
-                      {g.waiting.map((w) => (
-                        <span key={w.holder} className="muted">{w.label} (rank {w.rank}, {ago(now - w.since)}) </span>
+                      Waiting:{' '}
+                      {v.broker.queued.map((w) => (
+                        <span key={w.id} className="muted">{w.model} for {w.client} (rank {w.rank}, {ago(now - w.submittedAt)}) </span>
                       ))}
                     </div>
                   )}
                 </div>
-              ))}
+              )}
             </Panel>
 
             <Panel title="Throughput">
@@ -342,7 +332,6 @@ export function GpuAdmin({ me }: { me: Me }) {
                       {p.state.tasks.map((t, i) => (
                         <div key={i} className="small" style={{ marginTop: 4 }}>{t.tag.worldId}: {t.step} <span className="dim">({Math.round(t.progress * 100)}%, {ago(now - t.since)})</span></div>
                       ))}
-                      {p.state.calls.filter((c) => c.running).map((c, i) => <div key={i} className="small muted">on the GPU: {c.model}, {ago(now - c.since)}</div>)}
                     </div>
                   ))}
                   <div className="hint">CLI runs are outside the job queue: stop them in their terminal. Their ComfyUI prompts can be removed or interrupted above.</div>

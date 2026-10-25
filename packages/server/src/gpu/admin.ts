@@ -2,12 +2,11 @@
  * The admin GPU page's API: one view of everything that uses the GPU, and the controls over it.
  *
  * The view joins the layers GPU work passes through: the job queue (jobs waiting and running, in every process),
- * each process's published presence (its GPU scheduler's calls, a build's GPU queue, CLI runs' jobs), the GPU lease
- * in the shared database (which process has the GPU and the model it last ran), ComfyUI's queue (whoever queued
- * the prompt) and the GPU's memory. Controls act through the same layers: the job queue's rows (cancel, priority),
- * the switches every process reads (pause), and ComfyUI itself (remove or interrupt a prompt, free its models),
- * so they work on jobs running in the separate worker process too. Work from CLI runs is not in the job queue:
- * only its ComfyUI prompts can be cleared.
+ * each process's published presence (a build's GPU queue, CLI runs' jobs), the GPU broker's queue (every
+ * installation's work, the model it has loaded), ComfyUI's queue (whoever queued the prompt) and the GPU's memory.
+ * Controls act through the same layers: the job queue's rows (cancel, priority), the switches every process reads
+ * (pause), and the broker (remove or interrupt a prompt), so they work on jobs running in the separate worker
+ * process too. Work from CLI runs is not in the job queue: only its ComfyUI prompts can be cleared.
  *
  * Administrators only; destructive actions need `confirm: true` and are written to the audit log.
  */
@@ -16,50 +15,12 @@ import { z } from 'zod';
 import type { WorldDefinition } from '@gd/shared';
 import { adminOnly, auth, type AuthedRequest } from '../auth';
 import { listWorlds, loadWorld } from '../storage';
-import { genai } from '../genai/service';
-import { evictAll, gpuLeases } from '../genai/gpu';
-import type { ProviderConfig } from '../genai/types';
+import { comfyFetch } from '../genai/comfyclient';
 import { ACTIVE, finishedCounts, finishedJobs, getJobRecord, HOLDER, moveJob, queuedJobs, queuePosition, requestCancel, runningJobs, setPriority, type JobRecord } from '../jobs/queue';
 import { animationQueue, failedActors, retryActor } from '../anim/job';
 import { comfyBase } from '../worldgen/comfy';
 import { audit, auditLog, control, processes, setControl, type ProcessRow } from './presence';
 import { dropJobPrompts, dropPrompt, readDevice, readHistory, readQueue } from './comfyqueue';
-
-const root = (url: string) => url.replace(/\/+$/, '').replace(/\/v1$/, '');
-
-/** Providers sharing a GPU, by group. */
-function gpuGroups(): Map<string, Map<string, ProviderConfig>> {
-  const out = new Map<string, Map<string, ProviderConfig>>();
-  for (const [name, cfg] of Object.entries(genai().config.providers ?? {})) {
-    if (!cfg.gpu) continue;
-    if (!out.has(cfg.gpu)) out.set(cfg.gpu, new Map());
-    out.get(cfg.gpu)!.set(name, cfg);
-  }
-  return out;
-}
-
-let loadedCache: { t: number; v: Record<string, string[]> } | null = null;
-
-/** Models the local LLM routers report loaded, by GPU group (cached 3 s). */
-async function routerModels(groups: Map<string, Map<string, ProviderConfig>>): Promise<Record<string, string[]>> {
-  if (loadedCache && Date.now() - loadedCache.t < 3000) return loadedCache.v;
-  const v: Record<string, string[]> = {};
-  for (const [g, members] of groups) {
-    const seen = new Set<string>();
-    for (const cfg of members.values()) {
-      if (cfg.type === 'comfyui' || !cfg.baseUrl || seen.has(root(cfg.baseUrl))) continue;
-      seen.add(root(cfg.baseUrl));
-      try {
-        const data = (await (await fetch(`${root(cfg.baseUrl)}/models`, { signal: AbortSignal.timeout(2000) })).json()) as { data?: { id: string; status?: { value?: string } }[] };
-        for (const m of data.data ?? []) if (m.status?.value && m.status.value !== 'unloaded') (v[g] ??= []).push(m.id);
-      } catch {
-        // Not a router, or down.
-      }
-    }
-  }
-  loadedCache = { t: Date.now(), v };
-  return v;
-}
 
 let worldsCache: { t: number; titles: Map<string, string>; animation: { worldId: string; title: string; waiting: number; failed: { key: string; error?: string }[] }[] } | null = null;
 
@@ -79,7 +40,18 @@ function worldsInfo(fresh = false) {
   return worldsCache;
 }
 
-/** Who a lease holder or job worker is, in words. */
+/** The GPU broker's own queue: every installation's work, what runs and what it has loaded. */
+async function brokerQueue(): Promise<{ up: boolean; error?: string; resident?: unknown; running?: unknown; queued?: unknown[]; down?: string[] }> {
+  try {
+    const res = await comfyFetch('/broker/queue', { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return { up: false, error: `HTTP ${res.status}` };
+    return { up: true, ...((await res.json()) as object) };
+  } catch (e) {
+    return { up: false, error: `The GPU broker is not answering (${(e as Error).message}); start it with npm run broker` };
+  }
+}
+
+/** Who a job worker is, in words. */
 function describeHolder(holder: string | undefined, procs: ProcessRow[]): { label: string; role: string } {
   if (!holder) return { label: '—', role: 'none' };
   const p = procs.find((x) => x.holder === holder);
@@ -114,11 +86,8 @@ export async function gpuSnapshot(opts: { fresh?: boolean } = {}) {
   const now = Date.now();
   const base = comfyBase();
   const procs = processes();
-  const groups = gpuGroups();
-  const [device, comfy, history, loaded] = await Promise.all([readDevice(base), readQueue(base), readHistory(base), routerModels(groups)]);
+  const [device, comfy, history, broker] = await Promise.all([readDevice(base), readQueue(base), readHistory(base), brokerQueue()]);
   const { titles, animation } = worldsInfo(opts.fresh);
-  const leases = gpuLeases();
-  const groupNames = [...new Set([...groups.keys(), ...leases.map((l) => l.group)])];
   const counts = finishedCounts(now - 24 * 3600_000);
   const sum = (f: (c: (typeof counts)[number]) => boolean) => counts.filter(f).reduce((a, c) => a + c.n, 0);
   const actors6h = finishedCounts(now - 6 * 3600_000).filter((c) => c.kind === 'animate' && c.status === 'done').reduce((a, c) => a + c.n, 0);
@@ -127,19 +96,7 @@ export async function gpuSnapshot(opts: { fresh?: boolean } = {}) {
     thisProcess: HOLDER,
     control: { paused: control('paused'), animationPaused: control('animationPaused') },
     device,
-    groups: groupNames.map((g) => {
-      const l = leases.find((x) => x.group === g);
-      // The call running on this group, in whichever process has it.
-      const running = procs.filter((p) => !p.stale).flatMap((p) => p.state.calls.filter((c) => c.group === g && c.running).map((c) => ({ ...c, holder: p.holder, process: describeHolder(p.holder, procs).label, role: p.role })));
-      return {
-        group: g,
-        holder: l?.held ? { id: l.holder, ...describeHolder(l.holder, procs) } : null,
-        lastModel: l?.model || null,
-        routerLoaded: loaded[g] ?? [],
-        running,
-        waiting: (l?.waiting ?? []).map((w) => ({ ...w, ...describeHolder(w.holder, procs) })),
-      };
-    }),
+    broker,
     processes: procs.map((p) => ({ ...p, isThis: p.holder === HOLDER })),
     jobs: {
       running: runningJobs().map((j) => jobView(j, titles, procs)),
@@ -229,16 +186,6 @@ export function mountGpuAdmin(app: Express) {
     } catch (e) {
       res.status(502).json({ error: (e as Error).message });
     }
-  });
-
-  /** Unload every model on the GPU's servers (ComfyUI frees its models; LLM routers unload theirs). */
-  r.post('/unload', async (req, res) => {
-    if (!needConfirm(req, res)) return;
-    const groups = gpuGroups();
-    for (const members of groups.values()) await evictAll(members);
-    loadedCache = null;
-    audit(admin(req), 'unload models', [...groups.keys()].join(', ') || 'no GPU groups');
-    res.json({ ok: true, groups: [...groups.keys()] });
   });
 
   /** Try a failed animation actor again. */

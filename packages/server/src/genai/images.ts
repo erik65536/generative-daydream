@@ -138,66 +138,55 @@ export interface Review {
 }
 
 /**
- * Score the painting 0-10 for content with the configured checker (a decision model or a vision LLM). It sees the
- * painting itself, on its plain key-colour backdrop: the cut is judged by the known-backdrop score, not here.
+ * Score the painting 0-10 for content with the checker (Luna's decision model). It sees the painting itself, on its
+ * plain key-colour backdrop: the cut is judged by the known-backdrop score, not here.
  */
 export async function qualityCheck(painting: Buffer, rec: Pick<ImageRecord, 'kind' | 'prompt' | 'view'>, key: KeyColour): Promise<Review | null> {
   const g = genai();
-  if (g.isProcedural('image.check')) return null;
+  if (!g.configured('image.check')) return null;
   const view = await sharp(painting).removeAlpha().resize(512, 512, { fit: 'inside' }).png().toBuffer();
   const pose = rec.kind === 'sprite' ? POSE_QUESTION[rec.view ?? 'front'] : undefined;
   const state = `A generated game asset, painted on a plain ${key} studio backdrop (the backdrop is not part of it; separate pieces of one subject, such as coins in a heap or a swarm, are fine). It should depict: "${rec.prompt}". Requirements: ${CRITERIA[rec.kind]}`;
   try {
-    if (g.isDecision('image.check')) {
-      const a = await g.decide('image.check', {
-        state,
-        images: [view],
-        questions: {
-          quality: { type: 'score', instructions: 'Judged as a game asset shown small on screen (not as a standalone artwork): how usable is it?', criteria: LEVELS },
-          match: { type: 'score', instructions: 'How well does the image match the description?', criteria: MATCH_LEVELS },
-          single: { type: 'noul', instructions: 'Does the image show a single subject: one character, creature, object or item? A pile, set, swarm or arrangement that forms one thing counts as one.' },
-          whole: { type: 'noul', instructions: 'Is the whole subject visible, not cut off by the image edge?' },
-          dark: { type: 'noul', instructions: 'Is the subject so dark or murky that its shape and details are hard to make out?' },
-          text: { type: 'noul', instructions: 'Does the image contain any text, letters, watermark or signature?' },
-          ...(pose ? { pose: { type: 'noul' as const, instructions: pose } } : {}),
-          ...(rec.view === 'side' ? { facing: { type: 'choice' as const, instructions: "Which side of the image is the creature's head toward?", criteria: { left: 'the left edge of the image', right: 'the right edge of the image', front: 'it faces the viewer' } } } : {}),
-        },
-      });
-      if (process.env.GD_DEBUG_CHECK) console.log('[check]', JSON.stringify(Object.fromEntries(Object.entries(a).map(([k, v]) => [k, v.type === 'score' ? +v.score.toFixed(2) : v.type === 'noul' ? +v.noul.toFixed(2) : v.choice]))));
-      const lvl = (k: string) => {
-        const x = a[k];
-        return x?.type === 'score' ? (x.score / (LEVELS.length - 1)) * 10 : 5;
-      };
-      const yes = (k: string) => {
-        const x = a[k];
-        return x?.type === 'noul' ? x.noul : 0.5;
-      };
-      const problems: string[] = [];
-      let score = Math.min(lvl('quality'), lvl('match') + 1);
-      const penalize = (cond: boolean, why: string, by = 3) => {
-        if (!cond) return;
-        score -= by;
-        problems.push(why);
-      };
-      penalize(yes('single') < 0.5, 'more than one subject');
-      penalize(yes('whole') < 0.5, 'subject cut off');
-      penalize(yes('dark') > 0.55, 'too dark to read');
-      penalize(yes('text') > 0.5, 'contains text');
-      if (pose) penalize(yes('pose') < 0.5, rec.view === 'side' ? 'not seen from the side in a neutral pose' : 'not seen from the front in a neutral standing pose');
-      if (lvl('match') < 4) problems.push('does not match the description');
-      const f = a.facing;
-      const facing = f?.type === 'choice' && (f.probabilities[f.choice] ?? 0) > 0.7 ? (f.choice as Review['facing']) : undefined;
-      return { score: Math.max(0, Math.min(10, score)), problems, facing };
-    }
-    const r = await g.structured('image.check', {
-      system: 'You are a strict art director reviewing generated game assets. Judge only what you see.',
-      prompt: `${state}${pose ? `\nPose: ${pose}` : ''}\nScore 0-10 for how usable this is as a game asset (10 = perfect, 6 = acceptable, below 5 = must regenerate). List concrete problems.${rec.view === 'side' ? ' Also say which way the creature faces: left, right or front.' : ''}`,
-      schema: z.object({ score: z.coerce.number().min(0).max(10), problems: z.array(z.string()).max(6), facing: z.enum(['left', 'right', 'front']).optional() }),
-      name: 'image_review',
+    const a = await g.decide('image.check', {
+      state,
       images: [view],
-      maxTokens: 400,
+      questions: {
+        quality: { type: 'score', instructions: 'Judged as a game asset shown small on screen (not as a standalone artwork): how usable is it?', criteria: LEVELS },
+        match: { type: 'score', instructions: 'How well does the image match the description?', criteria: MATCH_LEVELS },
+        single: { type: 'noul', instructions: 'Does the image show a single subject: one character, creature, object or item? A pile, set, swarm or arrangement that forms one thing counts as one.' },
+        whole: { type: 'noul', instructions: 'Is the whole subject visible, not cut off by the image edge?' },
+        dark: { type: 'noul', instructions: 'Is the subject so dark or murky that its shape and details are hard to make out?' },
+        text: { type: 'noul', instructions: 'Does the image contain any text, letters, watermark or signature?' },
+        ...(pose ? { pose: { type: 'noul' as const, instructions: pose } } : {}),
+        ...(rec.view === 'side' ? { facing: { type: 'choice' as const, instructions: "Which side of the image is the creature's head toward?", criteria: { left: 'the left edge of the image', right: 'the right edge of the image', front: 'it faces the viewer' } } } : {}),
+      },
     });
-    return { score: r.score, problems: r.problems, facing: r.facing };
+    if (process.env.GD_DEBUG_CHECK) console.log('[check]', JSON.stringify(Object.fromEntries(Object.entries(a).map(([k, v]) => [k, v.type === 'score' ? +v.score.toFixed(2) : v.type === 'noul' ? +v.noul.toFixed(2) : v.choice]))));
+    const lvl = (k: string) => {
+      const x = a[k];
+      return x?.type === 'score' ? (x.score / (LEVELS.length - 1)) * 10 : 5;
+    };
+    const yes = (k: string) => {
+      const x = a[k];
+      return x?.type === 'noul' ? x.noul : 0.5;
+    };
+    const problems: string[] = [];
+    let score = Math.min(lvl('quality'), lvl('match') + 1);
+    const penalize = (cond: boolean, why: string, by = 3) => {
+      if (!cond) return;
+      score -= by;
+      problems.push(why);
+    };
+    penalize(yes('single') < 0.5, 'more than one subject');
+    penalize(yes('whole') < 0.5, 'subject cut off');
+    penalize(yes('dark') > 0.55, 'too dark to read');
+    penalize(yes('text') > 0.5, 'contains text');
+    if (pose) penalize(yes('pose') < 0.5, rec.view === 'side' ? 'not seen from the side in a neutral pose' : 'not seen from the front in a neutral standing pose');
+    if (lvl('match') < 4) problems.push('does not match the description');
+    const f = a.facing;
+    const facing = f?.type === 'choice' && (f.probabilities[f.choice] ?? 0) > 0.7 ? (f.choice as Review['facing']) : undefined;
+    return { score: Math.max(0, Math.min(10, score)), problems, facing };
   } catch (e) {
     console.warn('[images] quality check failed:', (e as Error).message);
     return null;
@@ -244,15 +233,15 @@ export async function produceAssets(recs: ImageRecord[], style: string, outDir: 
   const g = genai();
   const purposeOf = (r: ImageRecord) => KIND_PURPOSE[r.kind];
   const limit = (r: ImageRecord) => g.purpose(purposeOf(r)).maxAttempts ?? 3;
-  const active = recs.filter((r) => !g.isProcedural(purposeOf(r)));
-  for (const r of recs) if (g.isProcedural(purposeOf(r))) onDone({ ...r, status: 'skipped' });
+  const active = recs.filter((r) => g.configured(purposeOf(r)));
+  for (const r of recs) if (!g.configured(purposeOf(r))) onDone({ ...r, status: 'skipped' });
   const best = new Map<string, { c: Candidate; score: number; problems: string[] }>();
   const attempts = new Map<string, number>();
   const errors = new Map<string, string>();
   /** Key colours each asset still has to try (the writer's pick first). */
   const keys = new Map(active.map((r) => [r.key, [r.backdrop ?? 'green', ...KEY_NAMES.filter((k) => k !== (r.backdrop ?? 'green'))] as KeyColour[]]));
   const finished = new Set<string>();
-  const minScore = g.purpose('image.check').minScore ?? 6;
+  const minScore = g.config.purposes['image.check']?.minScore ?? 6;
   const fileFor = (key: string) => `${key.replace(/[^a-z0-9_.-]/gi, '_')}.png`;
   const finish = (rec: ImageRecord) => {
     if (finished.has(rec.key)) return;

@@ -152,7 +152,6 @@ const REWRITE_SYSTEM = `You are the writer of a role-playing game, revising one 
 /** Rewrite one person, quest or place with the text model, following the owner's direction. */
 export async function rewrite(w: WorldDefinition, target: RewriteTarget, guidance: string): Promise<string> {
   const g = genai();
-  if (g.isProcedural('world.content')) throw new Error('No text model is configured (config/genai.json).');
   const world = conceptSummary(w.concept as never);
   const zoneName = (id?: string) => w.zones.find((z) => z.id === id)?.name ?? id ?? '';
   const npcName = (id?: string) => w.npcs.find((n) => n.id === id)?.name ?? w.bosses.find((b) => b.id === id)?.name ?? id ?? '';

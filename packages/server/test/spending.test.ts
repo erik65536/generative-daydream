@@ -9,11 +9,11 @@ import type { ProviderConfig } from '../src/genai/types';
 const paid: ProviderConfig = { type: 'openai-responses', model: 'gpt-6-luna', pricing: { inputPerM: 1, cachedPerM: 0.1, outputPerM: 5 } };
 
 describe('AI spending', () => {
-  it('prices calls from the provider, halves flex, and ignores local models', () => {
+  it('prices calls from the provider, halves flex, and leaves the GPU free', () => {
     expect(costOf(paid, { input: 1_000_000, cached: 0, output: 0 })).toBeCloseTo(1);
     expect(costOf(paid, { input: 1_000_000, cached: 1_000_000, output: 200_000 })).toBeCloseTo(0.1 + 1);
     expect(costOf({ ...paid, serviceTier: 'flex' }, { input: 1_000_000 })).toBeCloseTo(0.5);
-    expect(costOf({ type: 'openai-chat', baseUrl: 'http://127.0.0.1:1' }, { input: 1_000_000 })).toBe(0);
+    expect(costOf({ type: 'comfyui', baseUrl: 'http://127.0.0.1:1' }, { input: 1_000_000 })).toBe(0);
   });
 
   it('prices a model asked for by name at its own price, not the provider’s', () => {
@@ -38,10 +38,11 @@ describe('AI spending', () => {
       setDailyLimit(u.id, 1);
       expect(() => checkBudget(paid)).not.toThrow();
     });
-    // Local models are never refused.
+    // Painting on the GPU (and a free provider) is never refused.
     withCallContext({ priority: 'interactive', userId: u.id }, () => {
       setDailyLimit(u.id, 0);
-      expect(() => checkBudget({ type: 'openai-chat' })).not.toThrow();
+      expect(() => checkBudget({ type: 'comfyui' })).not.toThrow();
+      expect(() => checkBudget({ ...paid, pricing: { inputPerM: 0 } })).not.toThrow();
     });
   });
 });

@@ -3,8 +3,7 @@
 export const PURPOSES = [
   'world.design', // concept, atlas, story — needs the smartest model
   'world.content', // per-place people, quests, lore — many calls
-  'npc.decision', // structured NPC action choice at runtime
-  'npc.dialogue', // optional separate spoken-response model
+  'npc.decision', // an NPC's turn in a conversation: its actions and what it says
   'narration', // flavor text for actions, quest updates
   'image.sprite', // characters, monsters, objects
   'image.icon', // item icons
@@ -14,7 +13,8 @@ export const PURPOSES = [
 ] as const;
 export type Purpose = (typeof PURPOSES)[number];
 
-export type ProviderType = 'procedural' | 'openai-chat' | 'openai-responses' | 'anthropic' | 'google' | 'comfyui' | 'llamacpp-decision' | 'openai-decision' | 'openai-transcribe';
+/** OpenAI for every text, decision and speech purpose; ComfyUI (behind the GPU broker) for every image. */
+export type ProviderType = 'openai-responses' | 'openai-decision' | 'openai-transcribe' | 'comfyui';
 
 export interface ProviderConfig {
   type: ProviderType;
@@ -22,8 +22,6 @@ export interface ProviderConfig {
   /** Literal key, "env:VAR_NAME", or "credential:NAME" (a systemd credential; see docs/hosting.md). */
   apiKey?: string;
   model?: string;
-  /** How to request JSON: native schema, JSON mode, or by prompting only. */
-  structured?: 'strict' | 'json_schema' | 'json_object' | 'prompt';
   timeoutMs?: number;
   /** Max parallel requests to this provider. */
   concurrency?: number;
@@ -44,22 +42,9 @@ export interface ProviderConfig {
   checkpoint?: string;
   steps?: number;
   cfg?: number;
-  /** Strip <think>...</think> blocks emitted by reasoning models. */
-  stripThinking?: boolean;
   /** ComfyUI: background-removal model substituted into {{cutter}} (default birefnet.safetensors). */
   cutter?: string;
-  /** Supports image inputs (for image.check). */
-  vision?: boolean;
-  /**
-   * Name of an exclusive GPU group. Providers in the same group never have models resident at the same time:
-   * the scheduler unloads the previous model (llama.cpp router /models/unload, ComfyUI /free) before switching.
-   */
-  gpu?: string;
-  /**
-   * ComfyUI: baseUrl is the GPU broker (docs/gpu-broker.md), which orders every installation's GPU work and does
-   * the unloading itself, so this provider takes no part in a `gpu` group. apiKey is the broker's token.
-   */
-  broker?: boolean;
+  /** ComfyUI: baseUrl is the GPU broker (docs/gpu-broker.md), the one door to the GPU; apiKey is the broker's token. */
 }
 
 export interface PurposeConfig {
@@ -83,12 +68,6 @@ export interface PurposeConfig {
 export interface GenAIConfig {
   providers: Record<string, ProviderConfig>;
   purposes: Partial<Record<Purpose, PurposeConfig>>;
-  /** Combine NPC decision + speech in one call (faster on local models). */
-  combineNpcDecisionAndDialogue: boolean;
-  /** Max parallel zone-content generations during world creation. */
-  worldGenParallelism: number;
-  /** Unload a GPU-group model after this long without use (ms). 0 = keep loaded. */
-  gpuIdleUnloadMs?: number;
   /** Jobs (world builds, painting, studio tasks) one worker runs at once. Default 1: a single local GPU. */
   jobConcurrency?: number;
   /** How long background work waits for a busy, rate-limited or unreachable model before failing (ms). */
@@ -116,7 +95,7 @@ export interface AnimationConfig {
 
 // ------------------------------------------------------------------------------- decision models
 
-/** Questions for decision models (llama.cpp /v1/systemone). Each is answered independently. */
+/** Questions for OpenAI's decision models. Each is answered independently. */
 export type DecisionQuestion =
   | { type: 'choice'; instructions: string; criteria: Record<string, string | null> }
   | { type: 'score'; instructions: string; criteria: string[] }
@@ -179,8 +158,9 @@ export class GenAIError extends Error {
   }
 }
 
-export class ProceduralOnly extends Error {
-  constructor() {
-    super('Purpose is configured as procedural');
+/** No provider is configured for a purpose (config/genai.json): callers with a stand-in (an NPC's simple replies) use it. */
+export class NotConfigured extends GenAIError {
+  constructor(purpose: string) {
+    super(`No model is configured for ${purpose} (config/genai.json)`, false);
   }
 }
