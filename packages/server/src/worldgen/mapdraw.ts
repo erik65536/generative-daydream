@@ -503,7 +503,7 @@ const inside = (r: { x0: number; x1: number; y0: number; y1: number }, x: number
 async function exitTexture(b: MapBrief, p: MapPlan, seed: number, io: MapRun): Promise<Buffer> {
   const saved = io.draft.png('exit_texture');
   if (saved) return saved;
-  const png = await io.gpu('krea', () => kreaPaint(`Seen from directly above, a flat top-down view: ${p.exitLook} It runs straight up the middle of the picture from the bottom edge to the top edge and fills the width of the picture. Painted game art. ${TAIL}`, 448, 1088, seed + 35));
+  const png = await io.gpu('krea', () => kreaPaint(`Seen from directly above, a flat top-down view: ${p.exitLook} It runs straight up the middle of the picture from the bottom edge to the top edge and fills the width of the picture. Painted game art, in this style: ${p.style}. ${TAIL}`, 448, 1088, seed + 35));
   io.draft.savePng('exit_texture', png);
   return png;
 }
@@ -541,7 +541,7 @@ async function barrierTexture(p: MapPlan, seed: number, io: MapRun): Promise<Ras
   const flat = await flatPng(TILE, TILE, hex(p.barrierHex, '303030'));
   let best: { v: number; png: Buffer } | undefined;
   for (let t = 0; t < 4; t++) {
-    const png = await io.gpu('krea', () => kreaRepaint(flat, `A seamless texture seen from directly above, filling the whole picture edge to edge: ${p.barrierSurface} Nothing else at all. Painted, game art.`, TILE, TILE, seed + 30 + t, 0.75));
+    const png = await io.gpu('krea', () => kreaRepaint(flat, `A seamless texture seen from directly above, filling the whole picture edge to edge: ${p.barrierSurface} Nothing else at all. Painted game art, in this style: ${p.style}.`, TILE, TILE, seed + 30 + t, 0.75));
     const a = await genai().decide('image.check', { state: 'A texture for the barrier round the edge of a top-down game map.', questions: { only: { type: 'noul', instructions: `Is the whole picture filled edge to edge with ${p.barrier} only, with no ground, banks, buildings, paths or anything else, and no border?` } }, images: [await small(png)] });
     if (!best || noul(a.only) > best.v) best = { v: noul(a.only), png };
     if (best.v > 0.8) break;
