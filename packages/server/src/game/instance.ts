@@ -513,13 +513,8 @@ export class GameInstance implements CombatHost {
     const def = this.ctx.zones.get(zoneId)!;
     let arrive = at ?? def.entry;
     const tf = targetFeatureId ? def.features.find((f) => f.id === targetFeatureId) : undefined;
-    if (tf && !at) {
-      // Step off the door or way out, toward the most open ground beside it.
-      const nav = this.live(zoneId).map.nav;
-      const ring = Array.from({ length: 12 }, (_, i) => ({ x: tf.x + Math.cos((i * Math.PI) / 6) * 1.6, y: tf.y + Math.sin((i * Math.PI) / 6) * 1.6 }));
-      const open = (q: Vec2) => nav.cellsWithin(q, 1.5).length;
-      arrive = ring.filter((q) => nav.walkable(q.x, q.y) && nav.clear(tf, q)).sort((a, b) => open(b) - open(a))[0] ?? def.entry;
-    }
+    // Off the door or way out, onto open ground (the place's packs keep their distance from there).
+    if (tf && !at) arrive = this.live(zoneId).map.nav.arrival(tf);
     p.zoneId = zoneId;
     p.x = arrive.x;
     p.y = arrive.y;

@@ -27,6 +27,8 @@ import { normColor } from './schemas';
 
 /** Monster packs keep their distance so fighting one never drags in the next (aggro reaches about 6.5 m). */
 const PACK_SPACING = 13;
+/** And from the ways in: a party arriving stands out of reach of every member (aggro 6.5 m, packs about 3 m across). */
+const PACK_FROM_DOOR = 11;
 /** A pack's centre keeps this far (m) from anything blocked where the map has room: in a room or clearing, not a passage. */
 const PACK_CLEARANCE = 2;
 
@@ -445,7 +447,8 @@ export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, are
   const far = Math.max(...costs.values());
   const cells = [...costs.keys()].map((i) => ({ i, p: nav.centre(i % nav.cols, Math.floor(i / nav.cols)), depth: costs.get(i)! / far }));
   rng.shuffle(cells);
-  const doors = z.features.filter((f) => f.kind === 'exit');
+  // The ways in, and where a party coming through each stands (no pack within sight of an arriving party).
+  const doors = z.features.filter((f) => f.kind === 'exit').flatMap((f) => [f, nav.arrival(f)]);
   const nearDoor = (p: Vec2, d: number) => doors.some((f) => Math.hypot(f.x - p.x, f.y - p.y) < d) || Math.hypot(p.x - z.entry.x, p.y - z.entry.y) < d;
   const families = z.familyIds.map((id) => w.families.find((f) => f.id === id)!).filter(Boolean);
   const around = (centre: Vec2, radius: number, n: number): Vec2[] => {
@@ -488,7 +491,7 @@ export function populate(w: WorldDefinition, z: ZoneDef, nav: Nav, rng: Rng, are
     let n = 0;
     for (const c of order) {
       if (n >= want) break;
-      if (nearDoor(c.p, 9) || packs.some((p) => Math.hypot(p.x - c.p.x, p.y - c.p.y) < PACK_SPACING)) continue;
+      if (nearDoor(c.p, PACK_FROM_DOOR) || packs.some((p) => Math.hypot(p.x - c.p.x, p.y - c.p.y) < PACK_SPACING)) continue;
       packs.push(c.p);
       const fam = rng.pick(families);
       const level = Math.max(1, Math.round(z.levelRange[0] + (z.levelRange[1] - z.levelRange[0]) * c.depth));

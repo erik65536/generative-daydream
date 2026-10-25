@@ -28,6 +28,17 @@ describe('world generation', () => {
 });
 
 describe('populating a place', () => {
+  it('a party coming in through a narrow way in stands on the open ground past it', () => {
+    // A 2 m path down from the top edge, 10 m long, into a 14 m clearing.
+    const nav = new Nav(makeNav(30, 30, (x, y) => (x > 14 && x < 16 && y < 10) || (x > 8 && x < 22 && y >= 10 && y < 24)));
+    const a = nav.arrival({ x: 15, y: 1 }, 14);
+    expect(a.y).toBeGreaterThan(10);
+    expect(nav.walkable(a.x, a.y)).toBe(true);
+    // A door on open ground: a step off it.
+    const b = nav.arrival({ x: 15, y: 17 });
+    expect(Math.hypot(b.x - 15, b.y - 17)).toBeLessThan(2.5);
+  });
+
   it('gathers packs in open rooms, not passages, and puts the boss in its lair', async () => {
     const w = await genWorld('A misty kingdom of dragons and ruined castles');
     const z = w.zones.find((x) => x.kind === 'dungeon' || x.kind === 'wilderness')!;
