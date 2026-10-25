@@ -174,7 +174,7 @@ function compileCore(r: Ruleset, ctx: Ctx, core: CoreIntent) {
   r.terminology = { xp: t.xp || 'Experience', level: t.level || 'Level', actionPoints: t.actionPoints || 'AP', party: t.party || 'Party', town: t.town || 'Town', dungeon: t.dungeon || 'Dungeon', wilderness: t.wilderness || 'Wilds', quest: t.quest || 'Quest', currency: t.currency || 'Gold', calling: t.calling || 'Role', kin: t.kin || 'Background' };
   r.economy.currency = r.terminology.currency;
   // Pools
-  ctx.pools = core.pools.slice(0, 3).map((p) => ({ id: ctx.ids.make('p_', p.name), name: p.name, color: color(p.color, '#d8a440'), description: p.description, base: n.pool, perLevel: n.poolPer, regenPerTurn: 0.12 }));
+  ctx.pools = core.pools.slice(0, 3).map((p) => ({ id: ctx.ids.make('p_', p.name), name: p.name, color: color(p.color, '#d8a440'), description: p.description, base: n.pool, perLevel: n.poolPer, regenPerTurn: POOL_REGEN }));
   r.pools = ctx.pools;
   ctx.physicalPool = core.pools.map((p, i) => ({ p, i })).find((x) => x.p.use === 'physical') ? ctx.pools[core.pools.findIndex((p) => p.use === 'physical')] : ctx.pools[0];
   ctx.magicalPool = core.pools.findIndex((p) => p.use === 'magical') >= 0 ? ctx.pools[core.pools.findIndex((p) => p.use === 'magical')] : ctx.pools[ctx.pools.length - 1];
@@ -298,9 +298,17 @@ const RANGE = { melee: 1.6, weapon: 0, short: 5, long: 9 } as const;
 const AREA = { none: 0, small: 1.6, large: 2.4 } as const;
 const AREA_TARGETS = { none: 1, small: 1.7, large: 2.4 } as const;
 const COOLDOWN = { none: 0, short: 2, long: 4 } as const;
-const COOLDOWN_MULT = { none: 1, short: 1.35, long: 1.75 } as const;
-const COST_MULT = { none: 1, low: 1.1, medium: 1.25, high: 1.45 } as const;
-const COST_FRAC = { none: 0, low: 0.12, medium: 0.22, high: 0.35 } as const;
+/**
+ * A skill's power is budgeted per AP against the basic attack (100% weapon damage for 2 AP), so a skill that is free
+ * to use is no better than attacking, and what it costs earns its edge: a cooldown or a share of a pool (a 1-AP skill
+ * costing a little stamina hits about a fifth harder per AP; a 3-AP one on a long cooldown at a high cost hits hard).
+ */
+const ATTACK_PER_AP = 0.5;
+const COOLDOWN_MULT = { none: 1, short: 1.4, long: 1.9 } as const;
+const COST_MULT = { none: 1, low: 1.2, medium: 1.45, high: 1.75 } as const;
+/** A skill's cost as a share of its pool. With pools refilling POOL_REGEN a turn, cheap skills still run a pool dry. */
+const COST_FRAC = { none: 0, low: 0.15, medium: 0.25, high: 0.4 } as const;
+const POOL_REGEN = 0.05;
 const CONTROL_PRICE = { root: 0.6, silence: 0.8, disarm: 0.8, slow: 0.6 } as const;
 
 function compileSkill(ctx: Ctx, s: SkillIntent, owner: string, pool: PoolDef | undefined, idPrefix: string): SkillDef {
@@ -314,7 +322,7 @@ function compileSkill(ctx: Ctx, s: SkillIntent, owner: string, pool: PoolDef | u
   if (targeting === 'enemy' && helpful && !hurtful) targeting = 'ally';
   const cost = pool ? s.cost : 'none';
   const cd = COOLDOWN[s.cooldown] ?? 0;
-  let budget = ap * (COOLDOWN_MULT[s.cooldown] ?? 1) * (COST_MULT[cost] ?? 1) * (1 + 0.08 * clamp(s.tier, 0, 3));
+  let budget = ap * ATTACK_PER_AP * (COOLDOWN_MULT[s.cooldown] ?? 1) * (COST_MULT[cost] ?? 1) * (1 + 0.08 * clamp(s.tier, 0, 3));
   if (s.range === 'melee' && !s.usesWeapon) budget *= 1.1;
   if (!pool && s.cooldown === 'none' && ap >= 2) budget *= 0.95;
   const area = s.area ?? 'none';

@@ -46,7 +46,11 @@ Everything is priced in one unit: a fraction of a reference character's combat p
 
 * Reference curves per level: health `H(L)`, damage per AP `D(L)`, mitigation rating scale `K(L)`.
 * Mitigation % = rating / (rating + K(L)) — gear rated for a lower level gets worse as you out-level it.
-* A skill's damage coefficient comes from its AP cost, cooldown, resource cost, range, area and riders.
+* A skill's damage coefficient comes from its AP cost, cooldown, resource cost, range, area and riders, priced per
+  AP against the basic attack (100% weapon damage for 2 AP): a free skill is no better than attacking; a cooldown or a
+  pool cost earns its edge (a cheap 1-AP skill hits about a fifth harder per AP).
+* Pools (stamina, mana) refill 5% a combat turn and skills cost 15%, 25% or 40% of them, so they run dry in a long
+  fight and plain attacks fill the gaps.
 * Each attribute point, tree node, affix and potion is worth a fixed budget, split over its effects by the AI's weights.
 * Monsters use the same curves × role weights × tuned per-level multipliers.
 
