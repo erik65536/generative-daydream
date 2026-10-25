@@ -4,7 +4,7 @@ import { api, type CharSpec, type Me, type WorldSetup } from '../api';
 import { Backdrop } from '../ui/Backdrop';
 import { TopBar } from './Lobby';
 import { navigate } from '../App';
-import { Portrait, SkillIcon, SkillTooltip, tip } from '../ui/common';
+import { Portrait, SkillIcon, SkillTooltip, pressable, tip } from '../ui/common';
 import { setRules } from '../rules';
 import { loadImage } from '../render/sprites';
 import { applyWorldTheme } from '../ui/theme';
@@ -150,7 +150,7 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
               <div className="panel-body">
                 <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))' }}>
                   {r.classes.map((c) => (
-                    <div key={c.id} className={`choice ${d.classId === c.id ? 'on' : ''}`} onClick={() => update({ classId: c.id })}>
+                    <div key={c.id} className={`choice ${d.classId === c.id ? 'on' : ''}`} {...pressable(() => update({ classId: c.id }))}>
                       <div className="row" style={{ gap: 6 }}>
                         <div className="t grow">{c.name}</div>
                         <span className="badge gray">{c.role}</span>
@@ -182,7 +182,7 @@ export function CharacterCreate({ me, worldId, joinInstanceId }: { me: Me; world
                 <div className="panel-body">
                   <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}>
                     {r.kins.map((k) => (
-                      <div key={k.id} className={`choice ${d.kinId === k.id ? 'on' : ''}`} onClick={() => update({ kinId: k.id })}>
+                      <div key={k.id} className={`choice ${d.kinId === k.id ? 'on' : ''}`} {...pressable(() => update({ kinId: k.id }))}>
                         <div className="t">{k.name}</div>
                         <div className="d">{k.description}</div>
                         <div className="tiny dim" style={{ marginTop: 4 }}>

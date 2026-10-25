@@ -74,7 +74,7 @@ function TriToggle({ label, hint, value, onChange }: { label: string; hint: stri
 
 function Choices<T extends string | number>({ value, onChange, options, columns }: { value: T; onChange: (v: T) => void; options: [T, string, string][]; columns?: number }) {
   return (
-    <div className="choice-grid" style={columns ? { gridTemplateColumns: `repeat(${columns}, 1fr)` } : undefined}>
+    <div className={`choice-grid${columns ? ' cols' : ''}`} style={columns ? ({ '--cols': columns } as React.CSSProperties) : undefined}>
       {options.map(([v, t, d]) => (
         <div key={String(v)} role="button" tabIndex={0} className={`choice ${value === v ? 'on' : ''}`} onClick={() => onChange(v)} onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onChange(v)}>
           <div className="t">{t}</div>

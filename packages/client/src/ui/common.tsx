@@ -19,6 +19,20 @@ export function CanvasDraw({ size, draw, deps, className }: { size: number; draw
   return <canvas ref={ref} className={className} style={{ width: size, height: size }} />;
 }
 
+/** Props that make a clickable element work from the keyboard too (focusable, Enter and Space press it). */
+export function pressable(onPress: () => void) {
+  return {
+    role: 'button',
+    tabIndex: 0,
+    onClick: onPress,
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      onPress();
+    },
+  };
+}
+
 export function SkillIcon({ id, size = 40 }: { id: string; size?: number }) {
   return <CanvasDraw size={size} deps={[id, size]} draw={(ctx, s) => drawSkillIcon(ctx, s, id)} />;
 }

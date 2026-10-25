@@ -2,16 +2,17 @@ import { useEffect, useState } from 'react';
 import { api, type Me, type WorldSummary } from '../api';
 import { Backdrop, DaydreamArt } from '../ui/Backdrop';
 import { navigate } from '../App';
+import { pressable } from '../ui/common';
 
 export function TopBar({ me, onLogout }: { me: Me; onLogout?: () => void }) {
   return (
     <div className="topbar">
-      <div className="brand" onClick={() => navigate('#/')}>
+      <div className="brand" {...pressable(() => navigate('#/'))}>
         <img src="/favicon.svg" alt="" />
         Generative Daydream
       </div>
       <div className="spacer" />
-      <button className="btn ghost sm" onClick={() => navigate('#/settings')}>AI models</button>
+      {me.isAdmin && <button className="btn ghost sm" onClick={() => navigate('#/settings')}>AI models</button>}
       {me.isAdmin && <button className="btn ghost sm" onClick={() => navigate('#/gpu')}>GPU</button>}
       {me.isAdmin && <button className="btn ghost sm" onClick={() => navigate('#/users')}>Users</button>}
       <button className="btn ghost sm" title="Your account" onClick={() => navigate('#/account')}>{me.username}</button>
@@ -48,7 +49,7 @@ export function Lobby({ me, onLogout }: { me: Me; onLogout: () => void }) {
         <p className="lede">Each daydream is dreamed once — its places, people, history and secrets — and can then be lived in any number of reveries.</p>
         {error && <div className="error-text">{error}</div>}
         <div className="cards" style={{ marginTop: 22 }}>
-          <div className="card new" onClick={() => navigate('#/create')}>
+          <div className="card new" {...pressable(() => navigate('#/create'))}>
             <div className="col" style={{ alignItems: 'center', gap: 6 }}>
               <div className="display gold" style={{ fontSize: 40, lineHeight: 1 }}>+</div>
               <div className="display gold">Dream a new daydream</div>
@@ -77,7 +78,7 @@ export function Lobby({ me, onLogout }: { me: Me; onLogout: () => void }) {
 
 function WorldCard({ w }: { w: WorldSummary }) {
   return (
-    <div className="card" onClick={() => navigate(`#/world/${w.id}`)}>
+    <div className="card" {...pressable(() => navigate(`#/world/${w.id}`))}>
       <div className="art">
         <DaydreamArt id={w.id} palette={w.palette} art={w.coverArt} />
       </div>
