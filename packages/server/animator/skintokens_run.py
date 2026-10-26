@@ -1,4 +1,5 @@
-"""Run SkinTokens' demo.py with its skeleton grammar fixed. Started by skintokens.py with SkinTokens' own Python:
+"""Run SkinTokens' demo.py with its skeleton grammar fixed and its full length. Started by skintokens.py with
+SkinTokens' own Python:
 
     python skintokens_run.py <skintokens-dir> <demo.py arguments...>
 
@@ -7,8 +8,11 @@ detokenizer reads it that way, but the grammar that constrains sampling (Tokeniz
 skeleton go on after the first three. A branch closed there (an end, another branch or a part) breaks the decode:
 "all input arrays must have the same shape" at the end, or joints read from token ids elsewhere. Sampling is not
 seeded, so it strikes at random, more often on bodies with many limbs (a crab). Here the grammar asks for the new
-joint's three coordinates before anything else, and for at least one joint before the end. The checkout itself stays
-as installed.
+joint's three coordinates before anything else, and for at least one joint before the end.
+
+demo.py also stops generating at 2048 positions (the mesh prompt included), short of the model's 3192. A skeleton of
+many bones (each takes 3 or 6 coordinates and 4 skin tokens) then loses its last skin tokens, and the rig fails with
+"assert res.skin_pred is not None". Here it may use all 3192. The checkout itself stays as installed.
 """
 import os, runpy, sys
 
@@ -44,10 +48,24 @@ def patch_grammar():
     TokenizerPart.next_posible_token = next_posible_token
 
 
+def patch_length():
+    from src.model.tokenrig import TokenRig
+    generate = TokenRig.generate
+
+    def full_length(self, *args, **kwargs):
+        kwargs['max_length'] = self.llm_config.max_position_embeddings
+        res = generate(self, *args, **kwargs)
+        print(f'[gd] {len(res.output_ids)} tokens of {kwargs["max_length"]}, skin {"ok" if getattr(res, "skin_pred", None) is not None else "missing"}', flush=True)
+        return res
+
+    TokenRig.generate = full_length
+
+
 if __name__ == '__main__':
     st_dir = os.path.abspath(sys.argv[1])
     os.chdir(st_dir)
     sys.path.insert(0, st_dir)
     patch_grammar()
+    patch_length()
     sys.argv = [os.path.join(st_dir, 'demo.py'), *sys.argv[2:]]
     runpy.run_path(sys.argv[0], run_name='__main__')
