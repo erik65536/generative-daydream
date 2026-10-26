@@ -72,7 +72,7 @@ you touch.
   other ports through its `.claude/launch.json`, such as 3100/5180. Worlds built in one checkout are moved to
   another with `worldpack`.
 - **Accounts in development.**
-  - `config/dev-test-account.example.json` names the local test account used for automated playtests.
+  - Never commit a password, even a test account's. Ask the user for one, or make a throwaway invite.
   - Invites (`#/invite/<code>`), passkeys and the first-administrator rule are described in
     `docs/server-architecture.md`.
   - Passkeys need a real host name or `localhost`, and an automated browser has no authenticator.
