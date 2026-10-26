@@ -4,7 +4,9 @@ SkinTokens returns a normalised, unwelded copy of the mesh with an unnamed skele
 bounding box, weights copied to the textured mesh by nearest point, then the body is stood up and its chains named:
 - quadruped (any legged walker: dogs, crabs, spiders): the leaves near the ground are feet; each leg, hip to foot,
   gets its side, its place front to back and its gait phase; the path from the root to the leaf furthest along the
-  body axis is the spine and head (spine0..n); chains behind the hips are the tail (tail0..n).
+  body axis is the spine and head (spine0..n); chains behind the hips are the tail (tail0..n). A body with no
+  legs hanging below it (a fish, a snake) keeps its painted pose, facing the way side views are painted, and has
+  only a spine and tail.
 - floater: no ground contact. It is levelled so its chains hang straight down from the root (tentacles), which
   also removes the camera tilt Pixal3D keeps from the image; every chain below the root is a tentacle.
 """
@@ -68,8 +70,14 @@ def rig_auto(job: str, body: str, height: float) -> dict:
         reach = np.ptp(bind[:, 1])
         feet = [k for k in low if bind[k, 1] < bind[low[0], 1] + 0.12 * reach]
         feet = feet if len(feet) >= 4 else low[:4]
-        P = bind[feet]; n = np.linalg.svd(P - P.mean(0))[2][2]; n = n if n[1] > 0 else -n
-        Rup = R.align_vectors([[0, 1, 0]], [n])[0].as_matrix()
+        # Legs hang below the body. Without two that do (a fish, a snake), it keeps the pose it was painted in and
+        # moves on its spine and tail alone.
+        if sum(bind[root, 1] - bind[k, 1] > 0.1 * np.ptp(mp[:, 1]) for k in leaves) < 2:
+            feet = []
+            Rup = np.eye(3)
+        else:
+            P = bind[feet]; n = np.linalg.svd(P - P.mean(0))[2][2]; n = n if n[1] > 0 else -n
+            Rup = R.align_vectors([[0, 1, 0]], [n])[0].as_matrix()
     else:
         tips = [k for k in leaves if k != root]
         down = bind[tips].mean(0) - bind[root] if tips else np.array([0, -1.0, 0])
@@ -78,7 +86,11 @@ def rig_auto(job: str, body: str, height: float) -> dict:
     mp = (mp - ctr) @ Rup.T + ctr; bind = (bind - ctr) @ Rup.T + ctr
 
     yaw = 0.0
-    if body == 'quadruped':
+    if body == 'quadruped' and not feet:
+        # Side views are painted facing left, which the mesh keeps as -x: the head is the leaf furthest that way.
+        head_leaf = min((k for k in leaves if k != root), key=lambda k: bind[k, 0], default=root)
+        yaw = -np.pi / 2
+    elif body == 'quadruped':
         fx = bind[feet][:, [0, 2]]
         ax = np.linalg.svd(fx - fx.mean(0))[2][0]
         mid = (fx @ ax).mean()
@@ -90,7 +102,8 @@ def rig_auto(job: str, body: str, height: float) -> dict:
         yaw = np.arctan2(fwd[0], fwd[1])
     Ry = R.from_euler('y', -yaw).as_matrix()
     ground = mp[:, 1].min()
-    sc = height / np.ptp(mp[:, 1])
+    # Legless bodies lie along the ground: their length takes the size a standing body's height does.
+    sc = height / (np.ptp(mp, 0).max() if body == 'quadruped' and not feet else np.ptp(mp[:, 1]))
     gp = (mp - [0, ground, 0]) @ Ry.T * sc; gj = (bind - [0, ground, 0]) @ Ry.T * sc
     c = gj[root].copy(); c[1] = 0
     gp -= c; gj -= c
