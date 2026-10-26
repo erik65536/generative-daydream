@@ -4,6 +4,7 @@ data/
 config/genai.json
 config/broker.json
 config/server.json
+config/dev-test-account.json
 *.log
 .env
 coverage/
